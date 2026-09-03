@@ -8,9 +8,16 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
+    // Node globals for the standalone maintenance scripts.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly' },
+    },
+  },
+  {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: { allowDefaultProject: ['scripts/*.mjs', '*.mjs'] },
         tsconfigRootDir: import.meta.dirname,
       },
     },

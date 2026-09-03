@@ -35,6 +35,8 @@ src/
   leaderboard/                sweep orchestration, mapper, Mongo repository, scheduler
   database/                   MongoClient lifecycle
   health/                     GET /health — season snapshot + sweep state
+scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
+docker-compose.yml            local mongo:8 + mongo-express
 ```
 
 ## Setup
@@ -42,6 +44,7 @@ src/
 ```bash
 npm install
 cp .env.example .env   # fill in BLIZZARD_CLIENT_ID / BLIZZARD_CLIENT_SECRET
+npm run db:up          # see "Local MongoDB" below
 npm run start:dev
 ```
 
@@ -56,6 +59,30 @@ npm run start:dev
 
 `BLIZZARD_REGION` is the OAuth host region used to mint the token (`us|eu|kr|tw|cn`);
 `BLIZZARD_REGIONS` is the separate list of ladders to ingest.
+
+## Local MongoDB
+
+Requires Docker Desktop (`docker compose` v2). If it is not installed yet, grab it from
+https://www.docker.com/products/docker-desktop/ � it needs admin rights and a reboot,
+and WSL2 must be enabled.
+
+```bash
+npm run db:up      # start mongo:8 + mongo-express, detached
+npm run db:check   # verify connectivity and show what has been ingested
+npm run start:dev  # first sweep runs at boot and writes to the database
+```
+
+| Service       | Address                     | Notes                                      |
+| ------------- | --------------------------- | ------------------------------------------ |
+| MongoDB       | `mongodb://localhost:27017` | database `rankwarden`, volume `mongo-data` |
+| mongo-express | http://localhost:8081       | browse the ingested leaderboards           |
+
+`docker-compose.yml` runs **without auth** so `MONGODB_URI` stays credential-free; it is
+a development file only. Data lives in the named `mongo-data` volume and survives
+`npm run db:down` � `npm run db:reset` is what discards it.
+
+If port 27017 is already taken, remap it in `docker-compose.yml` (`'27018:27017'`) and
+point `MONGODB_URI` at the new port.
 
 ## Scripts
 
