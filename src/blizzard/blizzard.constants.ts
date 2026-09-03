@@ -15,7 +15,13 @@ export function apiHost(region: Region): string {
   return `https://${region}.api.blizzard.com`;
 }
 
-/** Dynamic namespace for a region, e.g. dynamic-us */
-export function dynamicNamespace(namespace: string, region: Region): string {
-  return `${namespace}-${region}`;
+/**
+ * Game Data namespaces. `dynamic` covers seasons and leaderboards, `profile`
+ * covers per-character data, `static` covers races, classes and talent trees.
+ */
+export type NamespaceKind = 'dynamic' | 'profile' | 'static';
+
+/** Namespace for a region, e.g. dynamic-us or profile-eu */
+export function namespaceFor(kind: NamespaceKind, region: Region): string {
+  return `${kind}-${region}`;
 }
