@@ -84,6 +84,23 @@ a development file only. Data lives in the named `mongo-data` volume and survive
 If port 27017 is already taken, remap it in `docker-compose.yml` (`'27018:27017'`) and
 point `MONGODB_URI` at the new port.
 
+## Debugging (VS Code)
+
+`.vscode/launch.json` ships seven configurations; pick one from the Run and Debug panel.
+
+| Configuration                | Use it for                                                                |
+| ---------------------------- | ------------------------------------------------------------------------- |
+| Debug app                    | Build, then break anywhere in a normal startup + first sweep              |
+| Debug app (watch)            | `nest start --debug --watch`; reattaches after every save                 |
+| Debug app (no startup sweep) | Boot with `INGEST_RUN_ON_STARTUP=false` to step a sweep on your own terms |
+| Debug current test file      | Runs Vitest on the open file with `--no-file-parallelism`                 |
+| Debug all tests              | The whole suite, single process                                           |
+| Debug db:check               | Steps through the MongoDB report script                                   |
+| Attach to running app        | Attaches to port 9229 of an already-running `npm run start:debug`         |
+
+Breakpoints are set in `src/` and resolve through the sourcemaps `tsc` writes into `dist/`,
+so `outFiles` points at `dist/**/*.js`. The launch configs read `.env` via `envFile`.
+
 ## Scripts
 
 | Script                                                 | Purpose                                 |
