@@ -1,9 +1,18 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { MongoBulkWriteError, type AnyBulkWriteOperation, type IndexDescription } from 'mongodb';
+import {
+  MongoBulkWriteError,
+  type AnyBulkWriteOperation,
+  type Filter,
+  type IndexDescription,
+} from 'mongodb';
 
 import { BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
-import { CHARACTERS_COLLECTION, type CharacterDocument } from './entities/character.entity.js';
+import {
+  CHARACTERS_COLLECTION,
+  type CharacterDocument,
+  type CharacterProfile,
+} from './entities/character.entity.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 
 const BULK_CHUNK_SIZE = 1_000;
@@ -30,6 +39,9 @@ export class CharacterRepository implements OnModuleInit {
     const indexes: IndexDescription[] = [
       { key: { seasonId: 1, region: 1, characterId: 1 }, name: 'character_identity', unique: true },
       { key: { characterName: 1, realmSlug: 1 }, name: 'character_lookup' },
+      // Enrichment selects the least recently profiled characters first;
+      // never-enriched ones sort ahead of everything because the field is absent.
+      { key: { profileFetchedAt: 1 }, name: 'profile_staleness' },
       // One per bracket: rank is what ladder views sort on.
       ...BRACKETS.map((bracket) => ({
         key: { seasonId: 1, region: 1, [`brackets.${bracket}.rank`]: 1 },
@@ -120,6 +132,62 @@ export class CharacterRepository implements OnModuleInit {
         (await this.writeChunk(replayed, false))
       );
     }
+  }
+
+  /**
+   * The next characters due for profile enrichment. `onlyNew` restricts the
+   * batch to characters a sweep has just discovered; otherwise never-enriched
+   * characters still come first, because the absent field sorts ahead of dates.
+   */
+  async findProfilesToEnrich(
+    staleBefore: Date,
+    limit: number,
+    onlyNew = false,
+  ): Promise<CharacterDocument[]> {
+    const filter: Filter<CharacterDocument> = onlyNew
+      ? { profileFetchedAt: { $exists: false } }
+      : {
+          $or: [
+            { profileFetchedAt: { $exists: false } },
+            { profileFetchedAt: { $lt: staleBefore } },
+          ],
+        };
+
+    return this.collection.find(filter).sort({ profileFetchedAt: 1 }).limit(limit).toArray();
+  }
+
+  /** How many characters have never had a profile fetched. */
+  countUnenriched(): Promise<number> {
+    return this.collection.countDocuments({ profileFetchedAt: { $exists: false } });
+  }
+
+  async saveProfile(
+    seasonId: number,
+    region: Region,
+    characterId: number,
+    profile: CharacterProfile,
+    fetchedAt: Date,
+  ): Promise<void> {
+    await this.collection.updateOne(
+      { seasonId, region, characterId },
+      { $set: { profile, profileStatus: 'ok', profileFetchedAt: fetchedAt } },
+    );
+  }
+
+  /**
+   * Records that Blizzard has no such character. The timestamp still moves so
+   * the TTL keeps it out of the queue until it is worth re-checking.
+   */
+  async markProfileMissing(
+    seasonId: number,
+    region: Region,
+    characterId: number,
+    fetchedAt: Date,
+  ): Promise<void> {
+    await this.collection.updateOne(
+      { seasonId, region, characterId },
+      { $set: { profileStatus: 'missing', profileFetchedAt: fetchedAt }, $unset: { profile: '' } },
+    );
   }
 
   /**

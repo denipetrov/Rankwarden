@@ -49,6 +49,35 @@ Characters by bracket count: ${spread.map((row) => `${row._id}× ${row.character
     );
   }
 
+  const enriched = await entries.countDocuments({ profileStatus: 'ok' });
+  const missing = await entries.countDocuments({ profileStatus: 'missing' });
+  const pending = await entries.countDocuments({ profileFetchedAt: { $exists: false } });
+  console.log(
+    `
+Profiles: ${enriched} enriched, ${missing} missing, ${pending} pending enrichment`,
+  );
+
+  if (enriched > 0) {
+    const top = await entries
+      .aggregate([
+        { $match: { 'profile.heroTalentTree': { $ne: null } } },
+        {
+          $group: {
+            _id: { cls: '$profile.class.name', hero: '$profile.heroTalentTree.name' },
+            n: { $sum: 1 },
+          },
+        },
+        { $sort: { n: -1 } },
+        { $limit: 5 },
+      ])
+      .toArray();
+    if (top.length > 0) {
+      console.log(
+        `Top hero talents: ${top.map((r) => `${r._id.cls}/${r._id.hero} (${r.n})`).join(', ')}`,
+      );
+    }
+  }
+
   const breakdown = await entries
     .aggregate([
       { $project: { region: 1, brackets: { $objectToArray: '$brackets' } } },

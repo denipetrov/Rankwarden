@@ -3,12 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import got, { HTTPError, type Got } from 'got';
 
 import type { Env } from '../../config/env.schema.js';
-import { apiHost, dynamicNamespace, type Region } from '../blizzard.constants.js';
+import { apiHost, namespaceFor, type NamespaceKind, type Region } from '../blizzard.constants.js';
 import { BLIZZARD_TOKEN_PROVIDER, type BlizzardTokenProvider } from '../auth/token-provider.js';
+import { BlizzardApiError } from './blizzard-api.error.js';
 
 export interface BlizzardGetOptions {
   /** Extra query parameters merged after namespace/locale. */
   searchParams?: Record<string, string | number>;
+  /** Defaults to the dynamic namespace used by season and leaderboard data. */
+  namespace?: NamespaceKind;
 }
 
 /**
@@ -19,14 +22,12 @@ export interface BlizzardGetOptions {
 export class BlizzardHttpService {
   private readonly logger = new Logger(BlizzardHttpService.name);
   private readonly client: Got;
-  private readonly namespace: string;
   private readonly locale: string;
 
   constructor(
     config: ConfigService<Env, true>,
     @Inject(BLIZZARD_TOKEN_PROVIDER) private readonly tokens: BlizzardTokenProvider,
   ) {
-    this.namespace = config.get('BLIZZARD_NAMESPACE', { infer: true });
     this.locale = config.get('BLIZZARD_LOCALE', { infer: true });
 
     this.client = got.extend({
@@ -66,7 +67,7 @@ export class BlizzardHttpService {
       return await this.client
         .get(url, {
           searchParams: {
-            namespace: dynamicNamespace(this.namespace, region),
+            namespace: namespaceFor(options.namespace ?? 'dynamic', region),
             locale: this.locale,
             ...options.searchParams,
           },
@@ -74,9 +75,12 @@ export class BlizzardHttpService {
         .json<unknown>();
     } catch (error) {
       if (error instanceof HTTPError) {
-        throw new Error(`Blizzard API ${error.response.statusCode} for ${url}: ${error.message}`, {
-          cause: error,
-        });
+        throw new BlizzardApiError(
+          error.response.statusCode,
+          url,
+          `Blizzard API ${error.response.statusCode} for ${url}: ${error.message}`,
+          { cause: error },
+        );
       }
       throw error;
     }

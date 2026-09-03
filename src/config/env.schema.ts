@@ -24,7 +24,6 @@ export const envSchema = z.object({
   // Blizzard Game Data API.
   BLIZZARD_REGIONS: csv('us,eu,kr,tw'),
   BLIZZARD_LOCALE: z.string().default('en_US'),
-  BLIZZARD_NAMESPACE: z.string().default('dynamic'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
   BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(4),
@@ -39,6 +38,17 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((value) => value === 'true'),
+
+  // Profile enrichment (race, class, spec, hero talents).
+  PROFILE_ENRICHMENT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  PROFILE_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
+  PROFILE_BATCH_SIZE: z.coerce.number().int().positive().default(500),
+  PROFILE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
+  PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
 
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

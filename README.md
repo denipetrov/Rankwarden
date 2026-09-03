@@ -14,6 +14,10 @@ Game Data API and (as of the next iteration) persists them to MongoDB.
    ranks in are unset; characters left in no bracket at all are deleted.
 4. **Repeat** — the sweep re-runs every `INGEST_INTERVAL_MS`. Overlapping sweeps are
    skipped rather than queued.
+5. **Enrichment** — a separate background pass fills in race, class, spec and hero
+   talent tree per character. Characters a sweep has just discovered are enriched
+   immediately; everyone else is refreshed once their profile passes `PROFILE_TTL_MS`
+   (1 day).
 
 Regions: `us, eu, kr, tw`. Brackets: `2v2`, `3v3`, `rbg`, `shuffle-overall`, `blitz-overall`.
 
@@ -24,13 +28,15 @@ src/
   main.ts                     bootstrap, log level, shutdown hooks
   app.module.ts               module composition
   config/                     zod env schema + global config module
-  common/utils/               concurrency helper (bounded parallel sweeps)
+  common/utils/               concurrency helper, token-bucket rate limiter
+  common/events/              sweep-completed signal the enrichment pass listens to
   blizzard/
     blizzard.constants.ts     regions, brackets, host + namespace helpers
     auth/                     token provider seam + @denipetrov/blizz-auth adapter
     http/                     shared got instance (bearer auth, retries, namespace)
     schemas/                  zod schemas for season index + leaderboard payloads
     pvp.api.ts                typed PvP endpoints
+  profile/                    background race/class/spec/hero-talent enrichment
   season/                     in-memory active season per region
   leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
@@ -83,7 +89,21 @@ a character's full record is a single read.
     'shuffle-overall': { rank: 3774, rating: 1953, played: 99, won: 56, lost: 43, fetchedAt: … },
     'blitz-overall':   { rank: 695,  rating: 1969, played: 31, won: 14, lost: 17, fetchedAt: … },
   },
-  updatedAt: …
+  updatedAt: …,
+
+  // filled in by the enrichment pass, not the sweep
+  profile: {
+    race:           { id: 10, name: 'Blood Elf' },
+    class:          { id: 2,  name: 'Paladin' },
+    spec:           { id: 65, name: 'Holy' },
+    heroTalentTree: { id: 49, name: 'Lightsmith' },   // null below hero-talent level
+    level: 90, gender: 'FEMALE',
+    guild: { id: 91360489, name: 'veow' },
+    averageItemLevel: 278, equippedItemLevel: 278,
+    lastLoginAt: …,
+  },
+  profileStatus: 'ok',        // 'missing' once Blizzard 404s the character
+  profileFetchedAt: …,        // drives TTL selection; absent means never enriched
 }
 ```
 
@@ -103,6 +123,24 @@ never touches the source collection. Drop the old one once you have checked the 
 ```bash
 npm run db:shell   # then: db.leaderboard_entries.drop()
 ```
+
+### Profile enrichment
+
+Race, class and spec come from `/profile/wow/character/{realm}/{name}`; the hero talent
+tree comes from that endpoint's `/specializations` sibling, whose top-level
+`active_hero_talent_tree` matches the active loadout's selection. That is **two API
+requests per character**, against a quota of 100/second and 36,000/hour — so enrichment
+is its own budgeted pass rather than part of the sweep.
+
+Selection is `profileFetchedAt` ascending, and the field is absent until a character is
+first enriched, so never-seen characters always sort ahead of the daily refresh queue.
+A finished sweep also fires a new-characters-only pass immediately, so ladder newcomers
+do not wait out the interval.
+
+At the defaults (500 characters per pass, every 5 minutes) that is 12,000 requests/hour
+— a third of the quota, and roughly 72,000 characters a day against a ladder of ~35,000.
+A 404 is recorded as `profileStatus: 'missing'` rather than retried, because renames and
+transfers are routine.
 
 ## Local MongoDB
 

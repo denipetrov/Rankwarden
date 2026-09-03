@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { BRACKETS, isRegion, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
+import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
@@ -43,6 +44,7 @@ export class LeaderboardService {
     private readonly pvpApi: PvpApi,
     private readonly seasons: SeasonService,
     private readonly repository: CharacterRepository,
+    private readonly sweeps: SweepEvents,
   ) {
     this.regions = config
       .get('BLIZZARD_REGIONS', { infer: true })
@@ -76,6 +78,12 @@ export class LeaderboardService {
       this.logger.log(
         `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok`,
       );
+
+      this.sweeps.emitCompleted({
+        finishedAt: new Date(),
+        brackets: results.length,
+        failed,
+      });
 
       return { startedAt, durationMs, jobs: results, failed };
     } finally {

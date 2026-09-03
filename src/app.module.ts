@@ -1,21 +1,25 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 
+import { CommonModule } from './common/common.module.js';
 import { AppConfigModule } from './config/config.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { BlizzardModule } from './blizzard/blizzard.module.js';
 import { SeasonModule } from './season/season.module.js';
 import { LeaderboardModule } from './leaderboard/leaderboard.module.js';
+import { ProfileModule } from './profile/profile.module.js';
 import { HealthModule } from './health/health.module.js';
 
 @Module({
   imports: [
     AppConfigModule,
+    CommonModule,
     ScheduleModule.forRoot(),
     DatabaseModule,
     BlizzardModule,
     SeasonModule,
     LeaderboardModule,
+    ProfileModule,
     HealthModule,
   ],
 })
