@@ -6,8 +6,8 @@ import { PvpApi } from '../blizzard/pvp.api.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
-import { toLeaderboardDocuments } from './leaderboard.mapper.js';
-import { LeaderboardRepository } from './leaderboard.repository.js';
+import { CharacterRepository } from './character.repository.js';
+import { toCharacterBracketUpdates } from './leaderboard.mapper.js';
 
 export interface SweepJobResult {
   region: Region;
@@ -15,7 +15,8 @@ export interface SweepJobResult {
   seasonId: number | null;
   entries: number;
   written: number;
-  pruned: number;
+  droppedBrackets: number;
+  removedCharacters: number;
   error?: string;
 }
 
@@ -41,7 +42,7 @@ export class LeaderboardService {
     config: ConfigService<Env, true>,
     private readonly pvpApi: PvpApi,
     private readonly seasons: SeasonService,
-    private readonly repository: LeaderboardRepository,
+    private readonly repository: CharacterRepository,
   ) {
     this.regions = config
       .get('BLIZZARD_REGIONS', { infer: true })
@@ -109,22 +110,44 @@ export class LeaderboardService {
 
     try {
       const leaderboard = await this.pvpApi.getLeaderboard(region, seasonId, bracket);
-      const documents = toLeaderboardDocuments(leaderboard, {
+      const updates = toCharacterBracketUpdates(leaderboard, {
         region,
         bracket,
         seasonId,
         fetchedAt,
       });
 
-      const written = await this.repository.upsertMany(documents);
-      const pruned = await this.repository.pruneStale(seasonId, region, bracket, fetchedAt);
+      const written = await this.repository.upsertBracketEntries(updates);
+      const { droppedBrackets, removedCharacters } = await this.repository.pruneBracket(
+        seasonId,
+        region,
+        bracket,
+        fetchedAt,
+      );
 
-      return { region, bracket, seasonId, entries: documents.length, written, pruned };
+      return {
+        region,
+        bracket,
+        seasonId,
+        entries: updates.length,
+        written,
+        droppedBrackets,
+        removedCharacters,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed ingesting ${region}/${bracket}: ${message}`);
 
-      return { region, bracket, seasonId, entries: 0, written: 0, pruned: 0, error: message };
+      return {
+        region,
+        bracket,
+        seasonId,
+        entries: 0,
+        written: 0,
+        droppedBrackets: 0,
+        removedCharacters: 0,
+        error: message,
+      };
     }
   }
 }

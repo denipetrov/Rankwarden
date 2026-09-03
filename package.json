@@ -24,7 +24,8 @@
     "db:reset": "docker compose down -v",
     "db:logs": "docker compose logs -f mongo",
     "db:shell": "docker compose exec mongo mongosh rankwarden",
-    "db:check": "node --env-file-if-exists=.env scripts/db-check.mjs"
+    "db:check": "node --env-file-if-exists=.env scripts/db-check.mjs",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate-to-characters.mjs"
   },
   "dependencies": {
     "@denipetrov/blizz-auth": "^0.1.1",

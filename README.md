@@ -10,8 +10,8 @@ Game Data API and (as of the next iteration) persists them to MongoDB.
 2. **Season resolution** — `GET /data/wow/pvp-season/index` per region; the active
    season id is cached in memory (`SeasonService`).
 3. **Sweep** — for every `region × bracket` pair the leaderboard is fetched, validated
-   with zod, flattened, and upserted. Entries that fell off the ladder since the
-   previous sweep are pruned.
+   with zod, and merged into the character documents. Brackets a character no longer
+   ranks in are unset; characters left in no bracket at all are deleted.
 4. **Repeat** — the sweep re-runs every `INGEST_INTERVAL_MS`. Overlapping sweeps are
    skipped rather than queued.
 
@@ -32,10 +32,11 @@ src/
     schemas/                  zod schemas for season index + leaderboard payloads
     pvp.api.ts                typed PvP endpoints
   season/                     in-memory active season per region
-  leaderboard/                sweep orchestration, mapper, Mongo repository, scheduler
+  leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
   health/                     GET /health — season snapshot + sweep state
 scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
+scripts/migrate-to-characters.mjs  folds legacy flat entries into the grouped shape
 docker-compose.yml            local mongo:8 + mongo-express
 ```
 
@@ -59,6 +60,49 @@ npm run start:dev
 
 `BLIZZARD_REGION` is the OAuth host region used to mint the token (`us|eu|kr|tw|cn`);
 `BLIZZARD_REGIONS` is the separate list of ladders to ingest.
+
+## Data model
+
+One document per character per `season + region`, in the `characters` collection.
+Every bracket they rank in is nested under `brackets`, so identity is stored once and
+a character's full record is a single read.
+
+```js
+{
+  seasonId: 42,
+  region: 'eu',
+  characterId: 225902312,
+  characterName: 'Zëph',
+  realmId: 1301,
+  realmSlug: 'outland',
+  faction: 'ALLIANCE',
+  brackets: {
+    '2v2':             { rank: 897,  rating: 1821, played: 51, won: 30, lost: 21, fetchedAt: … },
+    '3v3':             { rank: 1282, rating: 1668, played: 47, won: 23, lost: 24, fetchedAt: … },
+    'rbg':             { rank: 539,  rating: 384,  played: 2,  won: 2,  lost: 0,  fetchedAt: … },
+    'shuffle-overall': { rank: 3774, rating: 1953, played: 99, won: 56, lost: 43, fetchedAt: … },
+    'blitz-overall':   { rank: 695,  rating: 1969, played: 31, won: 14, lost: 17, fetchedAt: … },
+  },
+  updatedAt: …
+}
+```
+
+Indexes: a unique `seasonId + region + characterId` identity index, a
+`characterName + realmSlug` lookup index, and one `brackets.<bracket>.rank` index per
+bracket for ladder views.
+
+Each bracket carries its own `fetchedAt` because brackets are swept independently — it
+is what pruning compares against, and it tells you how stale any single ladder is.
+
+### Migrating from the flat shape
+
+Earlier builds wrote one document per `character × bracket` to `leaderboard_entries`.
+`npm run db:migrate` folds those into `characters`; it is additive, re-runnable, and
+never touches the source collection. Drop the old one once you have checked the result:
+
+```bash
+npm run db:shell   # then: db.leaderboard_entries.drop()
+```
 
 ## Local MongoDB
 

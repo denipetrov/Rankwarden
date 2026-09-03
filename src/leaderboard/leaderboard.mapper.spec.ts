@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PvpLeaderboard } from '../blizzard/schemas/pvp-leaderboard.schema.js';
-import { toLeaderboardDocuments } from './leaderboard.mapper.js';
+import { toCharacterBracketUpdates } from './leaderboard.mapper.js';
 
 const leaderboard: PvpLeaderboard = {
   season: { id: 42 },
@@ -23,35 +23,37 @@ const leaderboard: PvpLeaderboard = {
   ],
 };
 
-describe('toLeaderboardDocuments', () => {
+describe('toCharacterBracketUpdates', () => {
   const fetchedAt = new Date('2026-09-02T00:00:00.000Z');
-  const documents = toLeaderboardDocuments(leaderboard, {
+  const updates = toCharacterBracketUpdates(leaderboard, {
     region: 'eu',
     bracket: '3v3',
     seasonId: 42,
     fetchedAt,
   });
 
-  it('flattens character and realm into the document', () => {
-    expect(documents[0]).toEqual({
+  it('separates character identity from bracket standing', () => {
+    expect(updates[0]).toEqual({
       seasonId: 42,
       region: 'eu',
-      bracket: '3v3',
-      rank: 1,
-      rating: 3000,
       characterId: 1,
       characterName: 'Warden',
       realmId: 60,
       realmSlug: 'tarren-mill',
       faction: 'HORDE',
-      played: 100,
-      won: 70,
-      lost: 30,
-      fetchedAt,
+      bracket: '3v3',
+      stats: { rank: 1, rating: 3000, played: 100, won: 70, lost: 30, fetchedAt },
     });
   });
 
   it('defaults missing faction and match statistics', () => {
-    expect(documents[1]).toMatchObject({ faction: null, played: 0, won: 0, lost: 0 });
+    expect(updates[1]).toMatchObject({
+      faction: null,
+      stats: { played: 0, won: 0, lost: 0 },
+    });
+  });
+
+  it('stamps every update with the sweep timestamp', () => {
+    expect(updates.every((update) => update.stats.fetchedAt === fetchedAt)).toBe(true);
   });
 });

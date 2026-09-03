@@ -5,7 +5,7 @@ import { MongoClient } from 'mongodb';
 
 const uri = process.env.MONGODB_URI ?? 'mongodb://localhost:27017';
 const dbName = process.env.MONGODB_DB ?? 'rankwarden';
-const COLLECTION = 'leaderboard_entries';
+const COLLECTION = 'characters';
 
 const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5_000 });
 
@@ -34,14 +34,31 @@ try {
   const indexes = await entries.indexes();
   console.log(`\nIndexes: ${indexes.map((index) => index.name).join(', ')}`);
 
+  const spread = await entries
+    .aggregate([
+      { $project: { count: { $size: { $objectToArray: '$brackets' } } } },
+      { $group: { _id: '$count', characters: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ])
+    .toArray();
+
+  if (spread.length > 0) {
+    console.log(
+      `
+Characters by bracket count: ${spread.map((row) => `${row._id}× ${row.characters}`).join('  ')}`,
+    );
+  }
+
   const breakdown = await entries
     .aggregate([
+      { $project: { region: 1, brackets: { $objectToArray: '$brackets' } } },
+      { $unwind: '$brackets' },
       {
         $group: {
-          _id: { region: '$region', bracket: '$bracket' },
+          _id: { region: '$region', bracket: '$brackets.k' },
           entries: { $sum: 1 },
-          topRating: { $max: '$rating' },
-          lastFetchedAt: { $max: '$fetchedAt' },
+          topRating: { $max: '$brackets.v.rating' },
+          lastFetchedAt: { $max: '$brackets.v.fetchedAt' },
         },
       },
       { $sort: { '_id.region': 1, '_id.bracket': 1 } },
