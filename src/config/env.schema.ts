@@ -46,7 +46,10 @@ export const envSchema = z.object({
     .transform((value) => value === 'true'),
   PROFILE_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
   PROFILE_BATCH_SIZE: z.coerce.number().int().positive().default(500),
-  PROFILE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  /** Race, class, realm, title — changes rarely, so refreshed weekly. */
+  PROFILE_SUMMARY_TTL_MS: z.coerce.number().int().positive().default(604_800_000),
+  /** Spec and hero talents — moves whenever a player respecs. */
+  PROFILE_SPECS_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
 

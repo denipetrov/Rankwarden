@@ -13,6 +13,24 @@ import {
   type CharacterDocument,
   type CharacterProfile,
 } from './entities/character.entity.js';
+
+/** The half of a profile that comes from the character summary endpoint. */
+export type ProfileSummaryFields = Pick<
+  CharacterProfile,
+  | 'race'
+  | 'class'
+  | 'level'
+  | 'gender'
+  | 'guild'
+  | 'realmName'
+  | 'title'
+  | 'averageItemLevel'
+  | 'equippedItemLevel'
+  | 'lastLoginAt'
+>;
+
+/** The half that comes from the specializations endpoint. */
+export type ProfileSpecFields = Pick<CharacterProfile, 'spec' | 'heroTalentTree'>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 
 const BULK_CHUNK_SIZE = 1_000;
@@ -37,8 +55,9 @@ export class CharacterRepository implements OnModuleInit {
       // Measured index-ordered (no blocking sort) and 4.6x smaller than the five
       // per-bracket indexes it replaces — which could never have reached 85 anyway.
       { key: { seasonId: 1, region: 1, 'ratings.$**': 1 }, name: 'bracket_ratings' },
-      // Enrichment selects the least recently profiled characters first;
+      // Enrichment selects the least recently fetched characters first;
       // never-enriched ones sort ahead of everything because the field is absent.
+      { key: { specsFetchedAt: 1 }, name: 'specs_staleness' },
       { key: { profileFetchedAt: 1 }, name: 'profile_staleness' },
     ];
 
@@ -150,7 +169,8 @@ export class CharacterRepository implements OnModuleInit {
    * characters still come first, because the absent field sorts ahead of dates.
    */
   async findProfilesToEnrich(
-    staleBefore: Date,
+    summaryStaleBefore: Date,
+    specsStaleBefore: Date,
     limit: number,
     onlyNew = false,
   ): Promise<CharacterDocument[]> {
@@ -159,11 +179,15 @@ export class CharacterRepository implements OnModuleInit {
       : {
           $or: [
             { profileFetchedAt: { $exists: false } },
-            { profileFetchedAt: { $lt: staleBefore } },
+            { profileFetchedAt: { $lt: summaryStaleBefore } },
+            { specsFetchedAt: { $exists: false } },
+            { specsFetchedAt: { $lt: specsStaleBefore } },
           ],
         };
 
-    return this.collection.find(filter).sort({ profileFetchedAt: 1 }).limit(limit).toArray();
+    // Specs have the shorter TTL, so their timestamp is the one that paces the
+    // queue: anything due for a summary refresh is necessarily due for specs too.
+    return this.collection.find(filter).sort({ specsFetchedAt: 1 }).limit(limit).toArray();
   }
 
   /** How many characters have never had a profile fetched. */
@@ -171,16 +195,55 @@ export class CharacterRepository implements OnModuleInit {
     return this.collection.countDocuments({ profileFetchedAt: { $exists: false } });
   }
 
-  async saveProfile(
+  /**
+   * Writes the summary half of a profile. Field-level so it cannot clobber the
+   * spec half, which is refreshed on a different schedule.
+   */
+  async saveProfileSummary(
     seasonId: number,
     region: Region,
     characterId: number,
-    profile: CharacterProfile,
+    summary: ProfileSummaryFields,
     fetchedAt: Date,
   ): Promise<void> {
     await this.collection.updateOne(
       { seasonId, region, characterId },
-      { $set: { profile, profileStatus: 'ok', profileFetchedAt: fetchedAt } },
+      {
+        $set: {
+          'profile.race': summary.race,
+          'profile.class': summary.class,
+          'profile.level': summary.level,
+          'profile.gender': summary.gender,
+          'profile.guild': summary.guild,
+          'profile.realmName': summary.realmName,
+          'profile.title': summary.title,
+          'profile.averageItemLevel': summary.averageItemLevel,
+          'profile.equippedItemLevel': summary.equippedItemLevel,
+          'profile.lastLoginAt': summary.lastLoginAt,
+          profileStatus: 'ok',
+          profileFetchedAt: fetchedAt,
+        },
+      },
+    );
+  }
+
+  /** Writes the spec half: active specialisation and hero talent tree. */
+  async saveProfileSpecs(
+    seasonId: number,
+    region: Region,
+    characterId: number,
+    specs: ProfileSpecFields,
+    fetchedAt: Date,
+  ): Promise<void> {
+    await this.collection.updateOne(
+      { seasonId, region, characterId },
+      {
+        $set: {
+          'profile.spec': specs.spec,
+          'profile.heroTalentTree': specs.heroTalentTree,
+          specsFetchedAt: fetchedAt,
+        },
+      },
     );
   }
 
@@ -196,7 +259,10 @@ export class CharacterRepository implements OnModuleInit {
   ): Promise<void> {
     await this.collection.updateOne(
       { seasonId, region, characterId },
-      { $set: { profileStatus: 'missing', profileFetchedAt: fetchedAt }, $unset: { profile: '' } },
+      {
+        $set: { profileStatus: 'missing', profileFetchedAt: fetchedAt, specsFetchedAt: fetchedAt },
+        $unset: { profile: '' },
+      },
     );
   }
 

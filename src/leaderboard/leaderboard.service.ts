@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { isRegion, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
+import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
@@ -46,6 +47,7 @@ export class LeaderboardService {
     private readonly seasons: SeasonService,
     private readonly repository: CharacterRepository,
     private readonly sweeps: SweepEvents,
+    private readonly coordinator: IngestionCoordinator,
   ) {
     this.regions = config
       .get('BLIZZARD_REGIONS', { infer: true })
@@ -68,36 +70,44 @@ export class LeaderboardService {
     const startedAt = new Date();
 
     try {
-      const jobs = await this.buildJobs();
-      const results = await mapWithConcurrency(jobs, this.concurrency, (job) =>
-        this.ingestBracket(job.region, job.bracket, job.seasonId),
-      );
+      // Held for the whole sweep so enrichment stays out of the way: it writes
+      // the same documents and draws on the same hourly request quota.
+      const result = await this.coordinator.duringSweep(async () => {
+        const jobs = await this.buildJobs();
+        const results = await mapWithConcurrency(jobs, this.concurrency, (job) =>
+          this.ingestBracket(job.region, job.bracket, job.seasonId),
+        );
 
-      const failed = results.filter((result) => result.error).length;
+        const failed = results.filter((result) => result.error).length;
 
-      // Once per region, after every bracket has had its chance to re-rank people.
-      let removedCharacters = 0;
-      for (const region of new Set(jobs.map((job) => job.region))) {
-        const seasonId = this.seasons.getCurrentSeason(region);
-        if (seasonId !== undefined) {
-          removedCharacters += await this.repository.removeUnranked(seasonId, region);
+        // Once per region, after every bracket has had its chance to re-rank people.
+        let removedCharacters = 0;
+        for (const region of new Set(jobs.map((job) => job.region))) {
+          const seasonId = this.seasons.getCurrentSeason(region);
+          if (seasonId !== undefined) {
+            removedCharacters += await this.repository.removeUnranked(seasonId, region);
+          }
         }
-      }
 
-      const durationMs = Date.now() - startedAt.getTime();
+        const durationMs = Date.now() - startedAt.getTime();
 
-      this.logger.log(
-        `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
-          `${removedCharacters} characters unranked`,
-      );
+        this.logger.log(
+          `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
+            `${removedCharacters} characters unranked`,
+        );
 
-      this.sweeps.emitCompleted({
-        finishedAt: new Date(),
-        brackets: results.length,
-        failed,
+        return { startedAt, durationMs, jobs: results, failed, removedCharacters };
       });
 
-      return { startedAt, durationMs, jobs: results, failed, removedCharacters };
+      // Emitted only once the coordinator has released, otherwise the follow-up
+      // enrichment pass sees a sweep still in progress and defers itself.
+      this.sweeps.emitCompleted({
+        finishedAt: new Date(),
+        brackets: result.jobs.length,
+        failed: result.failed,
+      });
+
+      return result;
     } finally {
       this.running = false;
     }

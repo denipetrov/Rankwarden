@@ -34,8 +34,13 @@ export interface CharacterDocument {
   updatedAt: Date;
   profile?: CharacterProfile;
   profileStatus?: ProfileStatus;
-  /** Drives staleness selection; absent means never enriched. */
+  /**
+   * The two profile endpoints age at different rates, so each carries its own
+   * timestamp: race, class, realm and title rarely change, whereas spec and
+   * hero talents move whenever a player respecs. Absent means never fetched.
+   */
   profileFetchedAt?: Date;
+  specsFetchedAt?: Date;
 }
 
 /** Blizzard's { id, name } reference, flattened to what we store. */
@@ -58,6 +63,10 @@ export interface CharacterProfile {
   level: number;
   gender: string | null;
   guild: NamedRef | null;
+  /** Realm display name, e.g. "Demon Soul" — the sweep only knows the slug. */
+  realmName: string | null;
+  /** Equipped title as Blizzard renders it, e.g. "Galactic Gladiator {name}". */
+  title: string | null;
   averageItemLevel: number | null;
   equippedItemLevel: number | null;
   lastLoginAt: Date | null;

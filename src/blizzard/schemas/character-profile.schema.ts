@@ -14,6 +14,9 @@ export const characterProfileSchema = z.object({
   faction: z.object({ type: z.string(), name: z.string() }).optional(),
   gender: z.object({ type: z.string(), name: z.string() }).optional(),
   guild: namedRef.optional(),
+  realm: z.object({ id: z.number().int(), name: z.string(), slug: z.string() }),
+  // e.g. "Galactic Gladiator {name}". Absent when no title is equipped.
+  active_title: namedRef.extend({ display_string: z.string() }).optional(),
   average_item_level: z.number().int().optional(),
   equipped_item_level: z.number().int().optional(),
   last_login_timestamp: z.number().optional(),

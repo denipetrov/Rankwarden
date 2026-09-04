@@ -100,13 +100,16 @@ a character's full record is a single read.
     class:          { id: 2,  name: 'Paladin' },
     spec:           { id: 65, name: 'Holy' },
     heroTalentTree: { id: 49, name: 'Lightsmith' },   // null below hero-talent level
+    realmName: 'Demon Soul',                          // the sweep only knows the slug
+    title: 'Galactic Gladiator {name}',               // null when none is equipped
     level: 90, gender: 'FEMALE',
     guild: { id: 91360489, name: 'veow' },
     averageItemLevel: 278, equippedItemLevel: 278,
     lastLoginAt: …,
   },
   profileStatus: 'ok',        // 'missing' once Blizzard 404s the character
-  profileFetchedAt: …,        // drives TTL selection; absent means never enriched
+  profileFetchedAt: …,        // summary half — absent means never fetched
+  specsFetchedAt: …,          // spec half, refreshed on its own shorter TTL
 }
 ```
 
@@ -170,15 +173,38 @@ tree comes from that endpoint's `/specializations` sibling, whose top-level
 requests per character**, against a quota of 100/second and 36,000/hour — so enrichment
 is its own budgeted pass rather than part of the sweep.
 
-Selection is `profileFetchedAt` ascending, and the field is absent until a character is
-first enriched, so never-seen characters always sort ahead of the daily refresh queue.
-A finished sweep also fires a new-characters-only pass immediately, so ladder newcomers
-do not wait out the interval.
+**The two endpoints age at different rates**, so each carries its own timestamp and its
+own TTL, and a pass fetches only the halves that are actually due:
 
-At the defaults (500 characters per pass, every 5 minutes) that is 12,000 requests/hour
-— a third of the quota, and roughly 72,000 characters a day against a ladder of ~35,000.
+| Half            | Fields                                              | TTL                               | Why             |
+| --------------- | --------------------------------------------------- | --------------------------------- | --------------- |
+| Summary         | race, class, realm, title, guild, level, item level | `PROFILE_SUMMARY_TTL_MS` (7 days) | Changes rarely  |
+| Specializations | spec, hero talent tree                              | `PROFILE_SPECS_TTL_MS` (1 day)    | Follows respecs |
+
+A character already carrying a fresh summary costs **one** request on refresh instead of
+two. Writes are field-level (`profile.race`, `profile.spec`, …) precisely so the two
+halves can be written independently without clobbering each other.
+
+Selection is `specsFetchedAt` ascending. Specs have the shorter TTL, so anything due for
+a summary refresh is necessarily due for specs too, which makes that one timestamp
+sufficient to pace the queue; and the field is absent until first enriched, so
+never-seen characters always sort ahead of the refresh queue. A finished sweep also
+fires a new-characters-only pass immediately, so ladder newcomers do not wait out the
+interval.
+
 A 404 is recorded as `profileStatus: 'missing'` rather than retried, because renames and
 transfers are routine.
+
+### Enrichment yields to the sweep
+
+Both processes write the same documents and draw on the same hourly quota, so
+[`IngestionCoordinator`](src/common/ingestion-coordinator.service.ts) keeps them apart:
+a sweep claims exclusivity for its duration, enrichment refuses to start while one is
+active, and an in-flight pass stops between characters if a sweep begins. The sweep
+never waits — it is what keeps rankings current.
+
+The sweep-completed event is emitted _after_ the coordinator releases; emitting it from
+inside meant the follow-up pass saw a sweep still running and deferred itself.
 
 ## Local MongoDB
 
