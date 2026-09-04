@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
-import { SpecRatingRepository } from '../leaderboard/spec-rating.repository.js';
+import { RatingRepository } from '../leaderboard/rating.repository.js';
 import { CharacterSyncService } from './character-sync.service.js';
 import { characterSyncSchema } from './dto/character-sync.dto.js';
 
@@ -39,7 +39,7 @@ describe('CharacterSyncService', () => {
         CharacterSyncService,
         { provide: IngestionCoordinator, useValue: coordinator },
         { provide: CharacterRepository, useValue: { updateCharacter } },
-        { provide: SpecRatingRepository, useValue: { replaceForCharacter } },
+        { provide: RatingRepository, useValue: { replaceForCharacter } },
       ],
     }).compile();
 
@@ -85,13 +85,17 @@ describe('CharacterSyncService', () => {
     );
   });
 
-  it('routes each bracket to its own family and leaves the other empty', async () => {
+  it('routes each bracket to its own family collection', async () => {
     await service.sync(input({ '3v3': stats(2000), 'shuffle-mage-fire': stats(2688) }));
 
+    expect(replaceForCharacter).toHaveBeenCalledWith('3v3', 42, 'eu', 1, [
+      expect.objectContaining({ bracket: '3v3' }),
+    ]);
     expect(replaceForCharacter).toHaveBeenCalledWith('shuffle', 42, 'eu', 1, [
       expect.objectContaining({ bracket: 'shuffle-mage-fire' }),
     ]);
-    // 3v3 is not spec-split, so it contributes no rating rows.
+    // Families the payload says nothing about are emptied for this character.
+    expect(replaceForCharacter).toHaveBeenCalledWith('2v2', 42, 'eu', 1, []);
     expect(replaceForCharacter).toHaveBeenCalledWith('blitz', 42, 'eu', 1, []);
   });
 

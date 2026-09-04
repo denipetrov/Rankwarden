@@ -24,7 +24,15 @@ const profile = z.object({
   class: namedRef.optional(),
   spec: namedRef.nullable().optional(),
   heroTalentTree: namedRef.nullable().optional(),
-  talentLoadouts: z.array(z.object({ spec: namedRef, talentLoadoutCode: z.string() })).optional(),
+  talentLoadouts: z
+    .array(
+      z.object({
+        spec: namedRef,
+        talentLoadoutCode: z.string().nullable().default(null),
+        heroTalentTree: namedRef.nullable().default(null),
+      }),
+    )
+    .optional(),
   level: z.number().int().optional(),
   gender: z.string().nullable().optional(),
   guild: namedRef.nullable().optional(),

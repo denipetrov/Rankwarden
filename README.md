@@ -53,6 +53,7 @@ src/
   leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
   health/                     GET /health — season snapshot + sweep state
+  representation/             daily spec-representation snapshots
   sync/                       POST /characters/sync — push a record in from the API
 scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
 scripts/migrate-to-characters.mjs  folds legacy flat entries into the grouped shape
@@ -158,9 +159,12 @@ not once per character. That is a different shape from `characters` (one row per
 not one document per player), so it gets its own collections:
 
 ```
-shuffle_ratings   { seasonId, region, bracket, characterId, rating, fetchedAt }
-blitz_ratings     same
+2v2_ratings   3v3_ratings   rbg_ratings   shuffle_ratings   blitz_ratings
+{ seasonId, region, bracket, characterId, rating, fetchedAt }
 ```
+
+One collection per ladder family. 2v2, 3v3 and rbg give a character a single row
+each; shuffle and blitz give them one row per spec they have played.
 
 The board is a plain sorted range scan, with display data joined afterwards by
 `characterId`:
@@ -169,7 +173,7 @@ The board is a plain sorted range scan, with display data joined afterwards by
 db.shuffle_ratings.find({ seasonId: 42, region: 'us' }).sort({ rating: -1 }).limit(50);
 ```
 
-Measured on 131,169 shuffle rows: **50 keys / 50 docs examined, index-ordered**, and 12ms
+Measured on 131,545 shuffle rows: **50 keys / 50 docs examined, index-ordered**, and 12ms
 including a `$lookup` into `characters` for names, realms and class. Paginate with a
 rating cursor (`rating: { $lt: lastSeen }`) — that stays at 50 keys at any depth, whereas
 `skip: 5000` examined 5,050.
@@ -242,12 +246,16 @@ interval.
 A 404 is recorded as `profileStatus: 'missing'` rather than retried, because renames and
 transfers are routine.
 
-**Talent loadouts** are stored per spec: every specialisation a character has built
-carries its own `is_active` loadout, so each importable code stays paired with the spec
-it belongs to and a UI filtering by spec can show the matching build. The one currently
-being played is the entry whose `spec.id` equals `profile.spec.id`. Specs with no active
-loadout — or an active loadout Blizzard reports without a code — are omitted, since there
-is nothing to link to.
+**Talent loadouts are stored per spec**: every specialisation a character has built
+carries its own `is_active` loadout, so both the importable code and the hero talent tree
+stay paired with the spec they belong to. The one currently being played is the entry
+whose `spec.id` equals `profile.spec.id`.
+
+That pairing is not just for deep-linking. `profile.heroTalentTree` is only the _active_
+spec's tree, so anything reasoning about a character on another spec's ladder — the
+representation snapshots especially — must read the tree from the matching loadout
+instead. Specs with no active loadout are omitted; one whose loadout has no importable
+code is kept, because its hero tree is still worth knowing.
 
 ### Enrichment yields to the sweep
 
@@ -259,6 +267,64 @@ never waits — it is what keeps rankings current.
 
 The sweep-completed event is emitted _after_ the coordinator releases; emitting it from
 inside meant the follow-up pass saw a sweep still running and deferred itself.
+
+## Spec representation ("flavour of the month")
+
+One snapshot per UTC day per region, family and rating cutoff
+(`REPRESENTATION_MIN_RATINGS`, default `1500,1800,2100,2300,2700`), in
+`spec_representation`, for as long as a season runs. Each row is a complete picture of who was playing what:
+
+```js
+{ date: 2026-09-04T00:00:00Z, seasonId: 42, region: 'us', family: 'shuffle', minRating: 1800,
+  total: 8248, classified: 8248,
+  specs: [
+    { class: 'priest', spec: 'holy', count: 825, share: 0.1000,
+      heroTalentsClassified: 7,
+      heroTalents: [ { id: 42, name: 'Oracle', count: 7, share: 1.0 } ] },
+    { class: 'warrior', spec: 'arms', count: 535, share: 0.0649,
+      heroTalentsClassified: 3,
+      heroTalents: [ { id: 33, name: 'Slayer',         count: 2, share: 0.6667 },
+                     { id: 34, name: 'Mountain Thane', count: 1, share: 0.3333 } ] }, … ] }
+```
+
+Three levels of detail: **class → spec → hero talent tree**. `share` on a spec is a
+fraction of the snapshot's `classified`; `share` on a hero talent is a fraction of that
+spec's `heroTalentsClassified`, so each spec's trees sum to 1 independently.
+
+`class` and `spec` are Blizzard's own slugs, so `Death Knight` and `deathknight-blood`
+resolve to the same key whichever family produced them. `share` is a fraction of
+`classified` and sums to 1. The visualisation's query — one series over time — is
+covered by a dedicated index and returns in ~1ms.
+
+### Coverage is not uniform, and the snapshot says so
+
+Where the spec comes from differs by family, and this materially affects how much the
+numbers can be trusted:
+
+| Family         | Spec comes from                        | Coverage                              |
+| -------------- | -------------------------------------- | ------------------------------------- |
+| shuffle, blitz | the bracket name (`shuffle-mage-fire`) | **100%**, immediately                 |
+| 2v2, 3v3, rbg  | the enriched `profile.spec`            | only as far as enrichment has reached |
+
+That is why every row carries `classified` alongside `total`. A snapshot where
+`classified` is far below `total` is a sample, not a census, and the front end should say
+so rather than draw it as fact. Measured on a fresh database: shuffle and blitz were at
+100%, while us 3v3 @1800 classified 37 of 925 characters (4%) because enrichment had
+barely started.
+
+**2v2/3v3/rbg spec representation and hero talent representation everywhere are only
+meaningful once profile enrichment has covered the ladder.** At the default batch size
+that is roughly two days for a full pass; raise `PROFILE_BATCH_SIZE` to shorten it.
+
+A full snapshot takes about 4.7 seconds across 4 regions x 5 families x 5 cutoffs.
+
+### Scheduling
+
+A tick runs every `REPRESENTATION_CHECK_INTERVAL_MS` (1 hour) and writes a snapshot only
+if the current UTC day has none, so a restart or an outage cannot silently lose a day —
+and re-running is an upsert, never a duplicate. Ticks also fire on sweep completion,
+which is both the freshest moment to count and what covers startup: the bootstrap tick
+always lands while the startup sweep holds the coordinator, so it defers.
 
 ## Sync endpoint
 

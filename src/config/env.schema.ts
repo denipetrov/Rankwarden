@@ -53,6 +53,23 @@ export const envSchema = z.object({
   PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
 
+  // Daily spec-representation snapshots ("flavour of the month").
+  REPRESENTATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  REPRESENTATION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Rating cutoffs to track. */
+  REPRESENTATION_MIN_RATINGS: z
+    .string()
+    .default('1500,1800,2100,2300,2700')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((part) => Number(part.trim()))
+        .filter((value) => Number.isInteger(value) && value >= 0),
+    ),
+
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),

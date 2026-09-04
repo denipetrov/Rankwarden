@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { EXCLUDED_BRACKETS, isIngestableBracket, specSplitFamilyOf } from './blizzard.constants.js';
+import {
+  EXCLUDED_BRACKETS,
+  isIngestableBracket,
+  ratingFamilyOf,
+  specSplitFamilyOf,
+} from './blizzard.constants.js';
 
 describe('isIngestableBracket', () => {
   it('accepts the rated ladders', () => {
@@ -41,5 +46,23 @@ describe('specSplitFamilyOf', () => {
     // bare "shuffle" must not be mistaken for a per-spec bracket either.
     expect(specSplitFamilyOf('shuffle')).toBeNull();
     expect(specSplitFamilyOf('blitzkrieg')).toBeNull();
+  });
+});
+
+describe('ratingFamilyOf', () => {
+  it('gives the core brackets a family of their own', () => {
+    expect(ratingFamilyOf('2v2')).toBe('2v2');
+    expect(ratingFamilyOf('3v3')).toBe('3v3');
+    expect(ratingFamilyOf('rbg')).toBe('rbg');
+  });
+
+  it('gathers per-spec ladders under their family', () => {
+    expect(ratingFamilyOf('shuffle-mage-fire')).toBe('shuffle');
+    expect(ratingFamilyOf('blitz-warrior-arms')).toBe('blitz');
+  });
+
+  it('returns null for anything it does not track', () => {
+    expect(ratingFamilyOf('shuffle-overall')).toBeNull();
+    expect(ratingFamilyOf('some-new-bracket')).toBeNull();
   });
 });

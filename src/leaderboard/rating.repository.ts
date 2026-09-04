@@ -2,37 +2,37 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import type { AnyBulkWriteOperation, Collection } from 'mongodb';
 
 import {
-  SPEC_SPLIT_FAMILIES,
+  RATING_FAMILIES,
   type Bracket,
   type Region,
-  type SpecSplitFamily,
+  type RatingFamily,
 } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
-import { SPEC_RATING_COLLECTIONS, type SpecRatingDocument } from './entities/spec-rating.entity.js';
+import { RATING_COLLECTIONS, type RatingDocument } from './entities/rating.entity.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
 /**
- * Flat per-spec rating rows, one collection per family.
+ * Flat rating rows, one collection per ladder family.
  *
- * Solo Shuffle and Blitz are rated per specialisation, so a board covering all
- * classes and specs has to list a character once per spec they play. That is a
- * different shape from `characters` — one row per rating rather than one document
- * per player — so it gets its own collections, ordered by a plain `rating` index.
+ * One row per rating rather than one document per player: 2v2, 3v3 and rbg give
+ * a character a single row each, while shuffle and blitz give them one per spec
+ * they have played. Every board is then a sorted range scan over one collection,
+ * with display data joined from `characters` afterwards.
  */
 @Injectable()
-export class SpecRatingRepository implements OnModuleInit {
-  private readonly logger = new Logger(SpecRatingRepository.name);
+export class RatingRepository implements OnModuleInit {
+  private readonly logger = new Logger(RatingRepository.name);
 
   constructor(private readonly mongo: MongoService) {}
 
-  private collection(family: SpecSplitFamily): Collection<SpecRatingDocument> {
-    return this.mongo.collection<SpecRatingDocument>(SPEC_RATING_COLLECTIONS[family]);
+  private collection(family: RatingFamily): Collection<RatingDocument> {
+    return this.mongo.collection<RatingDocument>(RATING_COLLECTIONS[family]);
   }
 
   async onModuleInit(): Promise<void> {
-    for (const family of SPEC_SPLIT_FAMILIES) {
+    for (const family of RATING_FAMILIES) {
       await this.collection(family).createIndexes([
         // The board itself: a sorted range scan across every spec at once.
         { key: { seasonId: 1, region: 1, rating: -1 }, name: 'board_order' },
@@ -46,21 +46,19 @@ export class SpecRatingRepository implements OnModuleInit {
       ]);
     }
 
-    this.logger.log(
-      `Indexes ensured on ${SPEC_SPLIT_FAMILIES.map((f) => `"${SPEC_RATING_COLLECTIONS[f]}"`).join(' and ')}`,
-    );
+    this.logger.log(`Indexes ensured on ${RATING_FAMILIES.length} ratings collections`);
   }
 
   /** Mirrors one bracket's leaderboard into its family's collection. */
   async upsertBracket(
-    family: SpecSplitFamily,
+    family: RatingFamily,
     updates: readonly CharacterBracketUpdate[],
   ): Promise<number> {
     let written = 0;
 
     for (let offset = 0; offset < updates.length; offset += BULK_CHUNK_SIZE) {
       const chunk = updates.slice(offset, offset + BULK_CHUNK_SIZE);
-      const operations = chunk.map<AnyBulkWriteOperation<SpecRatingDocument>>((update) => ({
+      const operations = chunk.map<AnyBulkWriteOperation<RatingDocument>>((update) => ({
         updateOne: {
           filter: {
             seasonId: update.seasonId,
@@ -97,7 +95,7 @@ export class SpecRatingRepository implements OnModuleInit {
    * stopped playing a spec drops off that board.
    */
   async replaceForCharacter(
-    family: SpecSplitFamily,
+    family: RatingFamily,
     seasonId: number,
     region: Region,
     characterId: number,
@@ -117,7 +115,7 @@ export class SpecRatingRepository implements OnModuleInit {
 
   /** Drops rows this sweep did not refresh — the character left that ladder. */
   async pruneBracket(
-    family: SpecSplitFamily,
+    family: RatingFamily,
     seasonId: number,
     region: Region,
     bracket: Bracket,

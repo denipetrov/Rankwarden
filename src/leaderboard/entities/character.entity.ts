@@ -78,10 +78,17 @@ export interface CharacterProfile {
   lastLoginAt: Date | null;
 }
 
-/** An importable talent build, paired with the spec it belongs to. */
+/** One specialisation's active build, kept paired with the spec it belongs to. */
 export interface SpecLoadout {
   spec: NamedRef;
-  talentLoadoutCode: string;
+  /** Null when Blizzard reports the loadout without an importable code. */
+  talentLoadoutCode: string | null;
+  /**
+   * The hero tree of *this* spec's build. Distinct from `profile.heroTalentTree`,
+   * which is only the active spec's — attributing that one to another spec's
+   * ladder yields combinations the game does not permit.
+   */
+  heroTalentTree: NamedRef | null;
 }
 
 /** Why a character has no profile, so the worker can skip known-gone ones. */

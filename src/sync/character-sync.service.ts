@@ -8,13 +8,14 @@ import {
 
 import {
   isIngestableBracket,
-  specSplitFamilyOf,
-  SPEC_SPLIT_FAMILIES,
+  ratingFamilyOf,
+  RATING_FAMILIES,
   type Bracket,
+  type RatingFamily,
 } from '../blizzard/blizzard.constants.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
-import { SpecRatingRepository } from '../leaderboard/spec-rating.repository.js';
+import { RatingRepository } from '../leaderboard/rating.repository.js';
 import type { CharacterBracketUpdate } from '../leaderboard/leaderboard.mapper.js';
 import type { BracketStats } from '../leaderboard/entities/character.entity.js';
 import type { CharacterSyncInput } from './dto/character-sync.dto.js';
@@ -23,8 +24,8 @@ export interface CharacterSyncResult {
   brackets: number;
   /** Brackets rejected because the sweep does not store them either. */
   ignoredBrackets: Bracket[];
-  shuffleRows: { written: number; removed: number };
-  blitzRows: { written: number; removed: number };
+  /** Rows written and removed in each family's ratings collection. */
+  ratingRows: Record<RatingFamily, { written: number; removed: number }>;
 }
 
 /**
@@ -41,7 +42,7 @@ export class CharacterSyncService {
 
   constructor(
     private readonly characters: CharacterRepository,
-    private readonly specRatings: SpecRatingRepository,
+    private readonly ratings: RatingRepository,
     private readonly coordinator: IngestionCoordinator,
   ) {}
 
@@ -102,30 +103,28 @@ export class CharacterSyncService {
       );
     }
 
-    const rows = await this.syncRatingRows(input, brackets);
+    const ratingRows = await this.syncRatingRows(input, brackets);
+    const totals = Object.values(ratingRows).reduce(
+      (acc, row) => ({ written: acc.written + row.written, removed: acc.removed + row.removed }),
+      { written: 0, removed: 0 },
+    );
 
     this.logger.log(
       `Synced ${input.region}/${input.characterName} (${input.characterId}): ` +
         `${Object.keys(brackets).length} brackets, ` +
-        `${rows.shuffle.written + rows.blitz.written} rating rows written, ` +
-        `${rows.shuffle.removed + rows.blitz.removed} removed`,
+        `${totals.written} rating rows written, ${totals.removed} removed`,
     );
 
-    return {
-      brackets: Object.keys(brackets).length,
-      ignoredBrackets,
-      shuffleRows: rows.shuffle,
-      blitzRows: rows.blitz,
-    };
+    return { brackets: Object.keys(brackets).length, ignoredBrackets, ratingRows };
   }
 
   private async syncRatingRows(input: CharacterSyncInput, brackets: Record<string, BracketStats>) {
-    const byFamily = new Map<string, CharacterBracketUpdate[]>(
-      SPEC_SPLIT_FAMILIES.map((family) => [family, []]),
+    const byFamily = new Map<RatingFamily, CharacterBracketUpdate[]>(
+      RATING_FAMILIES.map((family) => [family, []]),
     );
 
     for (const [bracket, stats] of Object.entries(brackets)) {
-      const family = specSplitFamilyOf(bracket);
+      const family = ratingFamilyOf(bracket);
       if (!family) continue;
 
       byFamily.get(family)?.push({
@@ -141,18 +140,22 @@ export class CharacterSyncService {
       });
     }
 
-    const [shuffle, blitz] = await Promise.all(
-      SPEC_SPLIT_FAMILIES.map((family) =>
-        this.specRatings.replaceForCharacter(
+    const results = await Promise.all(
+      RATING_FAMILIES.map(async (family) => [
+        family,
+        await this.ratings.replaceForCharacter(
           family,
           input.seasonId,
           input.region,
           input.characterId,
           byFamily.get(family) ?? [],
         ),
-      ),
+      ]),
     );
 
-    return { shuffle: shuffle!, blitz: blitz! };
+    return Object.fromEntries(results) as Record<
+      RatingFamily,
+      { written: number; removed: number }
+    >;
   }
 }

@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   isIngestableBracket,
   isRegion,
-  specSplitFamilyOf,
+  ratingFamilyOf,
   type Bracket,
   type Region,
 } from '../blizzard/blizzard.constants.js';
@@ -16,7 +16,7 @@ import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
 import { CharacterRepository } from './character.repository.js';
 import { toCharacterBracketUpdates } from './leaderboard.mapper.js';
-import { SpecRatingRepository } from './spec-rating.repository.js';
+import { RatingRepository } from './rating.repository.js';
 
 export interface SweepJobResult {
   region: Region;
@@ -53,7 +53,7 @@ export class LeaderboardService {
     private readonly pvpApi: PvpApi,
     private readonly seasons: SeasonService,
     private readonly repository: CharacterRepository,
-    private readonly specRatings: SpecRatingRepository,
+    private readonly ratings: RatingRepository,
     private readonly sweeps: SweepEvents,
     private readonly coordinator: IngestionCoordinator,
   ) {
@@ -174,12 +174,12 @@ export class LeaderboardService {
         fetchedAt,
       );
 
-      // Spec-split brackets are mirrored into their family's flat collection,
-      // which is what an all-classes/all-specs board is ordered from.
-      const family = specSplitFamilyOf(bracket);
+      // Every bracket is mirrored into its family's flat collection, which is
+      // what the ordered boards are read from.
+      const family = ratingFamilyOf(bracket);
       if (family) {
-        await this.specRatings.upsertBracket(family, updates);
-        await this.specRatings.pruneBracket(family, seasonId, region, bracket, fetchedAt);
+        await this.ratings.upsertBracket(family, updates);
+        await this.ratings.pruneBracket(family, seasonId, region, bracket, fetchedAt);
       }
 
       return { region, bracket, seasonId, entries: updates.length, written, droppedBrackets };

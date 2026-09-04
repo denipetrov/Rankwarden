@@ -35,6 +35,25 @@ export function specSplitFamilyOf(bracket: Bracket): SpecSplitFamily | null {
   return SPEC_SPLIT_FAMILIES.find((family) => bracket.startsWith(`${family}-`)) ?? null;
 }
 
+/**
+ * Every ladder family that gets its own flat ratings collection. The core
+ * brackets are their own family (one rating per character); shuffle and blitz
+ * gather all their per-spec brackets under one.
+ */
+export const RATING_FAMILIES = [...CORE_BRACKETS, ...SPEC_SPLIT_FAMILIES] as const;
+export type RatingFamily = (typeof RATING_FAMILIES)[number];
+
+export function ratingFamilyOf(bracket: Bracket): RatingFamily | null {
+  // Excluded upstream already, but an aggregate row reaching a board would look
+  // like a spec outranking every real one, so refuse it here too.
+  if (!isIngestableBracket(bracket)) return null;
+
+  const family = specSplitFamilyOf(bracket);
+  if (family) return family;
+
+  return (CORE_BRACKETS as readonly string[]).includes(bracket) ? (bracket as RatingFamily) : null;
+}
+
 export function isIngestableBracket(bracket: Bracket): boolean {
   return !(EXCLUDED_BRACKETS as readonly string[]).includes(bracket);
 }

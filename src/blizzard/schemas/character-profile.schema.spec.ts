@@ -16,7 +16,11 @@ const payload = characterSpecializationsSchema.parse({
     {
       specialization: { id: 268, name: 'Brewmaster' },
       loadouts: [
-        { is_active: true, talent_loadout_code: 'BREWMASTER-ACTIVE' },
+        {
+          is_active: true,
+          talent_loadout_code: 'BREWMASTER-ACTIVE',
+          selected_hero_talent_tree: { id: 64, name: 'Master of Harmony' },
+        },
         { is_active: false, talent_loadout_code: 'BREWMASTER-OTHER' },
       ],
     },
@@ -24,7 +28,11 @@ const payload = characterSpecializationsSchema.parse({
       specialization: { id: 269, name: 'Windwalker' },
       loadouts: [
         { is_active: false, talent_loadout_code: 'WINDWALKER-OTHER' },
-        { is_active: true, talent_loadout_code: 'WINDWALKER-ACTIVE' },
+        {
+          is_active: true,
+          talent_loadout_code: 'WINDWALKER-ACTIVE',
+          selected_hero_talent_tree: { id: 65, name: 'Shado-Pan' },
+        },
         { is_active: false, talent_loadout_code: 'WINDWALKER-THIRD' },
       ],
     },
@@ -34,9 +42,28 @@ const payload = characterSpecializationsSchema.parse({
 describe('activeLoadoutsBySpec', () => {
   it('returns the active loadout for every spec, paired with its spec', () => {
     expect(activeLoadoutsBySpec(payload)).toEqual([
-      { spec: { id: 268, name: 'Brewmaster' }, talentLoadoutCode: 'BREWMASTER-ACTIVE' },
-      { spec: { id: 269, name: 'Windwalker' }, talentLoadoutCode: 'WINDWALKER-ACTIVE' },
+      {
+        spec: { id: 268, name: 'Brewmaster' },
+        talentLoadoutCode: 'BREWMASTER-ACTIVE',
+        heroTalentTree: { id: 64, name: 'Master of Harmony' },
+      },
+      {
+        spec: { id: 269, name: 'Windwalker' },
+        talentLoadoutCode: 'WINDWALKER-ACTIVE',
+        heroTalentTree: { id: 65, name: 'Shado-Pan' },
+      },
     ]);
+  });
+
+  it("keeps each spec's hero tree with that spec, not with the active one", () => {
+    // The character is playing Windwalker/Shado-Pan. Their Brewmaster build's
+    // hero tree must not follow them onto a Brewmaster ladder as Shado-Pan.
+    const byName = new Map(
+      activeLoadoutsBySpec(payload).map((entry) => [entry.spec.name, entry.heroTalentTree?.name]),
+    );
+
+    expect(byName.get('Brewmaster')).toBe('Master of Harmony');
+    expect(byName.get('Windwalker')).toBe('Shado-Pan');
   });
 
   it('keeps each code with its own spec rather than mixing builds', () => {
@@ -70,15 +97,24 @@ describe('activeLoadoutsBySpec', () => {
     expect(activeLoadoutsBySpec(parsed)).toEqual([]);
   });
 
-  it('omits an active loadout that carries no talent code', () => {
+  it('keeps an active loadout with no talent code, for its hero tree', () => {
     const parsed = characterSpecializationsSchema.parse({
       active_specialization: { id: 269, name: 'Windwalker' },
       specializations: [
-        { specialization: { id: 269, name: 'Windwalker' }, loadouts: [{ is_active: true }] },
+        {
+          specialization: { id: 269, name: 'Windwalker' },
+          loadouts: [{ is_active: true, selected_hero_talent_tree: { id: 65, name: 'Shado-Pan' } }],
+        },
       ],
     });
 
-    expect(activeLoadoutsBySpec(parsed)).toEqual([]);
+    expect(activeLoadoutsBySpec(parsed)).toEqual([
+      {
+        spec: { id: 269, name: 'Windwalker' },
+        talentLoadoutCode: null,
+        heroTalentTree: { id: 65, name: 'Shado-Pan' },
+      },
+    ]);
   });
 
   it('returns an empty list when the payload carries no specialisations', () => {
