@@ -26,7 +26,7 @@ export const envSchema = z.object({
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
-  BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(8),
 
   // MongoDB.
   MONGODB_URI: z.string().min(1),

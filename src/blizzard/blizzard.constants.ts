@@ -2,9 +2,15 @@
 export const REGIONS = ['us', 'eu', 'kr', 'tw'] as const;
 export type Region = (typeof REGIONS)[number];
 
-/** PvP leaderboard brackets this service ingests. */
-export const BRACKETS = ['2v2', '3v3', 'rbg', 'shuffle-overall', 'blitz-overall'] as const;
-export type Bracket = (typeof BRACKETS)[number];
+/**
+ * Bracket names come from Blizzard's per-season leaderboard index — currently 85
+ * of them (the five below plus a shuffle and blitz ladder for every spec), and
+ * the set changes as specs are added. Treated as opaque strings for that reason.
+ */
+export type Bracket = string;
+
+/** The headline brackets, called out for reporting and for the API's defaults. */
+export const CORE_BRACKETS = ['2v2', '3v3', 'rbg', 'shuffle-overall', 'blitz-overall'] as const;
 
 export function isRegion(value: string): value is Region {
   return (REGIONS as readonly string[]).includes(value);

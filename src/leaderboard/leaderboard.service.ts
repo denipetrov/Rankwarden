@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { BRACKETS, isRegion, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
+import { isRegion, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
@@ -17,7 +17,6 @@ export interface SweepJobResult {
   entries: number;
   written: number;
   droppedBrackets: number;
-  removedCharacters: number;
   error?: string;
 }
 
@@ -26,6 +25,8 @@ export interface SweepResult {
   durationMs: number;
   jobs: SweepJobResult[];
   failed: number;
+  /** Characters deleted because they no longer rank in any bracket. */
+  removedCharacters: number;
 }
 
 /**
@@ -73,10 +74,21 @@ export class LeaderboardService {
       );
 
       const failed = results.filter((result) => result.error).length;
+
+      // Once per region, after every bracket has had its chance to re-rank people.
+      let removedCharacters = 0;
+      for (const region of new Set(jobs.map((job) => job.region))) {
+        const seasonId = this.seasons.getCurrentSeason(region);
+        if (seasonId !== undefined) {
+          removedCharacters += await this.repository.removeUnranked(seasonId, region);
+        }
+      }
+
       const durationMs = Date.now() - startedAt.getTime();
 
       this.logger.log(
-        `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok`,
+        `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
+          `${removedCharacters} characters unranked`,
       );
 
       this.sweeps.emitCompleted({
@@ -85,7 +97,7 @@ export class LeaderboardService {
         failed,
       });
 
-      return { startedAt, durationMs, jobs: results, failed };
+      return { startedAt, durationMs, jobs: results, failed, removedCharacters };
     } finally {
       this.running = false;
     }
@@ -98,11 +110,15 @@ export class LeaderboardService {
     for (const region of this.regions) {
       try {
         const seasonId = await this.seasons.refresh(region);
-        for (const bracket of BRACKETS) {
+        // Ask Blizzard which brackets exist rather than hardcoding them; the set
+        // grows with every new specialisation.
+        const brackets = await this.pvpApi.getBrackets(region, seasonId);
+
+        for (const bracket of brackets) {
           jobs.push({ region, bracket, seasonId });
         }
       } catch (error) {
-        this.logger.error(`Could not resolve active season for ${region}`, error as Error);
+        this.logger.error(`Could not resolve brackets for ${region}`, error as Error);
       }
     }
 
@@ -126,22 +142,14 @@ export class LeaderboardService {
       });
 
       const written = await this.repository.upsertBracketEntries(updates);
-      const { droppedBrackets, removedCharacters } = await this.repository.pruneBracket(
+      const droppedBrackets = await this.repository.pruneBracket(
         seasonId,
         region,
         bracket,
         fetchedAt,
       );
 
-      return {
-        region,
-        bracket,
-        seasonId,
-        entries: updates.length,
-        written,
-        droppedBrackets,
-        removedCharacters,
-      };
+      return { region, bracket, seasonId, entries: updates.length, written, droppedBrackets };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed ingesting ${region}/${bracket}: ${message}`);
@@ -153,7 +161,6 @@ export class LeaderboardService {
         entries: 0,
         written: 0,
         droppedBrackets: 0,
-        removedCharacters: 0,
         error: message,
       };
     }

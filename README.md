@@ -19,7 +19,10 @@ Game Data API and (as of the next iteration) persists them to MongoDB.
    immediately; everyone else is refreshed once their profile passes `PROFILE_TTL_MS`
    (1 day).
 
-Regions: `us, eu, kr, tw`. Brackets: `2v2`, `3v3`, `rbg`, `shuffle-overall`, `blitz-overall`.
+Regions: `us, eu, kr, tw`. Brackets are whatever Blizzard's per-season leaderboard index
+lists — currently **85**: `2v2`, `3v3`, `rbg`, `shuffle-overall`, `blitz-overall`, plus a
+`shuffle-<class>-<spec>` and `blitz-<class>-<spec>` ladder for every specialisation. The
+list is fetched each sweep rather than hardcoded, so new specs are picked up on their own.
 
 ## Layout
 
@@ -83,12 +86,12 @@ a character's full record is a single read.
   realmSlug: 'outland',
   faction: 'ALLIANCE',
   brackets: {
-    '2v2':             { rank: 897,  rating: 1821, played: 51, won: 30, lost: 21, fetchedAt: … },
-    '3v3':             { rank: 1282, rating: 1668, played: 47, won: 23, lost: 24, fetchedAt: … },
-    'rbg':             { rank: 539,  rating: 384,  played: 2,  won: 2,  lost: 0,  fetchedAt: … },
-    'shuffle-overall': { rank: 3774, rating: 1953, played: 99, won: 56, lost: 43, fetchedAt: … },
-    'blitz-overall':   { rank: 695,  rating: 1969, played: 31, won: 14, lost: 17, fetchedAt: … },
+    '2v2':                { rank: 897,  rating: 1821, played: 51, won: 30, lost: 21, fetchedAt: … },
+    '3v3':                { rank: 1282, rating: 1668, played: 47, won: 23, lost: 24, fetchedAt: … },
+    'shuffle-mage-frost': { rank: 12,   rating: 2402, played: 88, won: 51, lost: 37, fetchedAt: … },
   },
+  // mirror of the ratings above — the only searchable per-bracket field
+  ratings: { '2v2': 1821, '3v3': 1668, 'shuffle-mage-frost': 2402 },
   updatedAt: …,
 
   // filled in by the enrichment pass, not the sweep
@@ -107,9 +110,44 @@ a character's full record is a single read.
 }
 ```
 
-Indexes: a unique `seasonId + region + characterId` identity index, a
-`characterName + realmSlug` lookup index, and one `brackets.<bracket>.rank` index per
-bracket for ladder views.
+### Indexing 85 brackets with one index
+
+One index per bracket is impossible — MongoDB caps a collection at 64. Instead, `rating`
+(the only field ladders are ordered by) is mirrored into a flat `ratings` map, covered by
+a single **compound wildcard index**:
+
+```js
+{ seasonId: 1, region: 1, 'ratings.$**': 1 }
+```
+
+Measured on 138k characters, every bracket — core or per-spec — pages at **50 keys / 50
+docs examined, index-ordered, no blocking sort**, from one 2.3MB index. The five
+per-bracket indexes it replaced cost 1.8MB between them and covered five brackets.
+
+The bulky `brackets` payload is never indexed: it is read, not searched.
+
+Full index set: unique `seasonId + region + characterId` identity, `characterName +
+realmSlug` lookup, `profileFetchedAt` for enrichment staleness, and `bracket_ratings`.
+That is four, whatever the bracket count. Superseded `bracket_*_rank` indexes are dropped
+automatically at startup.
+
+### Querying a ladder
+
+```js
+db.characters
+  .find({ seasonId: 42, region: 'eu', 'ratings.3v3': { $gt: 0 } })
+  .sort({ 'ratings.3v3': -1 })
+  .limit(50);
+```
+
+The `$gt: 0` predicate is **required**, not decoration. Characters who do not play a
+bracket have no key for it, missing fields index as `null`, and `null` sorts before every
+number — so omitting it silently returns players from other brackets at the top of the
+ladder. Use `$gt: 0` rather than `$exists: true`: it bounds the index scan, where
+`$exists` scans the whole null region (measured 11,032 keys examined versus 50).
+
+For deep pages prefer a rating cursor (`rating < lastSeenRating`) over `skip`, which
+costs one key per skipped row.
 
 Each bracket carries its own `fetchedAt` because brackets are swept independently — it
 is what pruning compares against, and it tells you how stale any single ladder is.

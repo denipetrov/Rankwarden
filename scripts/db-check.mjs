@@ -6,6 +6,7 @@ import { MongoClient } from 'mongodb';
 const uri = process.env.MONGODB_URI ?? 'mongodb://localhost:27017';
 const dbName = process.env.MONGODB_DB ?? 'rankwarden';
 const COLLECTION = 'characters';
+const CORE_BRACKETS = ['2v2', '3v3', 'rbg', 'shuffle-overall', 'blitz-overall'];
 
 const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5_000 });
 
@@ -94,18 +95,37 @@ Profiles: ${enriched} enriched, ${missing} missing, ${pending} pending enrichmen
     ])
     .toArray();
 
-  if (breakdown.length > 0) {
+  // 85 brackets x 4 regions is too much to print: show the core ladders in full
+  // and roll the per-specialisation ones up per region.
+  const isCore = (name) => CORE_BRACKETS.includes(name);
+  const core = breakdown.filter((row) => isCore(row._id.bracket));
+
+  if (core.length > 0) {
     console.log('\nregion  bracket          entries  top rating  last sweep');
-    for (const row of breakdown) {
-      console.log(
-        [
-          row._id.region.padEnd(6),
-          row._id.bracket.padEnd(16),
-          String(row.entries).padStart(7),
-          String(row.topRating).padStart(11),
-          `  ${row.lastFetchedAt?.toISOString() ?? 'n/a'}`,
-        ].join(' '),
-      );
+  }
+  for (const row of core) {
+    console.log(
+      [
+        row._id.region.padEnd(6),
+        row._id.bracket.padEnd(16),
+        String(row.entries).padStart(7),
+        String(row.topRating).padStart(11),
+        `  ${row.lastFetchedAt?.toISOString() ?? 'n/a'}`,
+      ].join(' '),
+    );
+  }
+
+  const perRegion = new Map();
+  for (const row of breakdown.filter((r) => !isCore(r._id.bracket))) {
+    const acc = perRegion.get(row._id.region) ?? { brackets: 0, entries: 0 };
+    acc.brackets += 1;
+    acc.entries += row.entries;
+    perRegion.set(row._id.region, acc);
+  }
+  if (perRegion.size > 0) {
+    console.log('\nspecialisation ladders (shuffle-* / blitz-*):');
+    for (const [region, acc] of [...perRegion].sort()) {
+      console.log(`  ${region.padEnd(4)} ${acc.brackets} brackets, ${acc.entries} entries`);
     }
   }
 } catch (error) {

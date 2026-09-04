@@ -23,7 +23,14 @@ export interface CharacterDocument {
   realmId: number;
   realmSlug: string;
   faction: string | null;
+  /** Full per-bracket payload. Never indexed — read, not searched. */
   brackets: Partial<Record<Bracket, BracketStats>>;
+  /**
+   * Rating per bracket, mirrored out of `brackets` purely so a single compound
+   * wildcard index can serve ordered ladder queries for every bracket at once.
+   * One index instead of one per bracket, which would blow MongoDB's cap of 64.
+   */
+  ratings: Partial<Record<Bracket, number>>;
   updatedAt: Date;
   profile?: CharacterProfile;
   profileStatus?: ProfileStatus;
