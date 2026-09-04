@@ -1,14 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { BRACKETS, isRegion, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
+import {
+  isIngestableBracket,
+  isRegion,
+  ratingFamilyOf,
+  type Bracket,
+  type Region,
+} from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
+import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
 import { CharacterRepository } from './character.repository.js';
 import { toCharacterBracketUpdates } from './leaderboard.mapper.js';
+import { RatingRepository } from './rating.repository.js';
 
 export interface SweepJobResult {
   region: Region;
@@ -17,7 +25,6 @@ export interface SweepJobResult {
   entries: number;
   written: number;
   droppedBrackets: number;
-  removedCharacters: number;
   error?: string;
 }
 
@@ -26,6 +33,8 @@ export interface SweepResult {
   durationMs: number;
   jobs: SweepJobResult[];
   failed: number;
+  /** Characters deleted because they no longer rank in any bracket. */
+  removedCharacters: number;
 }
 
 /**
@@ -44,7 +53,9 @@ export class LeaderboardService {
     private readonly pvpApi: PvpApi,
     private readonly seasons: SeasonService,
     private readonly repository: CharacterRepository,
+    private readonly ratings: RatingRepository,
     private readonly sweeps: SweepEvents,
+    private readonly coordinator: IngestionCoordinator,
   ) {
     this.regions = config
       .get('BLIZZARD_REGIONS', { infer: true })
@@ -67,25 +78,54 @@ export class LeaderboardService {
     const startedAt = new Date();
 
     try {
-      const jobs = await this.buildJobs();
-      const results = await mapWithConcurrency(jobs, this.concurrency, (job) =>
-        this.ingestBracket(job.region, job.bracket, job.seasonId),
-      );
+      // Held for the whole sweep so enrichment stays out of the way: it writes
+      // the same documents and draws on the same hourly request quota.
+      const result = await this.coordinator.duringSweep(async () => {
+        const jobs = await this.buildJobs();
+        const results = await mapWithConcurrency(jobs, this.concurrency, (job) =>
+          this.ingestBracket(job.region, job.bracket, job.seasonId),
+        );
 
-      const failed = results.filter((result) => result.error).length;
-      const durationMs = Date.now() - startedAt.getTime();
+        const failed = results.filter((result) => result.error).length;
 
-      this.logger.log(
-        `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok`,
-      );
+        // Once per region, after every bracket has had its chance to re-rank
+        // people. The season comes from the jobs rather than from SeasonService:
+        // a rollover detected mid-sweep would otherwise have the cleanup act on
+        // the new season while every write went to the old one.
+        let removedCharacters = 0;
+        let removedRatingRows = 0;
+        const seasonByRegion = new Map(jobs.map((job) => [job.region, job.seasonId]));
 
-      this.sweeps.emitCompleted({
-        finishedAt: new Date(),
-        brackets: results.length,
-        failed,
+        for (const [region, seasonId] of seasonByRegion) {
+          removedCharacters += await this.repository.removeUnranked(seasonId, region);
+          // Only after the characters are gone, so their rows are orphans by then.
+          removedRatingRows += await this.ratings.removeOrphans(seasonId, region);
+          removedRatingRows += await this.ratings.removeRetiredBrackets(
+            seasonId,
+            region,
+            jobs.filter((job) => job.region === region).map((job) => job.bracket),
+          );
+        }
+
+        const durationMs = Date.now() - startedAt.getTime();
+
+        this.logger.log(
+          `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
+            `${removedCharacters} characters unranked, ${removedRatingRows} stale rating rows removed`,
+        );
+
+        return { startedAt, durationMs, jobs: results, failed, removedCharacters };
       });
 
-      return { startedAt, durationMs, jobs: results, failed };
+      // Emitted only once the coordinator has released, otherwise the follow-up
+      // enrichment pass sees a sweep still in progress and defers itself.
+      this.sweeps.emitCompleted({
+        finishedAt: new Date(),
+        brackets: result.jobs.length,
+        failed: result.failed,
+      });
+
+      return result;
     } finally {
       this.running = false;
     }
@@ -98,11 +138,22 @@ export class LeaderboardService {
     for (const region of this.regions) {
       try {
         const seasonId = await this.seasons.refresh(region);
-        for (const bracket of BRACKETS) {
+        // Ask Blizzard which brackets exist rather than hardcoding them; the set
+        // grows with every new specialisation.
+        const brackets = await this.pvpApi.getBrackets(region, seasonId);
+        const ingestable = brackets.filter(isIngestableBracket);
+
+        if (ingestable.length !== brackets.length) {
+          this.logger.debug(
+            `${region}: skipping ${brackets.length - ingestable.length} aggregate brackets`,
+          );
+        }
+
+        for (const bracket of ingestable) {
           jobs.push({ region, bracket, seasonId });
         }
       } catch (error) {
-        this.logger.error(`Could not resolve active season for ${region}`, error as Error);
+        this.logger.error(`Could not resolve brackets for ${region}`, error as Error);
       }
     }
 
@@ -126,22 +177,22 @@ export class LeaderboardService {
       });
 
       const written = await this.repository.upsertBracketEntries(updates);
-      const { droppedBrackets, removedCharacters } = await this.repository.pruneBracket(
+      const droppedBrackets = await this.repository.pruneBracket(
         seasonId,
         region,
         bracket,
         fetchedAt,
       );
 
-      return {
-        region,
-        bracket,
-        seasonId,
-        entries: updates.length,
-        written,
-        droppedBrackets,
-        removedCharacters,
-      };
+      // Every bracket is mirrored into its family's flat collection, which is
+      // what the ordered boards are read from.
+      const family = ratingFamilyOf(bracket);
+      if (family) {
+        await this.ratings.upsertBracket(family, updates);
+        await this.ratings.pruneBracket(family, seasonId, region, bracket, fetchedAt);
+      }
+
+      return { region, bracket, seasonId, entries: updates.length, written, droppedBrackets };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed ingesting ${region}/${bracket}: ${message}`);
@@ -153,7 +204,6 @@ export class LeaderboardService {
         entries: 0,
         written: 0,
         droppedBrackets: 0,
-        removedCharacters: 0,
         error: message,
       };
     }

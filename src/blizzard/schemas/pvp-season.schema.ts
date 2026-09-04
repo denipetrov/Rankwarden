@@ -13,3 +13,15 @@ export const pvpSeasonIndexSchema = z.object({
 });
 
 export type PvpSeasonIndex = z.infer<typeof pvpSeasonIndexSchema>;
+
+/** GET /data/wow/pvp-season/{seasonId} */
+export const pvpSeasonSchema = z.object({
+  id: z.number().int(),
+  season_start_timestamp: z.number(),
+  // Absent while the season is running; Blizzard adds it to this same document
+  // once the season ends, which is the only signal that it has.
+  season_end_timestamp: z.number().optional(),
+  season_name: z.string().optional(),
+});
+
+export type PvpSeason = z.infer<typeof pvpSeasonSchema>;

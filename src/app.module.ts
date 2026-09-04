@@ -8,6 +8,8 @@ import { BlizzardModule } from './blizzard/blizzard.module.js';
 import { SeasonModule } from './season/season.module.js';
 import { LeaderboardModule } from './leaderboard/leaderboard.module.js';
 import { ProfileModule } from './profile/profile.module.js';
+import { RepresentationModule } from './representation/representation.module.js';
+import { SyncModule } from './sync/sync.module.js';
 import { HealthModule } from './health/health.module.js';
 
 @Module({
@@ -20,6 +22,8 @@ import { HealthModule } from './health/health.module.js';
     SeasonModule,
     LeaderboardModule,
     ProfileModule,
+    RepresentationModule,
+    SyncModule,
     HealthModule,
   ],
 })

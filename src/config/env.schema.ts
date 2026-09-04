@@ -26,7 +26,7 @@ export const envSchema = z.object({
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
-  BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(8),
 
   // MongoDB.
   MONGODB_URI: z.string().min(1),
@@ -46,9 +46,32 @@ export const envSchema = z.object({
     .transform((value) => value === 'true'),
   PROFILE_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
   PROFILE_BATCH_SIZE: z.coerce.number().int().positive().default(500),
-  PROFILE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  /** Race, class, realm, title — changes rarely, so refreshed weekly. */
+  PROFILE_SUMMARY_TTL_MS: z.coerce.number().int().positive().default(604_800_000),
+  /** Spec and hero talents — moves whenever a player respecs. */
+  PROFILE_SPECS_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
+
+  /** How often to re-check which season is active, independently of sweeps. */
+  SEASON_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
+
+  // Daily spec-representation snapshots ("flavour of the month").
+  REPRESENTATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  REPRESENTATION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Rating cutoffs to track. */
+  REPRESENTATION_MIN_RATINGS: z
+    .string()
+    .default('1500,1800,2100,2300,2700')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((part) => Number(part.trim()))
+        .filter((value) => Number.isInteger(value) && value >= 0),
+    ),
 
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

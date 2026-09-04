@@ -6,24 +6,41 @@ import {
   type IndexDescription,
 } from 'mongodb';
 
-import { BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
+import { EXCLUDED_BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import {
   CHARACTERS_COLLECTION,
   type CharacterDocument,
   type CharacterProfile,
 } from './entities/character.entity.js';
+
+/** Profile fields owned by the character summary endpoint. */
+export const PROFILE_SUMMARY_KEYS = [
+  'race',
+  'class',
+  'level',
+  'gender',
+  'guild',
+  'realmName',
+  'title',
+  'averageItemLevel',
+  'equippedItemLevel',
+  'lastLoginAt',
+] as const satisfies readonly (keyof CharacterProfile)[];
+
+/** Profile fields owned by the specializations endpoint. */
+export const PROFILE_SPEC_KEYS = [
+  'spec',
+  'heroTalentTree',
+  'talentLoadouts',
+] as const satisfies readonly (keyof CharacterProfile)[];
+
+export type ProfileSummaryFields = Pick<CharacterProfile, (typeof PROFILE_SUMMARY_KEYS)[number]>;
+export type ProfileSpecFields = Pick<CharacterProfile, (typeof PROFILE_SPEC_KEYS)[number]>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 const DUPLICATE_KEY = 11000;
-
-export interface PruneResult {
-  /** Characters that dropped off this bracket since the given sweep. */
-  droppedBrackets: number;
-  /** Characters removed entirely because they no longer rank in any bracket. */
-  removedCharacters: number;
-}
 
 @Injectable()
 export class CharacterRepository implements OnModuleInit {
@@ -39,18 +56,36 @@ export class CharacterRepository implements OnModuleInit {
     const indexes: IndexDescription[] = [
       { key: { seasonId: 1, region: 1, characterId: 1 }, name: 'character_identity', unique: true },
       { key: { characterName: 1, realmSlug: 1 }, name: 'character_lookup' },
-      // Enrichment selects the least recently profiled characters first;
+      // One compound wildcard index serves ordered queries for every bracket:
+      //   find({ seasonId, region, 'ratings.3v3': { $gt: 0 } }).sort({ 'ratings.3v3': -1 })
+      // Measured index-ordered (no blocking sort) and 4.6x smaller than the five
+      // per-bracket indexes it replaces — which could never have reached 85 anyway.
+      { key: { seasonId: 1, region: 1, 'ratings.$**': 1 }, name: 'bracket_ratings' },
+      // Enrichment selects the least recently fetched characters first;
       // never-enriched ones sort ahead of everything because the field is absent.
+      { key: { specsFetchedAt: 1 }, name: 'specs_staleness' },
       { key: { profileFetchedAt: 1 }, name: 'profile_staleness' },
-      // One per bracket: rank is what ladder views sort on.
-      ...BRACKETS.map((bracket) => ({
-        key: { seasonId: 1, region: 1, [`brackets.${bracket}.rank`]: 1 },
-        name: `bracket_${bracket}_rank`,
-      })),
     ];
 
     await this.collection.createIndexes(indexes);
+    await this.dropLegacyBracketIndexes();
+    await this.purgeExcludedBrackets();
     this.logger.log(`Indexes ensured on "${CHARACTERS_COLLECTION}"`);
+  }
+
+  /**
+   * Earlier builds created one index per bracket. They are superseded by
+   * `bracket_ratings` and would only cost write throughput, so clear them out.
+   */
+  private async dropLegacyBracketIndexes(): Promise<void> {
+    const legacy = (await this.collection.indexes())
+      .map((index) => index.name)
+      .filter((name): name is string => /^bracket_.+_rank$|^best_in_family$/.test(name ?? ''));
+
+    for (const name of legacy) {
+      await this.collection.dropIndex(name);
+      this.logger.log(`Dropped superseded index "${name}"`);
+    }
   }
 
   /**
@@ -78,6 +113,7 @@ export class CharacterRepository implements OnModuleInit {
               faction: update.faction,
               updatedAt: update.stats.fetchedAt,
               [`brackets.${update.bracket}`]: update.stats,
+              [`ratings.${update.bracket}`]: update.stats.rating,
             },
             $setOnInsert: {
               seasonId: update.seasonId,
@@ -135,12 +171,47 @@ export class CharacterRepository implements OnModuleInit {
   }
 
   /**
+   * Clears aggregate brackets left by earlier builds. Their sweep jobs no longer
+   * run, so ordinary pruning would never reach them and the misleading ratings
+   * would sit in the data forever.
+   */
+  private async purgeExcludedBrackets(): Promise<void> {
+    const unset: Record<string, ''> = {};
+    for (const bracket of EXCLUDED_BRACKETS) {
+      unset[`brackets.${bracket}`] = '';
+      unset[`ratings.${bracket}`] = '';
+    }
+
+    // `best` was an earlier attempt at the all-specs board; the flat per-family
+    // collections replaced it, so clear it out too.
+    const purged = await this.collection.updateMany(
+      {
+        $or: [
+          ...EXCLUDED_BRACKETS.map((bracket) => ({ [`brackets.${bracket}`]: { $exists: true } })),
+          { best: { $exists: true } },
+        ],
+      },
+      { $unset: { ...unset, best: '' } },
+    );
+
+    if (purged.modifiedCount === 0) return;
+
+    // Anyone who ranked only in an aggregate bracket now ranks in nothing.
+    const removed = await this.collection.deleteMany({ brackets: {} });
+    this.logger.log(
+      `Purged aggregate brackets from ${purged.modifiedCount} characters ` +
+        `(${removed.deletedCount} left unranked and deleted)`,
+    );
+  }
+
+  /**
    * The next characters due for profile enrichment. `onlyNew` restricts the
    * batch to characters a sweep has just discovered; otherwise never-enriched
    * characters still come first, because the absent field sorts ahead of dates.
    */
   async findProfilesToEnrich(
-    staleBefore: Date,
+    summaryStaleBefore: Date,
+    specsStaleBefore: Date,
     limit: number,
     onlyNew = false,
   ): Promise<CharacterDocument[]> {
@@ -149,11 +220,15 @@ export class CharacterRepository implements OnModuleInit {
       : {
           $or: [
             { profileFetchedAt: { $exists: false } },
-            { profileFetchedAt: { $lt: staleBefore } },
+            { profileFetchedAt: { $lt: summaryStaleBefore } },
+            { specsFetchedAt: { $exists: false } },
+            { specsFetchedAt: { $lt: specsStaleBefore } },
           ],
         };
 
-    return this.collection.find(filter).sort({ profileFetchedAt: 1 }).limit(limit).toArray();
+    // Specs have the shorter TTL, so their timestamp is the one that paces the
+    // queue: anything due for a summary refresh is necessarily due for specs too.
+    return this.collection.find(filter).sort({ specsFetchedAt: 1 }).limit(limit).toArray();
   }
 
   /** How many characters have never had a profile fetched. */
@@ -161,16 +236,56 @@ export class CharacterRepository implements OnModuleInit {
     return this.collection.countDocuments({ profileFetchedAt: { $exists: false } });
   }
 
-  async saveProfile(
+  /**
+   * Writes the summary half of a profile. Field-level so it cannot clobber the
+   * spec half, which is refreshed on a different schedule.
+   */
+  async saveProfileSummary(
     seasonId: number,
     region: Region,
     characterId: number,
-    profile: CharacterProfile,
+    summary: ProfileSummaryFields,
     fetchedAt: Date,
   ): Promise<void> {
     await this.collection.updateOne(
       { seasonId, region, characterId },
-      { $set: { profile, profileStatus: 'ok', profileFetchedAt: fetchedAt } },
+      {
+        $set: {
+          'profile.race': summary.race,
+          'profile.class': summary.class,
+          'profile.level': summary.level,
+          'profile.gender': summary.gender,
+          'profile.guild': summary.guild,
+          'profile.realmName': summary.realmName,
+          'profile.title': summary.title,
+          'profile.averageItemLevel': summary.averageItemLevel,
+          'profile.equippedItemLevel': summary.equippedItemLevel,
+          'profile.lastLoginAt': summary.lastLoginAt,
+          profileStatus: 'ok',
+          profileFetchedAt: fetchedAt,
+        },
+      },
+    );
+  }
+
+  /** Writes the spec half: active specialisation and hero talent tree. */
+  async saveProfileSpecs(
+    seasonId: number,
+    region: Region,
+    characterId: number,
+    specs: ProfileSpecFields,
+    fetchedAt: Date,
+  ): Promise<void> {
+    await this.collection.updateOne(
+      { seasonId, region, characterId },
+      {
+        $set: {
+          'profile.spec': specs.spec,
+          'profile.heroTalentTree': specs.heroTalentTree,
+          'profile.talentLoadouts': specs.talentLoadouts,
+          specsFetchedAt: fetchedAt,
+        },
+      },
     );
   }
 
@@ -186,30 +301,84 @@ export class CharacterRepository implements OnModuleInit {
   ): Promise<void> {
     await this.collection.updateOne(
       { seasonId, region, characterId },
-      { $set: { profileStatus: 'missing', profileFetchedAt: fetchedAt }, $unset: { profile: '' } },
+      {
+        $set: { profileStatus: 'missing', profileFetchedAt: fetchedAt, specsFetchedAt: fetchedAt },
+        $unset: { profile: '' },
+      },
     );
   }
 
   /**
-   * Clears bracket results that this sweep did not refresh — the character fell
-   * off that ladder — and deletes characters left with no brackets at all.
+   * Updates an existing character from the sync endpoint. Never inserts: a
+   * character absent here holds no rating we care about, and creating one would
+   * fill the collection with players no ladder lists.
+   *
+   * Ladder data is authoritative for every bracket at once, so `brackets` and
+   * `ratings` are set wholesale. The profile is merged field by field instead —
+   * a caller that knows a character's race must not blank their spec by omitting
+   * it — and only the halves actually supplied get their enrichment timestamp
+   * stamped, so the worker still fills in whatever was left out.
+   */
+  async updateCharacter(
+    document: Omit<
+      CharacterDocument,
+      'profile' | 'profileStatus' | 'profileFetchedAt' | 'specsFetchedAt'
+    >,
+    profile?: Partial<CharacterProfile>,
+  ): Promise<{ matched: boolean }> {
+    const { seasonId, region, characterId, ...fields } = document;
+    const update: Record<string, unknown> = { ...fields };
+
+    if (profile) {
+      const supplied = (keys: readonly (keyof CharacterProfile)[]) =>
+        keys.some((key) => profile[key] !== undefined);
+
+      for (const [key, value] of Object.entries(profile)) {
+        if (value !== undefined) update[`profile.${key}`] = value;
+      }
+
+      if (supplied(PROFILE_SUMMARY_KEYS)) {
+        update.profileStatus = 'ok';
+        update.profileFetchedAt = document.updatedAt;
+      }
+      if (supplied(PROFILE_SPEC_KEYS)) {
+        update.specsFetchedAt = document.updatedAt;
+      }
+    }
+
+    const result = await this.collection.updateOne(
+      { seasonId, region, characterId },
+      { $set: update },
+    );
+
+    return { matched: result.matchedCount > 0 };
+  }
+
+  /**
+   * Clears a bracket result this sweep did not refresh — the character fell off
+   * that ladder. Both the payload and its mirrored rating go.
    */
   async pruneBracket(
     seasonId: number,
     region: Region,
     bracket: Bracket,
     before: Date,
-  ): Promise<PruneResult> {
+  ): Promise<number> {
     const dropped = await this.collection.updateMany(
       { seasonId, region, [`brackets.${bracket}.fetchedAt`]: { $lt: before } },
-      { $unset: { [`brackets.${bracket}`]: '' } },
+      { $unset: { [`brackets.${bracket}`]: '', [`ratings.${bracket}`]: '' } },
     );
 
-    const removed = await this.collection.deleteMany({ seasonId, region, brackets: {} });
+    return dropped.modifiedCount;
+  }
 
-    return {
-      droppedBrackets: dropped.modifiedCount,
-      removedCharacters: removed.deletedCount,
-    };
+  /**
+   * Deletes characters left ranking in nothing. Runs once per region at the end
+   * of a sweep rather than per bracket — with 85 brackets that is 85 collection
+   * scans saved.
+   */
+  async removeUnranked(seasonId: number, region: Region): Promise<number> {
+    const removed = await this.collection.deleteMany({ seasonId, region, brackets: {} });
+    return removed.deletedCount;
   }
 }
