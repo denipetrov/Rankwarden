@@ -53,6 +53,7 @@ src/
   leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
   health/                     GET /health — season snapshot + sweep state
+  sync/                       POST /characters/sync — push a record in from the API
 scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
 scripts/migrate-to-characters.mjs  folds legacy flat entries into the grouped shape
 docker-compose.yml            local mongo:8 + mongo-express
@@ -258,6 +259,56 @@ never waits — it is what keeps rankings current.
 
 The sweep-completed event is emitted _after_ the coordinator releases; emitting it from
 inside meant the follow-up pass saw a sweep still running and deferred itself.
+
+## Sync endpoint
+
+`POST /characters/sync` takes a whole character record and writes it to `characters` and
+both per-spec ratings collections in one call, so a search API that has just fetched
+fresh data can push it back rather than waiting for the next sweep.
+
+```http
+POST /characters/sync
+{
+  "seasonId": 42, "region": "us", "characterId": 195802602,
+  "characterName": "Goküü", "realmId": 61, "realmSlug": "emerald-dream", "faction": "HORDE",
+  "brackets": { "3v3": { "rank": 119, "rating": 2093, "played": 10, "won": 5, "lost": 5 } },
+  "profile": { … }                                    // optional
+}
+→ 200 { "brackets": 2, "ignoredBrackets": ["shuffle-overall"],
+        "shuffleRows": { "written": 1, "removed": 1 }, "blitzRows": { … } }
+```
+
+**The payload is authoritative for every bracket at once**, unlike the sweep which sees
+one bracket at a time. A bracket absent from it is treated as one the character has left:
+it is dropped from the document and its ratings row deleted. Sending a partial record
+therefore deletes the rest — send the whole thing.
+
+- `ratings` is **not accepted**; it is recomputed from `brackets`, which is the only way
+  the mirror cannot drift. Unknown keys (`_id`, `ratings`, enrichment timestamps) are
+  dropped, so a document read straight out of Mongo can be posted back unchanged.
+- `shuffle-overall` / `blitz-overall` are ignored and reported in `ignoredBrackets`, to
+  match what the sweep stores.
+- **The endpoint never creates a character.** An id the collection does not already hold
+  gets `404`, and no ratings rows are written for it — characters exist here because a
+  ladder lists them, and inserting on push would fill the collection with players who
+  hold no rating at all.
+- **`profile` is merged field by field**, unlike `brackets`. An absent field leaves what
+  is stored untouched; an explicit `null` clears it. A caller that knows only a
+  character's title must not blank their spec by not mentioning it.
+- Only the profile halves actually supplied get their enrichment timestamp stamped —
+  summary fields move `profileFetchedAt`, spec fields move `specsFetchedAt` — so the
+  worker still fills in whatever the caller left out.
+- Brackets arriving without a `fetchedAt` are stamped with the request time.
+
+**While a sweep is running the endpoint returns `409 Conflict`.** The sweep rewrites the
+same documents, so interleaving would leave a record half from each source. Callers
+should retry once it clears — a sweep takes about 35 seconds. Note the check is not a
+lock: a sweep starting in the microseconds after it passes would overwrite the push with
+its own (fresher) data, which is the harmless direction.
+
+Bad payloads return `400` listing every offending field. A payload carrying no storable
+brackets is also rejected: accepting it would blank the character's ladder data, and the
+next sweep's unranked cleanup would then delete the document.
 
 ## Local MongoDB
 

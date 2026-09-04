@@ -91,6 +91,30 @@ export class SpecRatingRepository implements OnModuleInit {
     return written;
   }
 
+  /**
+   * Makes one character's rows in a family match the brackets given exactly.
+   * Rows for brackets absent from the list are deleted, so a character who has
+   * stopped playing a spec drops off that board.
+   */
+  async replaceForCharacter(
+    family: SpecSplitFamily,
+    seasonId: number,
+    region: Region,
+    characterId: number,
+    updates: readonly CharacterBracketUpdate[],
+  ): Promise<{ written: number; removed: number }> {
+    const written = updates.length > 0 ? await this.upsertBracket(family, updates) : 0;
+
+    const removed = await this.collection(family).deleteMany({
+      seasonId,
+      region,
+      characterId,
+      bracket: { $nin: updates.map((update) => update.bracket) },
+    });
+
+    return { written, removed: removed.deletedCount };
+  }
+
   /** Drops rows this sweep did not refresh — the character left that ladder. */
   async pruneBracket(
     family: SpecSplitFamily,

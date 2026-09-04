@@ -10,6 +10,6 @@ import { LeaderboardService } from './leaderboard.service.js';
 @Module({
   imports: [BlizzardModule, SeasonModule],
   providers: [LeaderboardService, CharacterRepository, SpecRatingRepository, LeaderboardScheduler],
-  exports: [LeaderboardService, CharacterRepository],
+  exports: [LeaderboardService, CharacterRepository, SpecRatingRepository],
 })
 export class LeaderboardModule {}

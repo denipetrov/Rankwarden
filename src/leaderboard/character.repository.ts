@@ -14,26 +14,29 @@ import {
   type CharacterProfile,
 } from './entities/character.entity.js';
 
-/** The half of a profile that comes from the character summary endpoint. */
-export type ProfileSummaryFields = Pick<
-  CharacterProfile,
-  | 'race'
-  | 'class'
-  | 'level'
-  | 'gender'
-  | 'guild'
-  | 'realmName'
-  | 'title'
-  | 'averageItemLevel'
-  | 'equippedItemLevel'
-  | 'lastLoginAt'
->;
+/** Profile fields owned by the character summary endpoint. */
+export const PROFILE_SUMMARY_KEYS = [
+  'race',
+  'class',
+  'level',
+  'gender',
+  'guild',
+  'realmName',
+  'title',
+  'averageItemLevel',
+  'equippedItemLevel',
+  'lastLoginAt',
+] as const satisfies readonly (keyof CharacterProfile)[];
 
-/** The half that comes from the specializations endpoint. */
-export type ProfileSpecFields = Pick<
-  CharacterProfile,
-  'spec' | 'heroTalentTree' | 'talentLoadouts'
->;
+/** Profile fields owned by the specializations endpoint. */
+export const PROFILE_SPEC_KEYS = [
+  'spec',
+  'heroTalentTree',
+  'talentLoadouts',
+] as const satisfies readonly (keyof CharacterProfile)[];
+
+export type ProfileSummaryFields = Pick<CharacterProfile, (typeof PROFILE_SUMMARY_KEYS)[number]>;
+export type ProfileSpecFields = Pick<CharacterProfile, (typeof PROFILE_SPEC_KEYS)[number]>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 
 const BULK_CHUNK_SIZE = 1_000;
@@ -303,6 +306,52 @@ export class CharacterRepository implements OnModuleInit {
         $unset: { profile: '' },
       },
     );
+  }
+
+  /**
+   * Updates an existing character from the sync endpoint. Never inserts: a
+   * character absent here holds no rating we care about, and creating one would
+   * fill the collection with players no ladder lists.
+   *
+   * Ladder data is authoritative for every bracket at once, so `brackets` and
+   * `ratings` are set wholesale. The profile is merged field by field instead —
+   * a caller that knows a character's race must not blank their spec by omitting
+   * it — and only the halves actually supplied get their enrichment timestamp
+   * stamped, so the worker still fills in whatever was left out.
+   */
+  async updateCharacter(
+    document: Omit<
+      CharacterDocument,
+      'profile' | 'profileStatus' | 'profileFetchedAt' | 'specsFetchedAt'
+    >,
+    profile?: Partial<CharacterProfile>,
+  ): Promise<{ matched: boolean }> {
+    const { seasonId, region, characterId, ...fields } = document;
+    const update: Record<string, unknown> = { ...fields };
+
+    if (profile) {
+      const supplied = (keys: readonly (keyof CharacterProfile)[]) =>
+        keys.some((key) => profile[key] !== undefined);
+
+      for (const [key, value] of Object.entries(profile)) {
+        if (value !== undefined) update[`profile.${key}`] = value;
+      }
+
+      if (supplied(PROFILE_SUMMARY_KEYS)) {
+        update.profileStatus = 'ok';
+        update.profileFetchedAt = document.updatedAt;
+      }
+      if (supplied(PROFILE_SPEC_KEYS)) {
+        update.specsFetchedAt = document.updatedAt;
+      }
+    }
+
+    const result = await this.collection.updateOne(
+      { seasonId, region, characterId },
+      { $set: update },
+    );
+
+    return { matched: result.matchedCount > 0 };
   }
 
   /**
