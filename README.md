@@ -100,6 +100,10 @@ a character's full record is a single read.
     class:          { id: 2,  name: 'Paladin' },
     spec:           { id: 65, name: 'Holy' },
     heroTalentTree: { id: 49, name: 'Lightsmith' },   // null below hero-talent level
+    talentLoadouts: [                                 // active build per spec
+      { spec: { id: 65, name: 'Holy' },        talentLoadoutCode: 'CEEAzbn3egS…' },
+      { spec: { id: 70, name: 'Retribution' }, talentLoadoutCode: 'CYEAzbn3egS…' },
+    ],
     realmName: 'Demon Soul',                          // the sweep only knows the slug
     title: 'Galactic Gladiator {name}',               // null when none is equipped
     level: 90, gender: 'FEMALE',
@@ -194,6 +198,13 @@ interval.
 
 A 404 is recorded as `profileStatus: 'missing'` rather than retried, because renames and
 transfers are routine.
+
+**Talent loadouts** are stored per spec: every specialisation a character has built
+carries its own `is_active` loadout, so each importable code stays paired with the spec
+it belongs to and a UI filtering by spec can show the matching build. The one currently
+being played is the entry whose `spec.id` equals `profile.spec.id`. Specs with no active
+loadout — or an active loadout Blizzard reports without a code — are omitted, since there
+is nothing to link to.
 
 ### Enrichment yields to the sweep
 

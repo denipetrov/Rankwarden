@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { ProfileApi } from '../blizzard/profile.api.js';
+import { activeLoadoutsBySpec } from '../blizzard/schemas/character-profile.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
@@ -194,6 +195,7 @@ export class ProfileEnrichmentService {
           {
             spec: specializations?.active_specialization ?? null,
             heroTalentTree: specializations?.active_hero_talent_tree ?? null,
+            talentLoadouts: specializations ? activeLoadoutsBySpec(specializations) : [],
           },
           fetchedAt,
         );

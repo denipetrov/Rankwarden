@@ -60,6 +60,12 @@ export interface CharacterProfile {
   spec: NamedRef | null;
   /** Null for characters below the hero-talent level, or with none chosen. */
   heroTalentTree: NamedRef | null;
+  /**
+   * The active loadout for each spec the character has built, so a UI filtering
+   * by spec can show the matching build. The one being played is the entry whose
+   * `spec.id` matches `spec` above. Empty when nothing is linkable.
+   */
+  talentLoadouts: SpecLoadout[];
   level: number;
   gender: string | null;
   guild: NamedRef | null;
@@ -70,6 +76,12 @@ export interface CharacterProfile {
   averageItemLevel: number | null;
   equippedItemLevel: number | null;
   lastLoginAt: Date | null;
+}
+
+/** An importable talent build, paired with the spec it belongs to. */
+export interface SpecLoadout {
+  spec: NamedRef;
+  talentLoadoutCode: string;
 }
 
 /** Why a character has no profile, so the worker can skip known-gone ones. */

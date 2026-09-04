@@ -60,6 +60,19 @@ describe('ProfileEnrichmentService', () => {
     getSpecializations.mockResolvedValue({
       active_specialization: { id: 65, name: 'Holy' },
       active_hero_talent_tree: { id: 49, name: 'Lightsmith' },
+      specializations: [
+        {
+          specialization: { id: 70, name: 'Retribution' },
+          loadouts: [{ is_active: true, talent_loadout_code: 'RET-CODE' }],
+        },
+        {
+          specialization: { id: 65, name: 'Holy' },
+          loadouts: [
+            { is_active: false, talent_loadout_code: 'HOLY-BACKUP' },
+            { is_active: true, talent_loadout_code: 'HOLY-CODE' },
+          ],
+        },
+      ],
     });
     coordinator = new IngestionCoordinator();
 
@@ -140,6 +153,25 @@ describe('ProfileEnrichmentService', () => {
       'eu',
       1,
       expect.objectContaining({ title: null }),
+      expect.any(Date),
+    );
+  });
+
+  it('stores the active loadout of every spec, each paired with its own spec', async () => {
+    findProfilesToEnrich.mockResolvedValue([character()]);
+
+    await service.run();
+
+    expect(saveProfileSpecs).toHaveBeenCalledWith(
+      42,
+      'eu',
+      1,
+      expect.objectContaining({
+        talentLoadouts: [
+          { spec: { id: 70, name: 'Retribution' }, talentLoadoutCode: 'RET-CODE' },
+          { spec: { id: 65, name: 'Holy' }, talentLoadoutCode: 'HOLY-CODE' },
+        ],
+      }),
       expect.any(Date),
     );
   });

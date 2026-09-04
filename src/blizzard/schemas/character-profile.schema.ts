@@ -32,7 +32,43 @@ export const characterProfileSchema = z.object({
 export const characterSpecializationsSchema = z.object({
   active_specialization: namedRef.optional(),
   active_hero_talent_tree: namedRef.optional(),
+  // Only the fields we keep; zod drops the rest of the payload, which carries a
+  // full talent tree with tooltips for every loadout.
+  specializations: z
+    .array(
+      z.object({
+        specialization: namedRef,
+        loadouts: z
+          .array(
+            z.object({
+              is_active: z.boolean(),
+              talent_loadout_code: z.string().optional(),
+            }),
+          )
+          .optional(),
+      }),
+    )
+    .optional(),
 });
 
 export type CharacterProfilePayload = z.infer<typeof characterProfileSchema>;
 export type CharacterSpecializationsPayload = z.infer<typeof characterSpecializationsSchema>;
+
+/**
+ * The importable talent code of the active loadout for each specialisation the
+ * character has built, so a UI can switch builds as it filters by spec.
+ *
+ * Every specialisation carries its own `is_active` loadout, so each code stays
+ * paired with the spec it belongs to. Specs with no active loadout, or an active
+ * loadout Blizzard reports without a code, are left out — there is nothing to
+ * link to.
+ */
+export function activeLoadoutsBySpec(
+  payload: CharacterSpecializationsPayload,
+): { spec: { id: number; name: string }; talentLoadoutCode: string }[] {
+  return (payload.specializations ?? []).flatMap((entry) => {
+    const code = entry.loadouts?.find((loadout) => loadout.is_active)?.talent_loadout_code;
+
+    return code ? [{ spec: entry.specialization, talentLoadoutCode: code }] : [];
+  });
+}

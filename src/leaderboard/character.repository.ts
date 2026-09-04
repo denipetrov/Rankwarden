@@ -30,7 +30,10 @@ export type ProfileSummaryFields = Pick<
 >;
 
 /** The half that comes from the specializations endpoint. */
-export type ProfileSpecFields = Pick<CharacterProfile, 'spec' | 'heroTalentTree'>;
+export type ProfileSpecFields = Pick<
+  CharacterProfile,
+  'spec' | 'heroTalentTree' | 'talentLoadouts'
+>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 
 const BULK_CHUNK_SIZE = 1_000;
@@ -241,6 +244,7 @@ export class CharacterRepository implements OnModuleInit {
         $set: {
           'profile.spec': specs.spec,
           'profile.heroTalentTree': specs.heroTalentTree,
+          'profile.talentLoadouts': specs.talentLoadouts,
           specsFetchedAt: fetchedAt,
         },
       },
