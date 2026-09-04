@@ -6,7 +6,7 @@ import { MongoClient } from 'mongodb';
 const uri = process.env.MONGODB_URI ?? 'mongodb://localhost:27017';
 const dbName = process.env.MONGODB_DB ?? 'rankwarden';
 const COLLECTION = 'characters';
-const CORE_BRACKETS = ['2v2', '3v3', 'rbg', 'shuffle-overall', 'blitz-overall'];
+const CORE_BRACKETS = ['2v2', '3v3', 'rbg'];
 
 const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5_000 });
 

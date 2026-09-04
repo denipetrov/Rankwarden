@@ -6,7 +6,7 @@ import {
   type IndexDescription,
 } from 'mongodb';
 
-import type { Bracket, Region } from '../blizzard/blizzard.constants.js';
+import { EXCLUDED_BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import {
   CHARACTERS_COLLECTION,
@@ -66,6 +66,7 @@ export class CharacterRepository implements OnModuleInit {
 
     await this.collection.createIndexes(indexes);
     await this.dropLegacyBracketIndexes();
+    await this.purgeExcludedBrackets();
     this.logger.log(`Indexes ensured on "${CHARACTERS_COLLECTION}"`);
   }
 
@@ -76,7 +77,7 @@ export class CharacterRepository implements OnModuleInit {
   private async dropLegacyBracketIndexes(): Promise<void> {
     const legacy = (await this.collection.indexes())
       .map((index) => index.name)
-      .filter((name): name is string => /^bracket_.+_rank$/.test(name ?? ''));
+      .filter((name): name is string => /^bracket_.+_rank$|^best_in_family$/.test(name ?? ''));
 
     for (const name of legacy) {
       await this.collection.dropIndex(name);
@@ -164,6 +165,40 @@ export class CharacterRepository implements OnModuleInit {
         (await this.writeChunk(replayed, false))
       );
     }
+  }
+
+  /**
+   * Clears aggregate brackets left by earlier builds. Their sweep jobs no longer
+   * run, so ordinary pruning would never reach them and the misleading ratings
+   * would sit in the data forever.
+   */
+  private async purgeExcludedBrackets(): Promise<void> {
+    const unset: Record<string, ''> = {};
+    for (const bracket of EXCLUDED_BRACKETS) {
+      unset[`brackets.${bracket}`] = '';
+      unset[`ratings.${bracket}`] = '';
+    }
+
+    // `best` was an earlier attempt at the all-specs board; the flat per-family
+    // collections replaced it, so clear it out too.
+    const purged = await this.collection.updateMany(
+      {
+        $or: [
+          ...EXCLUDED_BRACKETS.map((bracket) => ({ [`brackets.${bracket}`]: { $exists: true } })),
+          { best: { $exists: true } },
+        ],
+      },
+      { $unset: { ...unset, best: '' } },
+    );
+
+    if (purged.modifiedCount === 0) return;
+
+    // Anyone who ranked only in an aggregate bracket now ranks in nothing.
+    const removed = await this.collection.deleteMany({ brackets: {} });
+    this.logger.log(
+      `Purged aggregate brackets from ${purged.modifiedCount} characters ` +
+        `(${removed.deletedCount} left unranked and deleted)`,
+    );
   }
 
   /**

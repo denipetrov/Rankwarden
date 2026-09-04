@@ -19,10 +19,19 @@ Game Data API and (as of the next iteration) persists them to MongoDB.
    immediately; everyone else is refreshed once their profile passes `PROFILE_TTL_MS`
    (1 day).
 
-Regions: `us, eu, kr, tw`. Brackets are whatever Blizzard's per-season leaderboard index
-lists — currently **85**: `2v2`, `3v3`, `rbg`, `shuffle-overall`, `blitz-overall`, plus a
-`shuffle-<class>-<spec>` and `blitz-<class>-<spec>` ladder for every specialisation. The
-list is fetched each sweep rather than hardcoded, so new specs are picked up on their own.
+Regions: `us, eu, kr, tw`. Brackets come from Blizzard's per-season leaderboard index
+rather than a hardcoded list, so new specialisations are picked up on their own. Of the
+85 it publishes, **83 are ingested**: `2v2`, `3v3`, `rbg`, and a
+`shuffle-<class>-<spec>` / `blitz-<class>-<spec>` ladder per specialisation.
+
+`shuffle-overall` and `blitz-overall` are **deliberately skipped**. Solo Shuffle and
+Blitz are rated per specialisation, and the aggregate board does not track a character's
+best spec — one character sits at rank 1 in `shuffle-mage-fire` with 2688 while their
+overall reads 2454, which is their _frost_ rating. Across the dataset, 748 of 11,105
+characters had a spec rating higher than their overall, by as much as 2006 points.
+Storing it would mean holding a rating that contradicts the per-spec data. The exclusion
+lives in `EXCLUDED_BRACKETS`, and documents carrying aggregate data from earlier builds
+are purged at startup.
 
 ## Layout
 
@@ -86,12 +95,14 @@ a character's full record is a single read.
   realmSlug: 'outland',
   faction: 'ALLIANCE',
   brackets: {
-    '2v2':                { rank: 897,  rating: 1821, played: 51, won: 30, lost: 21, fetchedAt: … },
-    '3v3':                { rank: 1282, rating: 1668, played: 47, won: 23, lost: 24, fetchedAt: … },
-    'shuffle-mage-frost': { rank: 12,   rating: 2402, played: 88, won: 51, lost: 37, fetchedAt: … },
+    '2v2':               { rank: 897,  rating: 1821, played: 51, won: 30, lost: 21, fetchedAt: … },
+    '3v3':               { rank: 1282, rating: 1668, played: 47, won: 23, lost: 24, fetchedAt: … },
+    'shuffle-mage-fire': { rank: 1,    rating: 2688, played: 88, won: 51, lost: 37, fetchedAt: … },
   },
   // mirror of the ratings above — the only searchable per-bracket field
-  ratings: { '2v2': 1821, '3v3': 1668, 'shuffle-mage-frost': 2402 },
+  ratings: { '2v2': 1821, '3v3': 1668, 'shuffle-mage-fire': 2688 },
+  // strongest rating per spec-split family, recomputed at the end of each sweep
+  best: { shuffle: { bracket: 'shuffle-mage-fire', rating: 2688 } },
   updatedAt: …,
 
   // filled in by the enrichment pass, not the sweep
@@ -137,6 +148,37 @@ Full index set: unique `seasonId + region + characterId` identity, `characterNam
 realmSlug` lookup, `profileFetchedAt` for enrichment staleness, and `bracket_ratings`.
 That is four, whatever the bracket count. Superseded `bracket_*_rank` indexes are dropped
 automatically at startup.
+
+### The all-classes / all-specs board
+
+Solo Shuffle and Blitz are rated per specialisation, so a character holds one rating per
+spec they play — and a board covering every class and spec must list them once per spec,
+not once per character. That is a different shape from `characters` (one row per rating,
+not one document per player), so it gets its own collections:
+
+```
+shuffle_ratings   { seasonId, region, bracket, characterId, rating, fetchedAt }
+blitz_ratings     same
+```
+
+The board is a plain sorted range scan, with display data joined afterwards by
+`characterId`:
+
+```js
+db.shuffle_ratings.find({ seasonId: 42, region: 'us' }).sort({ rating: -1 }).limit(50);
+```
+
+Measured on 131,169 shuffle rows: **50 keys / 50 docs examined, index-ordered**, and 12ms
+including a `$lookup` into `characters` for names, realms and class. Paginate with a
+rating cursor (`rating: { $lt: lastSeen }`) — that stays at 50 keys at any depth, whereas
+`skip: 5000` examined 5,050.
+
+Indexes per collection: `seasonId + region + rating` (the board), a unique
+`seasonId + region + bracket + characterId` (the upsert key), and `characterId` for
+"every rating this character holds" on a character page.
+
+Rows are written alongside the character documents during the sweep and pruned the same
+way, by `fetchedAt`, so a character dropping off a spec ladder loses that row only.
 
 ### Querying a ladder
 

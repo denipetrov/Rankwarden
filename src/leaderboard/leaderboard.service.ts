@@ -1,7 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { isRegion, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
+import {
+  isIngestableBracket,
+  isRegion,
+  specSplitFamilyOf,
+  type Bracket,
+  type Region,
+} from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
@@ -10,6 +16,7 @@ import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
 import { CharacterRepository } from './character.repository.js';
 import { toCharacterBracketUpdates } from './leaderboard.mapper.js';
+import { SpecRatingRepository } from './spec-rating.repository.js';
 
 export interface SweepJobResult {
   region: Region;
@@ -46,6 +53,7 @@ export class LeaderboardService {
     private readonly pvpApi: PvpApi,
     private readonly seasons: SeasonService,
     private readonly repository: CharacterRepository,
+    private readonly specRatings: SpecRatingRepository,
     private readonly sweeps: SweepEvents,
     private readonly coordinator: IngestionCoordinator,
   ) {
@@ -123,8 +131,15 @@ export class LeaderboardService {
         // Ask Blizzard which brackets exist rather than hardcoding them; the set
         // grows with every new specialisation.
         const brackets = await this.pvpApi.getBrackets(region, seasonId);
+        const ingestable = brackets.filter(isIngestableBracket);
 
-        for (const bracket of brackets) {
+        if (ingestable.length !== brackets.length) {
+          this.logger.debug(
+            `${region}: skipping ${brackets.length - ingestable.length} aggregate brackets`,
+          );
+        }
+
+        for (const bracket of ingestable) {
           jobs.push({ region, bracket, seasonId });
         }
       } catch (error) {
@@ -158,6 +173,14 @@ export class LeaderboardService {
         bracket,
         fetchedAt,
       );
+
+      // Spec-split brackets are mirrored into their family's flat collection,
+      // which is what an all-classes/all-specs board is ordered from.
+      const family = specSplitFamilyOf(bracket);
+      if (family) {
+        await this.specRatings.upsertBracket(family, updates);
+        await this.specRatings.pruneBracket(family, seasonId, region, bracket, fetchedAt);
+      }
 
       return { region, bracket, seasonId, entries: updates.length, written, droppedBrackets };
     } catch (error) {
