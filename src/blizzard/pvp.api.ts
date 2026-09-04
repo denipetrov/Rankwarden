@@ -2,7 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import type { Bracket, Region } from './blizzard.constants.js';
 import { BlizzardHttpService } from './http/blizzard-http.service.js';
-import { pvpSeasonIndexSchema, type PvpSeasonIndex } from './schemas/pvp-season.schema.js';
+import {
+  pvpSeasonIndexSchema,
+  pvpSeasonSchema,
+  type PvpSeasonIndex,
+} from './schemas/pvp-season.schema.js';
 import { pvpLeaderboardSchema, type PvpLeaderboard } from './schemas/pvp-leaderboard.schema.js';
 import { pvpLeaderboardIndexSchema } from './schemas/pvp-leaderboard-index.schema.js';
 
@@ -16,6 +20,25 @@ export class PvpApi {
   async getSeasonIndex(region: Region): Promise<PvpSeasonIndex> {
     const payload = await this.http.get(region, 'data/wow/pvp-season/index');
     return pvpSeasonIndexSchema.parse(payload);
+  }
+
+  /**
+   * A season's own record. `endsAt` is null while it is running and appears the
+   * moment it ends, so this is worth re-reading for as long as it is null.
+   */
+  async getSeason(
+    region: Region,
+    seasonId: number,
+  ): Promise<{ id: number; name?: string; startsAt: Date; endsAt: Date | null }> {
+    const payload = await this.http.get(region, `data/wow/pvp-season/${seasonId}`);
+    const season = pvpSeasonSchema.parse(payload);
+
+    return {
+      id: season.id,
+      name: season.season_name,
+      startsAt: new Date(season.season_start_timestamp),
+      endsAt: season.season_end_timestamp ? new Date(season.season_end_timestamp) : null,
+    };
   }
 
   /** Every bracket Blizzard publishes for a season, in the order it lists them. */

@@ -53,6 +53,9 @@ export const envSchema = z.object({
   PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
 
+  /** How often to re-check which season is active, independently of sweeps. */
+  SEASON_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
+
   // Daily spec-representation snapshots ("flavour of the month").
   REPRESENTATION_ENABLED: z
     .enum(['true', 'false'])

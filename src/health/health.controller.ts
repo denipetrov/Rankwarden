@@ -16,7 +16,7 @@ export class HealthController {
       status: 'ok',
       uptimeSeconds: Math.round(process.uptime()),
       sweepRunning: this.leaderboards.isRunning,
-      currentSeasons: this.seasons.snapshot(),
+      seasons: this.seasons.describe(),
     };
   }
 }

@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import type { AnyBulkWriteOperation, Collection } from 'mongodb';
 
 import {
+  ratingFamilyOf,
   RATING_FAMILIES,
   type Bracket,
   type Region,
@@ -9,6 +10,7 @@ import {
 } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
+import { CHARACTERS_COLLECTION } from './entities/character.entity.js';
 import { RATING_COLLECTIONS, type RatingDocument } from './entities/rating.entity.js';
 
 const BULK_CHUNK_SIZE = 1_000;
@@ -111,6 +113,84 @@ export class RatingRepository implements OnModuleInit {
     });
 
     return { written, removed: removed.deletedCount };
+  }
+
+  /**
+   * Deletes rows belonging to characters that no longer exist.
+   *
+   * Per-bracket pruning already removes a row when a character leaves that
+   * ladder, but it can only act on brackets the sweep actually visited. A
+   * character deleted outright, or one whose bracket Blizzard stopped
+   * publishing, would leave rows behind that no board should ever show. This
+   * reconciles against `characters`, which is the record of who exists.
+   */
+  async removeOrphans(seasonId: number, region: Region): Promise<number> {
+    const known = new Set(
+      await this.mongo
+        .collection(CHARACTERS_COLLECTION)
+        .distinct('characterId', { seasonId, region }),
+    );
+
+    let removed = 0;
+
+    for (const family of RATING_FAMILIES) {
+      const collection = this.collection(family);
+      const present = await collection.distinct('characterId', { seasonId, region });
+      const orphans = present.filter((characterId) => !known.has(characterId));
+
+      for (let offset = 0; offset < orphans.length; offset += BULK_CHUNK_SIZE) {
+        const chunk = orphans.slice(offset, offset + BULK_CHUNK_SIZE);
+        const result = await collection.deleteMany({
+          seasonId,
+          region,
+          characterId: { $in: chunk },
+        });
+        removed += result.deletedCount;
+      }
+    }
+
+    if (removed > 0) {
+      this.logger.log(`Removed ${removed} orphaned rating rows in ${region}`);
+    }
+
+    return removed;
+  }
+
+  /**
+   * Drops rows for brackets Blizzard no longer publishes.
+   *
+   * Per-bracket pruning only runs for brackets the sweep visited, so a ladder
+   * that disappears — a specialisation removed between expansions, say — would
+   * otherwise keep its rows forever, still ordered onto boards.
+   */
+  async removeRetiredBrackets(
+    seasonId: number,
+    region: Region,
+    liveBrackets: readonly Bracket[],
+  ): Promise<number> {
+    // An empty list means the sweep failed for this region, not that every
+    // bracket retired. Deleting on that basis would wipe the region.
+    if (liveBrackets.length === 0) return 0;
+
+    let removed = 0;
+
+    for (const family of RATING_FAMILIES) {
+      const live = liveBrackets.filter((bracket) => ratingFamilyOf(bracket) === family);
+      if (live.length === 0) continue;
+
+      const result = await this.collection(family).deleteMany({
+        seasonId,
+        region,
+        bracket: { $nin: live },
+      });
+      removed += result.deletedCount;
+    }
+
+    if (removed > 0) {
+      this.logger.log(`Removed ${removed} rating rows for retired brackets in ${region}`);
+    }
+
+    return removed;
   }
 
   /** Drops rows this sweep did not refresh — the character left that ladder. */

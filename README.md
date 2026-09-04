@@ -7,8 +7,10 @@ Game Data API and (as of the next iteration) persists them to MongoDB.
 
 1. **Boot** — env is validated with zod, MongoDB connects, indexes are ensured, and
    the Blizzard OAuth credentials are verified.
-2. **Season resolution** — `GET /data/wow/pvp-season/index` per region; the active
-   season id is cached in memory (`SeasonService`).
+2. **Season resolution** — `GET /data/wow/pvp-season/index` per region; the active season
+   id and its start date are cached in memory (`SeasonService`). A dedicated job
+   re-checks this every `SEASON_REFRESH_INTERVAL_MS` (1 day) so a rollover is caught at
+   runtime rather than only on restart, independently of whether sweeps are running.
 3. **Sweep** — for every `region × bracket` pair the leaderboard is fetched, validated
    with zod, and merged into the character documents. Brackets a character no longer
    ranks in are unset; characters left in no bracket at all are deleted.
@@ -49,7 +51,7 @@ src/
     schemas/                  zod schemas for season index + leaderboard payloads
     pvp.api.ts                typed PvP endpoints
   profile/                    background race/class/spec/hero-talent enrichment
-  season/                     in-memory active season per region
+  season/                     in-memory active season per region, refreshed daily
   leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
   health/                     GET /health — season snapshot + sweep state
@@ -182,8 +184,20 @@ Indexes per collection: `seasonId + region + rating` (the board), a unique
 `seasonId + region + bracket + characterId` (the upsert key), and `characterId` for
 "every rating this character holds" on a character page.
 
-Rows are written alongside the character documents during the sweep and pruned the same
-way, by `fetchedAt`, so a character dropping off a spec ladder loses that row only.
+Rows are written alongside the character documents during the sweep and cleaned three
+ways at the end of it, because each covers a case the others cannot reach:
+
+| Cleanup                                           | Removes                                        | Case it covers                                                               |
+| ------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| `pruneBracket` (per bracket, by `fetchedAt`)      | rows the sweep did not refresh                 | the character left that ladder                                               |
+| `removeOrphans` (reconciled against `characters`) | rows whose character no longer exists          | the character was deleted outright, or a row survived pruning some other way |
+| `removeRetiredBrackets`                           | rows for brackets Blizzard no longer publishes | a specialisation ladder disappears, so no sweep job ever visits it again     |
+
+Only the first runs per bracket; the other two run once per region, after the unranked
+characters have been deleted, so their rows are already orphans by then.
+`removeRetiredBrackets` refuses to act when a region's sweep produced no brackets at all
+— that means the sweep failed, not that every ladder retired, and acting on it would
+empty the region.
 
 ### Querying a ladder
 
@@ -322,9 +336,37 @@ A full snapshot takes about 4.7 seconds across 4 regions x 5 families x 5 cutoff
 
 A tick runs every `REPRESENTATION_CHECK_INTERVAL_MS` (1 hour) and writes a snapshot only
 if the current UTC day has none, so a restart or an outage cannot silently lose a day —
-and re-running is an upsert, never a duplicate. Ticks also fire on sweep completion,
+and re-running is an upsert, never a duplicate. Each run also deletes snapshots from
+before the current season began (`season_start_timestamp`, fetched once per rollover): a
+new season resets every ladder, so earlier curves describe a population that no longer
+exists. Ticks also fire on sweep completion,
 which is both the freshest moment to count and what covers startup: the bootstrap tick
 always lands while the startup sweep holds the coordinator, so it defers.
+
+### Season rollover
+
+`GET /data/wow/pvp-season/{id}` carries `season_start_timestamp` always and
+`season_end_timestamp` **only once the season has ended** — Blizzard writes it onto that
+same record at the moment it finishes (season 41 ended 2026-08-11; season 42 has no end
+date yet). So the season's own document is the signal, and it stays worth re-reading for
+as long as no end date has appeared. Once one has, nothing about that season can change
+again and it is cached for good.
+
+`SeasonScheduler` re-checks every region daily, logging two distinct transitions at warn
+level: a season ending (`Season 42 has ended in us at …`) and a rollover
+(`Season rollover in us: 42 replaced by 43`). Between them a region can sit in a gap —
+the old season finished, the next not yet started — which `hasEnded()` reports.
+
+Season starts differ per region (us 2026-08-18 15:00Z, eu 08-19 04:00Z, kr/tw 08-19
+23:00Z), which is why the representation purge is scoped per region rather than applied
+globally.
+
+The sweep's own cleanup takes its season id from the jobs it built, not from
+`SeasonService`. A rollover detected part-way through a sweep would otherwise have the
+cleanup act on the new season while every write of that sweep went to the old one.
+
+`GET /health` reports each region's season id, name, start date, end date (null while
+running), and last completed season.
 
 ## Sync endpoint
 

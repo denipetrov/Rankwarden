@@ -43,6 +43,8 @@ export interface SnapshotSummary {
   date: Date;
   written: number;
   skipped: number;
+  /** Snapshots dropped because they predate the current season. */
+  purged: number;
   durationMs: number;
 }
 
@@ -109,10 +111,13 @@ export class SpecRepresentationService implements OnModuleInit {
     const computedAt = new Date();
     let written = 0;
     let skipped = 0;
+    let purged = 0;
 
     for (const region of this.regions) {
       const seasonId =
         this.seasons.getCurrentSeason(region) ?? (await this.seasons.refresh(region));
+
+      purged += await this.pruneBeforeSeasonStart(region);
 
       for (const family of RATING_FAMILIES) {
         for (const minRating of this.minRatings) {
@@ -144,10 +149,34 @@ export class SpecRepresentationService implements OnModuleInit {
     const durationMs = Date.now() - startedAt;
     this.logger.log(
       `Representation snapshot for ${date.toISOString().slice(0, 10)}: ` +
-        `${written} series written, ${skipped} empty, ${durationMs}ms`,
+        `${written} series written, ${skipped} empty, ${purged} stale purged, ${durationMs}ms`,
     );
 
-    return { date, written, skipped, durationMs };
+    return { date, written, skipped, purged, durationMs };
+  }
+
+  /**
+   * Drops snapshots taken before the current season began. A new season resets
+   * every ladder, so earlier curves describe a population that no longer exists
+   * and would only stretch the visualisation's axis.
+   */
+  private async pruneBeforeSeasonStart(region: Region): Promise<number> {
+    const seasonStart = this.seasons.getSeasonStart(region);
+    if (!seasonStart) return 0;
+
+    const result = await this.collection.deleteMany({
+      region,
+      date: { $lt: startOfUtcDay(seasonStart) },
+    });
+
+    if (result.deletedCount > 0) {
+      this.logger.log(
+        `Purged ${result.deletedCount} ${region} snapshots from before ` +
+          `${seasonStart.toISOString().slice(0, 10)}`,
+      );
+    }
+
+    return result.deletedCount;
   }
 
   /** Folds flat tallies into specs, each carrying its own hero talent breakdown. */

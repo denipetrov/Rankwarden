@@ -88,20 +88,30 @@ export class LeaderboardService {
 
         const failed = results.filter((result) => result.error).length;
 
-        // Once per region, after every bracket has had its chance to re-rank people.
+        // Once per region, after every bracket has had its chance to re-rank
+        // people. The season comes from the jobs rather than from SeasonService:
+        // a rollover detected mid-sweep would otherwise have the cleanup act on
+        // the new season while every write went to the old one.
         let removedCharacters = 0;
-        for (const region of new Set(jobs.map((job) => job.region))) {
-          const seasonId = this.seasons.getCurrentSeason(region);
-          if (seasonId !== undefined) {
-            removedCharacters += await this.repository.removeUnranked(seasonId, region);
-          }
+        let removedRatingRows = 0;
+        const seasonByRegion = new Map(jobs.map((job) => [job.region, job.seasonId]));
+
+        for (const [region, seasonId] of seasonByRegion) {
+          removedCharacters += await this.repository.removeUnranked(seasonId, region);
+          // Only after the characters are gone, so their rows are orphans by then.
+          removedRatingRows += await this.ratings.removeOrphans(seasonId, region);
+          removedRatingRows += await this.ratings.removeRetiredBrackets(
+            seasonId,
+            region,
+            jobs.filter((job) => job.region === region).map((job) => job.bracket),
+          );
         }
 
         const durationMs = Date.now() - startedAt.getTime();
 
         this.logger.log(
           `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
-            `${removedCharacters} characters unranked`,
+            `${removedCharacters} characters unranked, ${removedRatingRows} stale rating rows removed`,
         );
 
         return { startedAt, durationMs, jobs: results, failed, removedCharacters };
