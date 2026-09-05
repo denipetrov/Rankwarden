@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
 import { SweepEvents } from '../common/events/sweep-events.service.js';
+import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import type { Env } from '../config/env.schema.js';
 import { ProfileEnrichmentService } from './profile-enrichment.service.js';
 import type { Subscription } from 'rxjs';
@@ -22,6 +23,7 @@ export class ProfileScheduler implements OnApplicationBootstrap, OnModuleDestroy
     private readonly enrichment: ProfileEnrichmentService,
     private readonly scheduler: SchedulerRegistry,
     private readonly sweeps: SweepEvents,
+    private readonly coordinator: IngestionCoordinator,
   ) {
     this.enabled = config.get('PROFILE_ENRICHMENT_ENABLED', { infer: true });
     this.intervalMs = config.get('PROFILE_INTERVAL_MS', { infer: true });
@@ -30,6 +32,8 @@ export class ProfileScheduler implements OnApplicationBootstrap, OnModuleDestroy
   onApplicationBootstrap(): void {
     if (!this.enabled) {
       this.logger.log('Profile enrichment disabled');
+      // Otherwise the archive waits forever for a pass that never comes.
+      this.coordinator.markEnrichmentDisabled();
       return;
     }
 

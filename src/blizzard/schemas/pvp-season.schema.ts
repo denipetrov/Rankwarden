@@ -21,7 +21,9 @@ export const pvpSeasonSchema = z.object({
   // Absent while the season is running; Blizzard adds it to this same document
   // once the season ends, which is the only signal that it has.
   season_end_timestamp: z.number().optional(),
-  season_name: z.string().optional(),
+  // Observed as a string, absent, and explicitly null across seasons — `.optional()`
+  // alone rejects the null and would fail the whole parse.
+  season_name: z.string().nullish(),
 });
 
 export type PvpSeason = z.infer<typeof pvpSeasonSchema>;

@@ -56,6 +56,28 @@ export const envSchema = z.object({
   /** How often to re-check which season is active, independently of sweeps. */
   SEASON_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
 
+  // Archive of finished seasons.
+  ARCHIVE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  ARCHIVE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Breather between seasons so a backfill does not monopolise the quota. */
+  ARCHIVE_SEASON_PAUSE_MS: z.coerce.number().int().nonnegative().default(5_000),
+  ARCHIVE_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  /** Top N by rating kept per bracket. Blizzard already returns about this many. */
+  ARCHIVE_MAX_ENTRIES_PER_BRACKET: z.coerce.number().int().positive().default(5_000),
+  /**
+   * Oldest season to archive; 0 means every season Blizzard still serves. The
+   * full history is roughly 20M rows / 5GB, so this is the knob for trading
+   * completeness against disk.
+   */
+  ARCHIVE_MIN_SEASON: z.coerce.number().int().nonnegative().default(0),
+  /** Newest season to archive; 0 means no upper bound. Pairs with the minimum
+   * to target a single season or a range. */
+  ARCHIVE_MAX_SEASON: z.coerce.number().int().nonnegative().default(0),
+  ARCHIVE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(10),
+
   // Daily spec-representation snapshots ("flavour of the month").
   REPRESENTATION_ENABLED: z
     .enum(['true', 'false'])

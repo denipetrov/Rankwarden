@@ -55,6 +55,7 @@ src/
   leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
   health/                     GET /health — season snapshot + sweep state
+  archive/                    finished seasons, fetched once and kept separately
   representation/             daily spec-representation snapshots
   sync/                       POST /characters/sync — push a record in from the API
 scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
@@ -367,6 +368,61 @@ cleanup act on the new season while every write of that sweep went to the old on
 
 `GET /health` reports each region's season id, name, start date, end date (null while
 running), and last completed season.
+
+## Season archive
+
+Finished seasons live in their own collections so the live ones stay light:
+
+```
+archive_entries   { seasonId, region, bracket, characterId, characterName,
+                    realmId, realmSlug, faction, rank, rating, played, won, lost }
+archive_seasons   { seasonId, region, name, startsAt, endsAt, brackets, entries,
+                    failedBrackets, archivedAt }
+```
+
+Rows are **self-contained** — name, realm and faction come from the leaderboard itself
+rather than a reference into `characters`. Historical standings have to keep reading
+correctly forever, and a character can be renamed, transferred or deleted long after the
+season it belonged to.
+
+**No profile enrichment.** The archive keeps only what the leaderboard endpoint returns.
+Enrichment costs two requests per character and would describe the player _today_, not
+during that season, so it would be both expensive and wrong.
+
+### Running once, and resuming
+
+`archive_seasons` is the progress marker: a season/region recorded there with no
+`failedBrackets` is never fetched again.
+
+A missing marker does **not** mean a missing season, though — a crash part-way through,
+or a dropped markers collection, leaves the rows in place with nothing recording them.
+So before fetching a season the service samples the data itself: three random brackets,
+up to ten rows each. Finding rows is enough to skip the ~85 requests, and the marker is
+written back from what is actually stored, so the next startup takes the cheap path
+without sampling at all.
+
+The sample is deliberately not a count — the point is to avoid work, not to trade one
+expensive operation for another. It answers "is anything here", not "is this complete";
+completeness is what `failedBrackets` records. A season with failures stays pending and is
+retried whole — writes are upserts keyed on
+`seasonId + region + bracket + characterId`, so a retry cannot duplicate anything.
+
+The scheduler takes one season per pass and comes straight back while work remains,
+pausing `ARCHIVE_SEASON_PAUSE_MS` between seasons and stopping entirely while any live
+ingestion is running. Once the backlog is clear the interval only has to notice the current season
+ending: `nextPending` offers the active season as soon as `SeasonService.hasEnded()`
+reports an end date for it, so it is archived at runtime without a restart.
+
+### Size, and the two levers
+
+Blizzard serves seasons 22 onward (below that is 404). The full history is
+**~19.7M rows, ~5.2GB** — driven by breadth, not depth: 83 brackets x 20 seasons x 4
+regions, at roughly 3,700 entries each.
+
+| Lever                                    | Effect                                                                                                                 |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `ARCHIVE_MAX_ENTRIES_PER_BRACKET` (5000) | Top N by rating per bracket. **Saves ~1%** — Blizzard already returns about 5,000, so this is a guard, not a reduction |
+| `ARCHIVE_MIN_SEASON` (0 = all)           | The real lever. Seasons 35+ are the ones with per-spec shuffle ladders; starting there is roughly a third of the rows  |
 
 ## Sync endpoint
 

@@ -78,43 +78,46 @@ export class ProfileEnrichmentService {
     this.requests = 0;
     const startedAt = Date.now();
 
-    try {
-      const due = await this.characters.findProfilesToEnrich(
-        new Date(startedAt - this.summaryTtlMs),
-        new Date(startedAt - this.specsTtlMs),
-        this.batchSize,
-        onlyNew,
-      );
+    // Announced so the archive holds off: enrichment is live data and wins.
+    return this.coordinator
+      .duringEnrichment(async () => {
+        const due = await this.characters.findProfilesToEnrich(
+          new Date(startedAt - this.summaryTtlMs),
+          new Date(startedAt - this.specsTtlMs),
+          this.batchSize,
+          onlyNew,
+        );
 
-      if (due.length === 0) {
-        this.logger.debug(`No ${onlyNew ? 'new ' : ''}characters due for enrichment`);
-        return this.emptyResult();
-      }
+        if (due.length === 0) {
+          this.logger.debug(`No ${onlyNew ? 'new ' : ''}characters due for enrichment`);
+          return this.emptyResult();
+        }
 
-      const outcomes = await mapWithConcurrency(due, this.concurrency, (character) =>
-        this.enrich(character, startedAt),
-      );
+        const outcomes = await mapWithConcurrency(due, this.concurrency, (character) =>
+          this.enrich(character, startedAt),
+        );
 
-      const count = (outcome: Outcome) => outcomes.filter((value) => value === outcome).length;
-      const result: EnrichmentRunResult = {
-        selected: due.length,
-        enriched: count('ok'),
-        missing: count('missing'),
-        failed: count('failed'),
-        skipped: count('skipped'),
-        requests: this.requests,
-        durationMs: Date.now() - startedAt,
-      };
+        const count = (outcome: Outcome) => outcomes.filter((value) => value === outcome).length;
+        const result: EnrichmentRunResult = {
+          selected: due.length,
+          enriched: count('ok'),
+          missing: count('missing'),
+          failed: count('failed'),
+          skipped: count('skipped'),
+          requests: this.requests,
+          durationMs: Date.now() - startedAt,
+        };
 
-      this.logger.log(
-        `Enriched ${result.enriched}/${result.selected}${onlyNew ? ' new' : ''} characters ` +
-          `in ${result.durationMs}ms using ${result.requests} requests ` +
-          `(${result.missing} missing, ${result.failed} failed, ${result.skipped} skipped)`,
-      );
-      return result;
-    } finally {
-      this.running = false;
-    }
+        this.logger.log(
+          `Enriched ${result.enriched}/${result.selected}${onlyNew ? ' new' : ''} characters ` +
+            `in ${result.durationMs}ms using ${result.requests} requests ` +
+            `(${result.missing} missing, ${result.failed} failed, ${result.skipped} skipped)`,
+        );
+        return result;
+      })
+      .finally(() => {
+        this.running = false;
+      });
   }
 
   private emptyResult(): EnrichmentRunResult {

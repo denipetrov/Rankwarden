@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { IngestionCoordinator } from './ingestion-coordinator.service.js';
 
 describe('IngestionCoordinator', () => {
-  it('reports no sweep active by default', () => {
-    expect(new IngestionCoordinator().isSweepActive).toBe(false);
+  it('reports nothing active by default', () => {
+    const coordinator = new IngestionCoordinator();
+
+    expect(coordinator.isSweepActive).toBe(false);
+    expect(coordinator.isEnrichmentActive).toBe(false);
+    expect(coordinator.isLiveIngestionActive).toBe(false);
   });
 
   it('marks a sweep active only for the duration of the work', async () => {
@@ -17,6 +21,17 @@ describe('IngestionCoordinator', () => {
 
     expect(activeDuringWork).toBe(true);
     expect(coordinator.isSweepActive).toBe(false);
+  });
+
+  it('treats enrichment as live ingestion too', async () => {
+    const coordinator = new IngestionCoordinator();
+
+    await coordinator.duringEnrichment(async () => {
+      expect(coordinator.isSweepActive).toBe(false);
+      expect(coordinator.isLiveIngestionActive).toBe(true);
+    });
+
+    expect(coordinator.isLiveIngestionActive).toBe(false);
   });
 
   it('clears the flag when the sweep throws', async () => {
@@ -48,5 +63,65 @@ describe('IngestionCoordinator', () => {
     release();
     await outer;
     expect(coordinator.isSweepActive).toBe(false);
+  });
+
+  describe('warm-up', () => {
+    it('is not warmed up until both a sweep and an enrichment pass have run', async () => {
+      const coordinator = new IngestionCoordinator();
+      expect(coordinator.isWarmedUp).toBe(false);
+
+      await coordinator.duringSweep(async () => {});
+      expect(coordinator.isWarmedUp).toBe(false);
+
+      await coordinator.duringEnrichment(async () => {});
+      expect(coordinator.isWarmedUp).toBe(true);
+    });
+
+    it('signals once both have completed, regardless of order', async () => {
+      const coordinator = new IngestionCoordinator();
+      const warmed = vi.fn();
+      coordinator.warmedUp$.subscribe(warmed);
+
+      await coordinator.duringEnrichment(async () => {});
+      expect(warmed).not.toHaveBeenCalled();
+
+      await coordinator.duringSweep(async () => {});
+      expect(warmed).toHaveBeenCalledOnce();
+    });
+
+    it('signals only once, not on every later pass', async () => {
+      const coordinator = new IngestionCoordinator();
+      const warmed = vi.fn();
+      coordinator.warmedUp$.subscribe(warmed);
+
+      await coordinator.duringSweep(async () => {});
+      await coordinator.duringEnrichment(async () => {});
+      await coordinator.duringSweep(async () => {});
+      await coordinator.duringEnrichment(async () => {});
+
+      expect(warmed).toHaveBeenCalledOnce();
+    });
+
+    it('reaches a subscriber that arrives after warm-up', async () => {
+      const coordinator = new IngestionCoordinator();
+      await coordinator.duringSweep(async () => {});
+      await coordinator.duringEnrichment(async () => {});
+
+      const warmed = vi.fn();
+      coordinator.warmedUp$.subscribe(warmed);
+
+      // A late subscriber must not miss the signal and stall forever.
+      expect(warmed).toHaveBeenCalledOnce();
+    });
+
+    it('does not wait on enrichment that is switched off', async () => {
+      const coordinator = new IngestionCoordinator();
+      coordinator.markEnrichmentDisabled();
+
+      expect(coordinator.isWarmedUp).toBe(false);
+
+      await coordinator.duringSweep(async () => {});
+      expect(coordinator.isWarmedUp).toBe(true);
+    });
   });
 });
