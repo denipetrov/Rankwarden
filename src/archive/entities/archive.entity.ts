@@ -39,6 +39,13 @@ export interface ArchiveSeasonDocument {
   /** Brackets the API refused; the season is retried while any remain. */
   failedBrackets: Bracket[];
   archivedAt: Date;
+  /**
+   * Set when Blizzard will never serve this season - seasons below 22 are gone
+   * for good. Distinct from a complete archive: nothing was stored, but there
+   * is nothing to come back for either, so the backlog moves on.
+   */
+  unarchivable?: boolean;
+  lastError?: string;
 }
 
 export const ARCHIVE_ENTRIES_COLLECTION = 'archive_entries';

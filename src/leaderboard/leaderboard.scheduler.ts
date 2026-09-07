@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
+import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { LeaderboardService } from './leaderboard.service.js';
 
@@ -45,7 +46,7 @@ export class LeaderboardScheduler implements OnApplicationBootstrap, OnModuleDes
     try {
       await this.leaderboards.sweep();
     } catch (error) {
-      this.logger.error(`Unhandled error during ${trigger} sweep`, error as Error);
+      this.logger.error(`Unhandled error during ${trigger} sweep`, errorStack(error));
     }
   }
 }

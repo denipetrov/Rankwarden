@@ -4,11 +4,15 @@ export class BlizzardApiError extends Error {
     readonly statusCode: number,
     readonly url: string,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; attempts?: number },
   ) {
     super(message, options);
     this.name = 'BlizzardApiError';
+    this.attempts = options?.attempts ?? 1;
   }
+
+  /** Requests spent before giving up, retries included. */
+  readonly attempts: number;
 
   /** Characters get renamed, transferred and deleted — 404 is routine, not a failure. */
   get isNotFound(): boolean {

@@ -51,10 +51,12 @@ src/
     schemas/                  zod schemas for season index + leaderboard payloads
     pvp.api.ts                typed PvP endpoints
   profile/                    background race/class/spec/hero-talent enrichment
-  season/                     in-memory active season per region, refreshed daily
+  season/                     active season per region (persisted), rollover events,
+                              and the transition that retires a finished season
   leaderboard/                sweep orchestration, mapper, character repository, scheduler
   database/                   MongoClient lifecycle
-  health/                     GET /health — season snapshot + sweep state
+  health/                     GET /health, /health/ready, /health/seasons
+  admin/                      POST /admin/* — dev-only job triggers (404 in production)
   archive/                    finished seasons, fetched once and kept separately
   representation/             daily spec-representation snapshots
   sync/                       POST /characters/sync — push a record in from the API
@@ -106,8 +108,6 @@ a character's full record is a single read.
   },
   // mirror of the ratings above — the only searchable per-bracket field
   ratings: { '2v2': 1821, '3v3': 1668, 'shuffle-mage-fire': 2688 },
-  // strongest rating per spec-split family, recomputed at the end of each sweep
-  best: { shuffle: { bracket: 'shuffle-mage-fire', rating: 2688 } },
   updatedAt: …,
 
   // filled in by the enrichment pass, not the sweep
@@ -149,10 +149,11 @@ per-bracket indexes it replaced cost 1.8MB between them and covered five bracket
 
 The bulky `brackets` payload is never indexed: it is read, not searched.
 
-Full index set: unique `seasonId + region + characterId` identity, `characterName +
-realmSlug` lookup, `profileFetchedAt` for enrichment staleness, and `bracket_ratings`.
-That is four, whatever the bracket count. Superseded `bracket_*_rank` indexes are dropped
-automatically at startup.
+Full index set on `characters`: `_id_`, unique `seasonId + region + characterId`
+identity, `characterName + realmSlug` lookup, `bracket_ratings`, and `specsFetchedAt` /
+`profileFetchedAt` for enrichment staleness. That is **six**, whatever the bracket count.
+Superseded `bracket_*_rank` and `best_in_family` indexes are dropped automatically at
+startup, as is any leftover `best` field.
 
 ### The all-classes / all-specs board
 
@@ -367,7 +368,21 @@ The sweep's own cleanup takes its season id from the jobs it built, not from
 cleanup act on the new season while every write of that sweep went to the old one.
 
 `GET /health` reports each region's season id, name, start date, end date (null while
-running), and last completed season.
+running), and last completed season. The state is persisted in `season_state` and reloaded
+at startup, so a rollover that happens while the service is down is still recognised as a
+rollover rather than as a first observation.
+
+### Retiring a finished season
+
+A finished season stays live and readable until the **next** season actually begins, so the
+boards do not empty during the gap. `SeasonTransitionService.plan()` gates on the earliest
+new-season start across regions, then deletes per region everything below that region's own
+current season — regions stagger by up to 32 hours, and a global delete would empty a
+trailing region's live board only for its next sweep to rewrite it.
+
+`GET /health/seasons` exposes the plan read-only. It is irreversible once armed, and on a
+first deploy mid-season the gate is already open, so ship with `SEASON_PURGE_DRY_RUN=true`
+and read the logged plan first.
 
 ## Season archive
 
@@ -423,6 +438,36 @@ regions, at roughly 3,700 entries each.
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `ARCHIVE_MAX_ENTRIES_PER_BRACKET` (5000) | Top N by rating per bracket. **Saves ~1%** — Blizzard already returns about 5,000, so this is a guard, not a reduction |
 | `ARCHIVE_MIN_SEASON` (0 = all)           | The real lever. Seasons 35+ are the ones with per-spec shuffle ladders; starting there is roughly a third of the rows  |
+
+## Health endpoints
+
+Three endpoints, deliberately split, because an orchestrator needs different answers:
+
+| Endpoint          | Answers                                   | Touches |
+| ----------------- | ----------------------------------------- | ------- |
+| `/health`         | is the process alive                      | nothing |
+| `/health/ready`   | should it receive traffic                 | Mongo   |
+| `/health/seasons` | per-season detail and the transition plan | Mongo   |
+
+Mongo is a hard dependency: unreachable means `503` on readiness. Blizzard is a soft one —
+the service still holds every row it has already ingested, so an outage reports `degraded`
+and stays `200`. Failing readiness there would have an orchestrator restart-loop the
+service through an incident it cannot fix.
+
+Blizzard state is observed passively from real traffic and reported per region, never
+probed — these endpoints are unauthenticated, and probing on each hit would be free
+amplification into a metered API. Credentials never appear in a response: the Mongo host is
+reported, never the URI.
+
+## Dev-only job triggers
+
+`POST /admin/{sweep,enrich,snapshot,archive,season-refresh,season-transition}` each drive
+one cycle of that job and return its result. They **404 when `NODE_ENV=production`**.
+
+They exist for runtime rehearsals. Shrinking the intervals through configuration instead
+makes every job race every other one, which is exactly what a rehearsal is trying to avoid.
+Pair them with `BLIZZARD_API_HOST_TEMPLATE` to drive the whole binary against a fake
+Blizzard.
 
 ## Sync endpoint
 

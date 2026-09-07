@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import type { AnyBulkWriteOperation } from 'mongodb';
 
-import type { Region } from '../blizzard/blizzard.constants.js';
+import type { Bracket, Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import {
   ARCHIVE_ENTRIES_COLLECTION,
@@ -47,59 +47,63 @@ export class ArchiveRepository implements OnModuleInit {
     this.logger.log(`Indexes ensured on "${ARCHIVE_ENTRIES_COLLECTION}"`);
   }
 
-  /** Season/region pairs already archived with nothing left to retry. */
-  async completedSeasons(): Promise<Set<string>> {
+  /**
+   * Season/region pairs that need no further work: archived in full, or known
+   * to be unfetchable. Both are skipped, for different reasons.
+   */
+  async settledSeasons(): Promise<Set<string>> {
     const done = await this.seasons
-      .find({ failedBrackets: { $size: 0 } }, { projection: { seasonId: 1, region: 1 } })
+      .find(
+        { $or: [{ failedBrackets: { $size: 0 } }, { unarchivable: true }] },
+        { projection: { seasonId: 1, region: 1 } },
+      )
       .toArray();
 
     return new Set(done.map((entry) => `${entry.seasonId}:${entry.region}`));
   }
 
   /**
-   * Cheap "do we already hold this season?" probe: a few random brackets, a
-   * handful of rows each. Historical data never changes, so finding rows is
-   * reason enough not to spend ~85 requests fetching them again.
+   * What is actually stored for a season, brackets named rather than counted.
    *
-   * Deliberately a sample rather than a count — the point is to avoid work, not
-   * to swap one expensive operation for another. It cannot tell a complete
-   * season from a partial one, which is what `archive_seasons` is for; this only
-   * answers whether anything is there at all.
+   * The names are what makes a partial season recoverable: a crash mid-archive
+   * leaves rows with no marker, and the only way to tell 83 of 83 brackets from
+   * 3 of 83 is to compare these against the bracket list the API publishes.
+   * A sampling probe cannot do it — `distinct` only ever lists brackets that
+   * are present, so it finds rows either way.
    */
-  async hasStoredEntries(
-    seasonId: number,
-    region: Region,
-    sampleBrackets = 3,
-    perBracket = 10,
-  ): Promise<boolean> {
-    const brackets = await this.entries.distinct('bracket', { seasonId, region });
-    if (brackets.length === 0) return false;
-
-    const sample = [...brackets].sort(() => Math.random() - 0.5).slice(0, sampleBrackets);
-
-    for (const bracket of sample) {
-      const rows = await this.entries
-        .find({ seasonId, region, bracket }, { projection: { _id: 1 } })
-        .limit(perBracket)
-        .toArray();
-
-      if (rows.length === 0) return false;
-    }
-
-    return true;
-  }
-
-  /** Counts what is actually stored, so a recovered marker reflects reality. */
   async summariseStored(
     seasonId: number,
     region: Region,
-  ): Promise<{ brackets: number; entries: number }> {
+  ): Promise<{ brackets: Bracket[]; entries: number }> {
     const [brackets, entries] = await Promise.all([
       this.entries.distinct('bracket', { seasonId, region }),
       this.entries.countDocuments({ seasonId, region }),
     ]);
 
-    return { brackets: brackets.length, entries };
+    return { brackets, entries };
+  }
+
+  /**
+   * Marks a season the API will never serve, so it stops holding up everything
+   * behind it in the backlog. Seasons below 22 return 404 permanently.
+   */
+  async markUnarchivable(seasonId: number, region: Region, reason: string): Promise<void> {
+    await this.seasons.updateOne(
+      { seasonId, region },
+      {
+        $set: { unarchivable: true, lastError: reason, archivedAt: new Date() },
+        $setOnInsert: {
+          seasonId,
+          region,
+          startsAt: null,
+          endsAt: null,
+          brackets: 0,
+          entries: 0,
+          failedBrackets: [],
+        },
+      },
+      { upsert: true },
+    );
   }
 
   async insertEntries(entries: readonly ArchiveEntryDocument[]): Promise<number> {

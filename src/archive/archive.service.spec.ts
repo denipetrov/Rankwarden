@@ -22,12 +22,12 @@ describe('ArchiveService', () => {
   const getBrackets = vi.fn();
   const getLeaderboard = vi.fn();
   const getSeason = vi.fn();
-  const completedSeasons = vi.fn();
+  const settledSeasons = vi.fn();
   const insertEntries = vi.fn();
   const recordSeason = vi.fn();
   const countEntries = vi.fn();
-  const hasStoredEntries = vi.fn();
   const summariseStored = vi.fn();
+  const markUnarchivable = vi.fn();
   const hasEnded = vi.fn();
   let coordinator: IngestionCoordinator;
   let service: ArchiveService;
@@ -59,10 +59,10 @@ describe('ArchiveService', () => {
       startsAt: new Date('2026-03-17T15:00:00.000Z'),
       endsAt: new Date('2026-08-11T05:00:00.000Z'),
     });
-    completedSeasons.mockResolvedValue(new Set<string>());
+    settledSeasons.mockResolvedValue(new Set<string>());
     countEntries.mockResolvedValue(1);
-    hasStoredEntries.mockResolvedValue(false);
-    summariseStored.mockResolvedValue({ brackets: 83, entries: 297119 });
+    // Nothing stored by default, so a season is fetched rather than adopted.
+    summariseStored.mockResolvedValue({ brackets: [], entries: 0 });
     hasEnded.mockReturnValue(false);
     coordinator = new IngestionCoordinator();
 
@@ -75,12 +75,12 @@ describe('ArchiveService', () => {
         {
           provide: ArchiveRepository,
           useValue: {
-            completedSeasons,
+            settledSeasons,
             insertEntries,
             recordSeason,
             countEntries,
-            hasStoredEntries,
             summariseStored,
+            markUnarchivable,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },
@@ -96,13 +96,13 @@ describe('ArchiveService', () => {
   });
 
   it('never offers the active season while it is still running', async () => {
-    completedSeasons.mockResolvedValue(new Set(['41:us', '40:us', '41:eu', '40:eu']));
+    settledSeasons.mockResolvedValue(new Set(['41:us', '40:us', '41:eu', '40:eu']));
 
     await expect(service.nextPending()).resolves.toBeNull();
   });
 
   it('offers the active season once it has ended', async () => {
-    completedSeasons.mockResolvedValue(new Set(['41:us', '40:us', '41:eu', '40:eu']));
+    settledSeasons.mockResolvedValue(new Set(['41:us', '40:us', '41:eu', '40:eu']));
     hasEnded.mockReturnValue(true);
 
     await expect(service.nextPending()).resolves.toEqual({ seasonId: 42, region: 'us' });
@@ -120,12 +120,12 @@ describe('ArchiveService', () => {
         {
           provide: ArchiveRepository,
           useValue: {
-            completedSeasons,
+            settledSeasons,
             insertEntries,
             recordSeason,
             countEntries,
-            hasStoredEntries,
             summariseStored,
+            markUnarchivable,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },
@@ -142,35 +142,75 @@ describe('ArchiveService', () => {
   });
 
   it('does not re-fetch a season that is already archived', async () => {
-    completedSeasons.mockResolvedValue(new Set(['41:us']));
+    settledSeasons.mockResolvedValue(new Set(['41:us']));
 
     await expect(service.nextPending()).resolves.toEqual({ seasonId: 40, region: 'us' });
   });
 
   it('skips a season whose rows are already stored, even with no marker', async () => {
     // A crash mid-season, or a dropped markers collection: the data is there and
-    // historical data never changes, so re-fetching it is pure waste.
-    hasStoredEntries.mockResolvedValue(true);
+    // historical data never changes, so re-fetching it is pure waste. Only
+    // "3v3" counts as complete here — the aggregate bracket is never stored.
+    summariseStored.mockResolvedValue({ brackets: ['3v3'], entries: 297119 });
 
     await expect(service.nextPending()).resolves.toBeNull();
     expect(getLeaderboard).not.toHaveBeenCalled();
   });
 
   it('writes back the missing marker so the next startup is cheaper still', async () => {
-    hasStoredEntries.mockResolvedValue(true);
+    summariseStored.mockResolvedValue({ brackets: ['3v3'], entries: 297119 });
 
     await service.nextPending();
 
     expect(recordSeason).toHaveBeenCalledWith(
-      expect.objectContaining({ seasonId: 41, region: 'us', brackets: 83, entries: 297119 }),
+      expect.objectContaining({
+        seasonId: 41,
+        region: 'us',
+        brackets: 1,
+        entries: 297119,
+        failedBrackets: [],
+      }),
+    );
+  });
+
+  it('does not mistake a season stored in part for a complete one', async () => {
+    // A process killed partway leaves rows with no marker. Adopting on the mere
+    // presence of rows would write a marker claiming nothing is outstanding, and
+    // the missing brackets would never be fetched again.
+    getBrackets.mockResolvedValue(['2v2', '3v3', 'rbg', 'shuffle-overall']);
+    summariseStored.mockResolvedValue({ brackets: ['3v3'], entries: 4000 });
+
+    await expect(service.nextPending()).resolves.toEqual({ seasonId: 41, region: 'us' });
+  });
+
+  it('records what is outstanding on a partly stored season', async () => {
+    getBrackets.mockResolvedValue(['2v2', '3v3', 'rbg']);
+    summariseStored.mockResolvedValue({ brackets: ['3v3'], entries: 4000 });
+
+    await service.nextPending();
+
+    expect(recordSeason).toHaveBeenCalledWith(
+      expect.objectContaining({ seasonId: 41, region: 'us', failedBrackets: ['2v2', 'rbg'] }),
     );
   });
 
   it('fetches when nothing is stored for the season', async () => {
-    hasStoredEntries.mockResolvedValue(false);
+    summariseStored.mockResolvedValue({ brackets: [], entries: 0 });
 
     await expect(service.nextPending()).resolves.toEqual({ seasonId: 41, region: 'us' });
     expect(recordSeason).not.toHaveBeenCalled();
+  });
+
+  it('retries only the brackets still outstanding', async () => {
+    // Two failed brackets out of three used to cost all three requests per
+    // retry, per region, on every attempt.
+    getBrackets.mockResolvedValue(['2v2', '3v3', 'rbg']);
+    summariseStored.mockResolvedValue({ brackets: ['3v3'], entries: 4000 });
+
+    await service.archiveSeason(41, 'us');
+
+    const fetched = getLeaderboard.mock.calls.map((call) => call[2]);
+    expect(fetched).toEqual(['2v2', 'rbg']);
   });
 
   it('stores only leaderboard fields, with no profile lookup', async () => {

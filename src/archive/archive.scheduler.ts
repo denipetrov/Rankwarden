@@ -2,7 +2,10 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
+import type { Region } from '../blizzard/blizzard.constants.js';
+import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from './archive.service.js';
 import type { Subscription } from 'rxjs';
@@ -73,6 +76,11 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
     }
 
     this.running = true;
+    // Seasons that failed during this tick. Without it a season that throws is
+    // handed straight back by `nextPending` on the next iteration, and every
+    // season behind it in the ordering is unreachable for as long as it keeps
+    // failing — which, for a season Blizzard no longer serves, is forever.
+    const failedThisTick = new Set<string>();
 
     try {
       for (;;) {
@@ -83,16 +91,45 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
           return;
         }
 
-        const pending = await this.archive.nextPending();
+        const pending = await this.archive.nextPending(failedThisTick);
         if (!pending) return;
 
-        await this.archive.archiveSeason(pending.seasonId, pending.region);
+        try {
+          await this.archive.archiveSeason(pending.seasonId, pending.region);
+        } catch (error) {
+          await this.recordFailure(pending.seasonId, pending.region, error);
+          failedThisTick.add(`${pending.seasonId}:${pending.region}`);
+        }
+
         await new Promise((resolve) => setTimeout(resolve, this.pauseMs));
       }
     } catch (error) {
-      this.logger.error('Archiving failed', error as Error);
+      this.logger.error('Archiving failed', errorStack(error));
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * A 404 is permanent — Blizzard stops serving old seasons and never resumes —
+   * so it is recorded and never attempted again. Anything else could be
+   * transient, so it is only skipped for the rest of this tick.
+   */
+  private async recordFailure(seasonId: number, region: Region, error: unknown): Promise<void> {
+    const reason = describeError(error);
+
+    if (error instanceof BlizzardApiError && error.isNotFound) {
+      this.logger.warn(
+        `Season ${seasonId} ${region} is no longer served by Blizzard (${reason}); ` +
+          'marking it unarchivable and moving on',
+      );
+      await this.archive.markUnarchivable(seasonId, region, reason);
+      return;
+    }
+
+    this.logger.error(
+      `Could not archive season ${seasonId} ${region}: ${reason}; continuing with the backlog`,
+      errorStack(error),
+    );
   }
 }

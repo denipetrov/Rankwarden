@@ -1,16 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import {
-  isIngestableBracket,
-  isRegion,
-  type Bracket,
-  type Region,
-} from '../blizzard/blizzard.constants.js';
+import { isIngestableBracket, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
+import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
 import { ArchiveRepository } from './archive.repository.js';
@@ -49,9 +45,7 @@ export class ArchiveService {
     private readonly repository: ArchiveRepository,
     private readonly coordinator: IngestionCoordinator,
   ) {
-    this.regions = config
-      .get('BLIZZARD_REGIONS', { infer: true })
-      .filter((region): region is Region => isRegion(region));
+    this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.concurrency = config.get('ARCHIVE_CONCURRENCY', { infer: true });
     this.minSeason = config.get('ARCHIVE_MIN_SEASON', { infer: true });
     this.maxSeason = config.get('ARCHIVE_MAX_SEASON', { infer: true });
@@ -65,14 +59,17 @@ export class ArchiveService {
    * A season qualifies once it is no longer the active one — either an older
    * season, or the current one after Blizzard has stamped it with an end date.
    */
-  async nextPending(): Promise<{ seasonId: number; region: Region } | null> {
-    const completed = await this.repository.completedSeasons();
+  async nextPending(
+    skip: ReadonlySet<string> = new Set(),
+  ): Promise<{ seasonId: number; region: Region } | null> {
+    const settled = await this.repository.settledSeasons();
 
     for (const region of this.regions) {
       const seasonIds = await this.archivableSeasons(region);
 
       for (const seasonId of seasonIds) {
-        if (completed.has(`${seasonId}:${region}`)) continue;
+        const key = `${seasonId}:${region}`;
+        if (settled.has(key) || skip.has(key)) continue;
 
         // No marker, but the rows may still be there — a crash mid-season, or a
         // dropped markers collection. Re-fetching months-old standings that are
@@ -90,11 +87,20 @@ export class ArchiveService {
   /**
    * Recognises a season whose rows are already stored and writes back the marker
    * that was missing, so the next startup takes the cheap path.
+   *
+   * Adoption is only safe when the stored brackets match the ones the API
+   * publishes. A process killed partway through leaves rows with no marker, and
+   * adopting on the mere presence of rows would write a marker claiming nothing
+   * outstanding — after which the missing brackets are never fetched and nothing
+   * reports a problem. One request to compare against is far cheaper than the
+   * ~83 a re-fetch costs, and cheaper still than losing the data silently.
    */
   private async adoptStoredSeason(seasonId: number, region: Region): Promise<boolean> {
-    if (!(await this.repository.hasStoredEntries(seasonId, region))) return false;
-
     const stored = await this.repository.summariseStored(seasonId, region);
+    if (stored.entries === 0) return false;
+
+    const expected = await this.publishedBrackets(region, seasonId);
+    const missing = expected.filter((bracket) => !stored.brackets.includes(bracket));
     const season = await this.seasonMetadata(region, seasonId);
 
     await this.repository.recordSeason({
@@ -103,18 +109,53 @@ export class ArchiveService {
       name: season?.name,
       startsAt: season?.startsAt ?? null,
       endsAt: season?.endsAt ?? null,
-      brackets: stored.brackets,
+      brackets: stored.brackets.length,
       entries: stored.entries,
-      failedBrackets: [],
+      failedBrackets: missing,
       archivedAt: new Date(),
     });
 
+    if (missing.length > 0) {
+      this.logger.warn(
+        `Season ${seasonId} ${region} is only partly stored (${stored.brackets.length}/` +
+          `${expected.length} brackets); ${missing.length} outstanding and will be fetched`,
+      );
+
+      return false;
+    }
+
     this.logger.log(
       `Season ${seasonId} ${region} is already stored (${stored.entries} entries across ` +
-        `${stored.brackets} brackets); skipping the fetch`,
+        `${stored.brackets.length} brackets); skipping the fetch`,
     );
 
     return true;
+  }
+
+  /**
+   * The ingestable brackets the API publishes for a season, or an empty list if
+   * it will not say. An empty list makes the comparison above vacuous, which is
+   * the right outcome: a season Blizzard no longer describes cannot be
+   * completed, so whatever is stored is all there will ever be.
+   */
+  private async publishedBrackets(region: Region, seasonId: number): Promise<Bracket[]> {
+    try {
+      await this.limiter.acquire();
+
+      return (await this.pvpApi.getBrackets(region, seasonId)).filter(isIngestableBracket);
+    } catch (error) {
+      this.logger.warn(
+        `No bracket list for ${seasonId} ${region}: ${describeError(error)}; ` +
+          'treating what is stored as complete',
+      );
+
+      return [];
+    }
+  }
+
+  /** Records a season the API will never serve, so the backlog moves past it. */
+  async markUnarchivable(seasonId: number, region: Region, reason: string): Promise<void> {
+    await this.repository.markUnarchivable(seasonId, region, reason);
   }
 
   /** Season ids that are finished, newest first so recent history lands soonest. */
@@ -132,13 +173,29 @@ export class ArchiveService {
       .sort((a, b) => b - a);
   }
 
-  /** Fetches and stores one season for one region. */
+  /**
+   * Fetches and stores one season for one region.
+   *
+   * Only the brackets not already stored are fetched. A season with two failed
+   * brackets out of 83 used to cost 83 requests per retry, per region, every
+   * attempt — and when the failures came from live ingestion pre-empting the
+   * archive, that pattern repeated for as long as the sweeps kept landing.
+   */
   async archiveSeason(seasonId: number, region: Region): Promise<ArchiveSeasonResult> {
     const startedAt = Date.now();
     await this.limiter.acquire();
     const brackets = (await this.pvpApi.getBrackets(region, seasonId)).filter(isIngestableBracket);
+    const stored = new Set((await this.repository.summariseStored(seasonId, region)).brackets);
+    const outstanding = brackets.filter((bracket) => !stored.has(bracket));
 
-    const results = await mapWithConcurrency(brackets, this.concurrency, (bracket) =>
+    if (stored.size > 0) {
+      this.logger.log(
+        `Resuming season ${seasonId} ${region}: ${outstanding.length} of ${brackets.length} ` +
+          'brackets outstanding',
+      );
+    }
+
+    const results = await mapWithConcurrency(outstanding, this.concurrency, (bracket) =>
       this.archiveBracket(seasonId, region, bracket),
     );
 
@@ -174,8 +231,7 @@ export class ArchiveService {
       await this.limiter.acquire();
       return await this.pvpApi.getSeason(region, seasonId);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`No season record for ${seasonId} ${region}: ${message}`);
+      this.logger.warn(`No season record for ${seasonId} ${region}: ${describeError(error)}`);
       return null;
     }
   }
@@ -221,8 +277,9 @@ export class ArchiveService {
 
       return { bracket, entries: documents.length, failed: false };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Could not archive ${seasonId} ${region}/${bracket}: ${message}`);
+      this.logger.warn(
+        `Could not archive ${seasonId} ${region}/${bracket}: ${describeError(error)}`,
+      );
 
       return { bracket, entries: 0, failed: true };
     }

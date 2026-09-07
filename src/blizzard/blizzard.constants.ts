@@ -62,9 +62,18 @@ export function isRegion(value: string): value is Region {
   return (REGIONS as readonly string[]).includes(value);
 }
 
-/** Host for a region's Game Data API, e.g. https://us.api.blizzard.com */
-export function apiHost(region: Region): string {
-  return `https://${region}.api.blizzard.com`;
+/** The production host template; the default for `BLIZZARD_API_HOST_TEMPLATE`. */
+export const DEFAULT_API_HOST_TEMPLATE = 'https://{region}.api.blizzard.com';
+
+/**
+ * Host for a region's Game Data API, e.g. https://us.api.blizzard.com
+ *
+ * Templated rather than hardcoded so a runtime rehearsal can point the whole
+ * binary at a fake server. Overriding the provider through DI covers the
+ * integration layer, but a running process has no seam at all without this.
+ */
+export function apiHost(region: Region, template: string = DEFAULT_API_HOST_TEMPLATE): string {
+  return template.replaceAll('{region}', region);
 }
 
 /**

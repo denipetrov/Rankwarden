@@ -111,6 +111,7 @@ ranks them:
 | 3        | **Spec representation** | `REPRESENTATION_CHECK_INTERVAL_MS` (1h), writes once per UTC day | the sweep                |
 | 4        | **Season archive**      | `ARCHIVE_CHECK_INTERVAL_MS` (1h)                                 | sweep **and** enrichment |
 | —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)     |
+| —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)   |
 
 The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isLiveIngestionActive`,
 `isWarmedUp`, and `warmedUp$`. `duringSweep()` / `duringEnrichment()` wrap the work.
@@ -190,7 +191,40 @@ pausing `ARCHIVE_SEASON_PAUSE_MS` between seasons.
 
 `SeasonScheduler` re-reads the active season daily, independently of sweeps, so a rollover
 is caught even when ingestion is disabled or failing. Logs two distinct warn-level
-transitions: a season **ending** and a **rollover**.
+transitions: a season **ending** and a **rollover**, and publishes both on
+`SeasonEvents.transitions$`.
+
+State is **persisted** in `season_state` and rehydrated in `SeasonService.onModuleInit()`.
+This is not a cache optimisation: without it `previous` is `undefined` on a fresh process,
+so a rollover that happened while the service was down took the "first observation" branch
+and was never recognised as a rollover at all. The transition purge hangs off that
+comparison, so the persisted copy is what makes a rollover across a restart detectable.
+
+### 4.6 Season transition (retiring a finished season)
+
+`SeasonTransitionService` removes a finished season from the live collections **once the
+next season actually begins** — not when the old one ends, so the boards stay readable
+through the gap between seasons.
+
+- `plan(now)` is read-only and exposed on `GET /health/seasons`. It abstains if any
+  configured region has never been observed (one region failing at boot must not look like
+  a rollover), and again if `now` is before `transitionAt`.
+- `transitionAt` = the earliest `startsAt` among the regions already on the newest season.
+- The delete is scoped **per region** to `seasonId < current(R)`. Regions stagger by up to
+  32 hours; deleting every region at the earliest start would empty a trailing region's
+  live board, its next sweep would rewrite it, and the next tick would remove it again.
+- `SEASON_PURGE_REQUIRE_ARCHIVE` (default on) holds back any season the archive does not
+  hold in full — after a purge the archive is the only surviving copy.
+- `SEASON_PURGE_DRY_RUN` logs the full plan and deletes nothing. **Defaults to `true`**,
+  unlike every other flag, so deleting is an explicit opt-in (see the hazard below).
+- Order within `purge()`: ratings rows → characters → spec_representation → marker. Rating
+  rows go first so invariant "no orphan rating rows" holds at every intermediate moment,
+  not only at the end.
+
+> **Deployment hazard.** On a first deploy mid-season the gate is _already open_, because
+> `transitionAt` is the current season's start and that is in the past. Any archived season
+> below the current one is then purged on the first tick — at boot, not at the next
+> rollover. Ship with `SEASON_PURGE_DRY_RUN=true`, read the logged plan, then flip it.
 
 ---
 
@@ -319,16 +353,68 @@ configured. Character names must be lowercased and percent-encoded (`Zëph`).
 
 ## 7. HTTP endpoints
 
-### `GET /health`
+### `GET /health` — liveness
+
+Process-local only: no database command, no upstream call. It answers under any dependency
+outage and cannot time out behind one, so a slow dependency can never get a healthy process
+killed. **Always 200 while the process is up.**
 
 ```json
 {
   "status": "ok",
   "uptimeSeconds": 20,
   "sweepRunning": false,
-  "seasons": { "us": { "id": 42, "name": "…", "startsAt": "…", "endsAt": null } }
+  "seasons": { "us": { "id": 42, "name": "…", "startsAt": "…", "endsAt": null } },
+  "jobs": {
+    "sweepRunning": false,
+    "enrichmentRunning": false,
+    "warmedUp": true,
+    "lastSweep": { "finishedAt": "…", "brackets": 332, "failed": 0, "removedCharacters": 41 }
+  }
 }
 ```
+
+### `GET /health/ready` — readiness
+
+Pings Mongo (cached ~3s) and reports what real traffic has already observed of Blizzard,
+**per region**. This is what an orchestrator should poll.
+
+| Condition                            | `status`   | HTTP    |
+| ------------------------------------ | ---------- | ------- |
+| everything healthy                   | `ok`       | **200** |
+| Blizzard failing (any/all regions)   | `degraded` | **200** |
+| no sweep for 2× `INGEST_INTERVAL_MS` | `degraded` | **200** |
+| Mongo unreachable                    | `down`     | **503** |
+
+Mongo is a **hard** dependency and Blizzard a **soft** one. Without Mongo the service can
+do nothing, so readiness fails and traffic should be withdrawn. Without Blizzard it still
+holds every row already ingested, so only ingestion is degraded — failing readiness there
+would have an orchestrator restart-loop the service through an incident it cannot fix.
+**Do not "fix" the Blizzard case into a 503.**
+
+Two further rules this endpoint must keep:
+
+- **Never probe Blizzard.** State is recorded passively by `BlizzardHttpService` on real
+  calls. The endpoint is unauthenticated, so an active probe per hit would be free
+  amplification into a metered third-party API.
+- **Never leak a credential.** The Mongo host is reported, never the URI, and every
+  reported string passes through `redactSecrets` — driver connection errors routinely echo
+  the whole connection string.
+
+### `GET /health/seasons`
+
+Per-region season detail plus the read-only season-transition `plan()`. Kept off the
+readiness path because it reads the database.
+
+### `POST /admin/*` — dev-only job triggers
+
+`sweep`, `enrich`, `snapshot`, `archive`, `season-refresh`, `season-transition`. Each drives
+exactly **one** cycle and returns that cycle's own result object. Every route **404s when
+`NODE_ENV=production`**.
+
+They exist because the alternative — shrinking the intervals through configuration — makes
+every job race every other one, so a runtime rehearsal stops being a controlled
+observation.
 
 ### `POST /characters/sync`
 
@@ -373,38 +459,43 @@ secret or network policy in front of it before it runs anywhere but localhost.
 
 Every variable is validated by zod at boot; anything missing or malformed fails fast.
 
-| Variable                             | Default                        | Notes                                       |
-| ------------------------------------ | ------------------------------ | ------------------------------------------- |
-| `BLIZZARD_CLIENT_ID` / `_SECRET`     | —                              | **Required**                                |
-| `BLIZZARD_REGION`                    | `us`                           | OAuth host region only (`us,eu,kr,tw,cn`)   |
-| `BLIZZARD_REGIONS`                   | `us,eu,kr,tw`                  | Ladders to ingest — distinct from the above |
-| `BLIZZARD_LOCALE`                    | `en_US`                        |                                             |
-| `BLIZZARD_REQUEST_TIMEOUT_MS`        | `30000`                        |                                             |
-| `BLIZZARD_RETRY_LIMIT`               | `3`                            |                                             |
-| `BLIZZARD_CONCURRENCY`               | `8`                            | Parallel bracket fetches per sweep          |
-| `MONGODB_URI`                        | —                              | **Required**                                |
-| `MONGODB_DB`                         | `rankwarden`                   |                                             |
-| `INGEST_INTERVAL_MS`                 | `3600000`                      |                                             |
-| `INGEST_RUN_ON_STARTUP`              | `true`                         |                                             |
-| `PROFILE_ENRICHMENT_ENABLED`         | `true`                         | `false` releases the archive warm-up gate   |
-| `PROFILE_INTERVAL_MS`                | `300000`                       |                                             |
-| `PROFILE_BATCH_SIZE`                 | `500`                          | Characters per pass                         |
-| `PROFILE_SUMMARY_TTL_MS`             | `604800000`                    | 7 days                                      |
-| `PROFILE_SPECS_TTL_MS`               | `86400000`                     | 1 day                                       |
-| `PROFILE_CONCURRENCY`                | `8`                            |                                             |
-| `PROFILE_REQUESTS_PER_SECOND`        | `20`                           | Token bucket                                |
-| `SEASON_REFRESH_INTERVAL_MS`         | `86400000`                     |                                             |
-| `REPRESENTATION_ENABLED`             | `true`                         |                                             |
-| `REPRESENTATION_CHECK_INTERVAL_MS`   | `3600000`                      |                                             |
-| `REPRESENTATION_MIN_RATINGS`         | `1500,1800,2100,2300,2700`     | Cutoffs to track                            |
-| `ARCHIVE_ENABLED`                    | `true`                         |                                             |
-| `ARCHIVE_CHECK_INTERVAL_MS`          | `3600000`                      |                                             |
-| `ARCHIVE_SEASON_PAUSE_MS`            | `5000`                         | Breather between seasons                    |
-| `ARCHIVE_CONCURRENCY`                | `4`                            |                                             |
-| `ARCHIVE_REQUESTS_PER_SECOND`        | `10`                           |                                             |
-| `ARCHIVE_MIN_SEASON` / `_MAX_SEASON` | `0` / `0`                      | 0 = unbounded; the real size lever          |
-| `ARCHIVE_MAX_ENTRIES_PER_BRACKET`    | `5000`                         | Top N by rating; saves only ~1%             |
-| `NODE_ENV` / `PORT` / `LOG_LEVEL`    | `development` / `3000` / `log` |                                             |
+| Variable                              | Default                             | Notes                                            |
+| ------------------------------------- | ----------------------------------- | ------------------------------------------------ |
+| `BLIZZARD_CLIENT_ID` / `_SECRET`      | —                                   | **Required**                                     |
+| `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)        |
+| `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above      |
+| `BLIZZARD_LOCALE`                     | `en_US`                             |                                                  |
+| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam        |
+| `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                  |
+| `BLIZZARD_RETRY_LIMIT`                | `3`                                 |                                                  |
+| `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep               |
+| `MONGODB_URI`                         | —                                   | **Required**                                     |
+| `MONGODB_DB`                          | `rankwarden`                        |                                                  |
+| `INGEST_INTERVAL_MS`                  | `3600000`                           |                                                  |
+| `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                  |
+| `PROFILE_ENRICHMENT_ENABLED`          | `true`                              | `false` releases the archive warm-up gate        |
+| `PROFILE_INTERVAL_MS`                 | `300000`                            |                                                  |
+| `PROFILE_BATCH_SIZE`                  | `500`                               | Characters per pass                              |
+| `PROFILE_SUMMARY_TTL_MS`              | `604800000`                         | 7 days                                           |
+| `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                            |
+| `PROFILE_CONCURRENCY`                 | `8`                                 |                                                  |
+| `PROFILE_REQUESTS_PER_SECOND`         | `20`                                | Token bucket                                     |
+| `SEASON_REFRESH_INTERVAL_MS`          | `86400000`                          |                                                  |
+| `SEASON_TRANSITION_ENABLED`           | `true`                              | Retiring finished seasons                        |
+| `SEASON_TRANSITION_CHECK_INTERVAL_MS` | `3600000`                           | A rollover also ticks immediately                |
+| `SEASON_PURGE_REQUIRE_ARCHIVE`        | `true`                              | Only purge what the archive holds in full        |
+| `SEASON_PURGE_DRY_RUN`                | `true`                              | Log the plan, delete nothing; set `false` to arm |
+| `REPRESENTATION_ENABLED`              | `true`                              |                                                  |
+| `REPRESENTATION_CHECK_INTERVAL_MS`    | `3600000`                           |                                                  |
+| `REPRESENTATION_MIN_RATINGS`          | `1500,1800,2100,2300,2700`          | Cutoffs to track                                 |
+| `ARCHIVE_ENABLED`                     | `true`                              |                                                  |
+| `ARCHIVE_CHECK_INTERVAL_MS`           | `3600000`                           |                                                  |
+| `ARCHIVE_SEASON_PAUSE_MS`             | `5000`                              | Breather between seasons                         |
+| `ARCHIVE_CONCURRENCY`                 | `4`                                 |                                                  |
+| `ARCHIVE_REQUESTS_PER_SECOND`         | `10`                                |                                                  |
+| `ARCHIVE_MIN_SEASON` / `_MAX_SEASON`  | `0` / `0`                           | 0 = unbounded; the real size lever               |
+| `ARCHIVE_MAX_ENTRIES_PER_BRACKET`     | `5000`                              | Top N by rating; saves only ~1%                  |
+| `NODE_ENV` / `PORT` / `LOG_LEVEL`     | `development` / `3000` / `log`      |                                                  |
 
 ---
 
@@ -488,16 +579,30 @@ the race on the unique index (E11000). `CharacterRepository.writeChunk` replays 
 losing operations, which then settle as plain updates. Anything that is not a duplicate-key
 error still propagates.
 
-### 9.8 Cleanup has three distinct paths
+### 9.8 Cleanup has five distinct paths
 
-| Cleanup                                      | Removes                       | Case                       |
-| -------------------------------------------- | ----------------------------- | -------------------------- |
-| `pruneBracket` (per bracket, by `fetchedAt`) | rows not refreshed            | character left that ladder |
-| `removeOrphans` (vs `characters`)            | rows whose character is gone  | character deleted          |
-| `removeRetiredBrackets`                      | rows for unpublished brackets | a spec ladder disappears   |
+Run **in this order**, once per region, at the end of every sweep:
 
-`removeRetiredBrackets` refuses to act when a region produced no brackets — that means the
-sweep failed, not that every ladder retired; without the guard a failed region is wiped.
+| #   | Cleanup                                                       | Removes                          | Case                       |
+| --- | ------------------------------------------------------------- | -------------------------------- | -------------------------- |
+| 1   | `CharacterRepository.pruneBracket` (per bracket, `fetchedAt`) | a bracket not refreshed          | character left that ladder |
+| 2   | `CharacterRepository.removeRetiredBrackets`                   | bracket keys no longer published | a spec ladder disappears   |
+| 3   | `CharacterRepository.removeUnranked`                          | characters ranking in nothing    | left every ladder          |
+| 4   | `RatingRepository.removeOrphans` (vs `characters`)            | rows whose character is gone     | character deleted          |
+| 5   | `RatingRepository.removeRetiredBrackets`                      | rows for unpublished brackets    | a spec ladder disappears   |
+
+**The order matters twice.** Step 2 must precede step 3: a character ranked _only_ in
+retired brackets never reaches an empty `brackets` map otherwise, so `removeUnranked` can
+never see them and they persist for the rest of the season, still queryable through the
+`bracket_ratings` wildcard index. And steps 4–5 must follow step 3, so the rows are
+genuinely orphans by the time they are reconciled.
+
+Both `removeRetiredBrackets` implementations **refuse to act on an empty bracket list** —
+that means the sweep failed for the region, not that every ladder retired. Without the
+guard a single failed region is wiped.
+
+A sixth path, the season purge (§4.6), is separate: it retires a whole finished season and
+is gated on the _next_ season starting, not on a sweep.
 
 ---
 
@@ -553,12 +658,13 @@ extending the wildcard-covered maps over adding per-key indexes.
 
 ## 12. Known limitations
 
-- **No authentication** on `POST /characters/sync`.
+- **No authentication** on `POST /characters/sync` or on the health endpoints. The
+  `/admin/*` triggers are unauthenticated too, which is why they 404 outside development.
 - **Repositories and aggregation pipelines have no automated coverage.** An integration
   suite against a throwaway Mongo would be the highest-value addition.
-- **The archive completeness check is a sample**, drawn from brackets that are present, so it
-  cannot distinguish a complete season from one that crashed part-way. `failedBrackets` is
-  the authoritative record for seasons archived normally.
+- **A season Blizzard stops serving is marked `unarchivable`** and skipped forever. That is
+  right for seasons below 22, but a prolonged 404 on a season that _should_ exist would be
+  recorded the same way; clear the marker by hand to retry it.
 - **The sync endpoint's 409 is a check, not a lock** (§7).
 - **Full archive backfill is ~19.7M rows / ~5.2GB.** Driven by breadth (83 brackets × 20
   seasons × 4 regions), not depth — `ARCHIVE_MAX_ENTRIES_PER_BRACKET` saves only ~1%;
@@ -566,7 +672,7 @@ extending the wildcard-covered maps over adding per-key indexes.
 - **Enrichment backlog.** At default batch size a full pass over ~138k characters takes
   roughly two days, and the archive yields to enrichment, so a backfill running alongside it
   progresses only in the gaps.
-- **Old-season documents are not purged from the live collections** after a rollover. The
-  archive makes them redundant but nothing deletes them yet.
+- **The season purge is irreversible and fires at boot on a first deploy** (§4.6). Ship
+  behind `SEASON_PURGE_DRY_RUN=true` and read the logged plan before flipping it.
 - **Cross-region boards need four queries merged**, or a `seasonId + rating` index; the
   current index is prefixed by region.

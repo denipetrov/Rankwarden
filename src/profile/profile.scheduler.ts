@@ -4,6 +4,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ProfileEnrichmentService } from './profile-enrichment.service.js';
 import type { Subscription } from 'rxjs';
@@ -57,7 +58,7 @@ export class ProfileScheduler implements OnApplicationBootstrap, OnModuleDestroy
     try {
       await this.enrichment.run(onlyNew);
     } catch (error) {
-      this.logger.error('Unhandled error during profile enrichment', error as Error);
+      this.logger.error('Unhandled error during profile enrichment', errorStack(error));
     }
   }
 }

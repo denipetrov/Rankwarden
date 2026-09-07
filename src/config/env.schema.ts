@@ -1,15 +1,84 @@
 import { z } from 'zod';
 
-const csv = (fallback: string) =>
+import { REGIONS, type Region } from '../blizzard/blizzard.constants.js';
+
+const split = (value: string) =>
+  value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+const trimTrailingSlashes = (value: string) => {
+  let trimmed = value;
+  while (trimmed.endsWith('/')) trimmed = trimmed.slice(0, -1);
+
+  return trimmed;
+};
+
+/**
+ * Comma-separated regions, every one of which must be a region we actually
+ * serve. Previously a free-form list filtered by `isRegion` at four separate
+ * call sites, so `us,eur` booted reporting two regions and ingested one. A typo
+ * in the deployment config is a boot failure, not a silent halving of coverage.
+ */
+const regionCsv = (fallback: string) =>
   z
     .string()
     .default(fallback)
-    .transform((value) =>
-      value
-        .split(',')
-        .map((part) => part.trim().toLowerCase())
-        .filter(Boolean),
-    );
+    .transform((value, ctx) => {
+      const parts = split(value).map((part) => part.toLowerCase());
+
+      if (parts.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'must name at least one region' });
+        return z.NEVER;
+      }
+
+      const unknown = parts.filter((part) => !(REGIONS as readonly string[]).includes(part));
+
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `unknown region(s) ${unknown.join(', ')}; expected any of ${REGIONS.join(', ')}`,
+        });
+        return z.NEVER;
+      }
+
+      return [...new Set(parts)] as Region[];
+    });
+
+/**
+ * Comma-separated non-negative integers. Non-numeric entries used to be
+ * filtered out silently, so a typo produced an empty cutoff list and the
+ * snapshot job ran forever writing nothing while logging success.
+ */
+const integerCsv = (fallback: string) =>
+  z
+    .string()
+    .default(fallback)
+    .transform((value, ctx) => {
+      const parts = split(value);
+
+      if (parts.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'must list at least one value' });
+        return z.NEVER;
+      }
+
+      const invalid = parts.filter((part) => {
+        const parsed = Number(part);
+
+        return !Number.isInteger(parsed) || parsed < 0;
+      });
+
+      if (invalid.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `expected comma-separated non-negative integers, got ${invalid.join(', ')}`,
+        });
+        return z.NEVER;
+      }
+
+      return [...new Set(parts.map(Number))].sort((left, right) => left - right);
+    });
 
 /**
  * Every environment variable the service reads, validated once at boot.
@@ -22,7 +91,22 @@ export const envSchema = z.object({
   BLIZZARD_REGION: z.enum(['us', 'eu', 'kr', 'tw', 'cn']).default('us'),
 
   // Blizzard Game Data API.
-  BLIZZARD_REGIONS: csv('us,eu,kr,tw'),
+  BLIZZARD_REGIONS: regionCsv('us,eu,kr,tw'),
+  /**
+   * Host template for the Game Data API; `{region}` is substituted per call.
+   * Exists so a runtime rehearsal can point a running binary at a fake server.
+   * Left unset it produces exactly the production URLs.
+   */
+  BLIZZARD_API_HOST_TEMPLATE: z
+    .string()
+    .default('https://{region}.api.blizzard.com')
+    .refine((value) => value.includes('{region}'), {
+      message: 'must contain the {region} placeholder',
+    })
+    .refine((value) => value.startsWith('http://') || value.startsWith('https://'), {
+      message: 'must start with http:// or https://',
+    })
+    .transform(trimTrailingSlashes),
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
@@ -56,6 +140,32 @@ export const envSchema = z.object({
   /** How often to re-check which season is active, independently of sweeps. */
   SEASON_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
 
+  // Season transition: retiring a finished season from the live collections.
+  SEASON_TRANSITION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /** Fallback cadence; a detected rollover also ticks immediately. */
+  SEASON_TRANSITION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /** Only purge a season the archive already holds in full. */
+  SEASON_PURGE_REQUIRE_ARCHIVE: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /**
+   * Log the full plan at warn level and delete nothing.
+   *
+   * Defaults to ON, unlike the other flags. On a first deploy mid-season the
+   * purge gate is already open — `transitionAt` is the current season's start,
+   * which is in the past — so a live default would delete every archived season
+   * below the current one at boot, before anyone had seen a plan. Deleting is
+   * therefore an explicit opt-in.
+   */
+  SEASON_PURGE_DRY_RUN: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+
   // Archive of finished seasons.
   ARCHIVE_ENABLED: z
     .enum(['true', 'false'])
@@ -85,15 +195,7 @@ export const envSchema = z.object({
     .transform((value) => value === 'true'),
   REPRESENTATION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
   /** Rating cutoffs to track. */
-  REPRESENTATION_MIN_RATINGS: z
-    .string()
-    .default('1500,1800,2100,2300,2700')
-    .transform((value) =>
-      value
-        .split(',')
-        .map((part) => Number(part.trim()))
-        .filter((value) => Number.isInteger(value) && value >= 0),
-    ),
+  REPRESENTATION_MIN_RATINGS: integerCsv('1500,1800,2100,2300,2700'),
 
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
