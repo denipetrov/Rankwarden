@@ -2,7 +2,8 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
-import { isRegion, type Region } from '../blizzard/blizzard.constants.js';
+import type { Region } from '../blizzard/blizzard.constants.js';
+import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from './season.service.js';
 
@@ -28,9 +29,7 @@ export class SeasonScheduler implements OnApplicationBootstrap, OnModuleDestroy 
     private readonly seasons: SeasonService,
     private readonly scheduler: SchedulerRegistry,
   ) {
-    this.regions = config
-      .get('BLIZZARD_REGIONS', { infer: true })
-      .filter((region): region is Region => isRegion(region));
+    this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.intervalMs = config.get('SEASON_REFRESH_INTERVAL_MS', { infer: true });
   }
 
@@ -61,8 +60,12 @@ export class SeasonScheduler implements OnApplicationBootstrap, OnModuleDestroy 
         try {
           await this.seasons.refresh(region);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.error(`Could not refresh the season for ${region}: ${message}`);
+          // `describeError`, so a malformed season payload stays one log line
+          // instead of a multi-line JSON wall that log shipping splits apart.
+          this.logger.error(
+            `Could not refresh the season for ${region}: ${describeError(error)}`,
+            errorStack(error),
+          );
         }
       }
 

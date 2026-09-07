@@ -1,17 +1,19 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
   isIngestableBracket,
-  isRegion,
   ratingFamilyOf,
   type Bracket,
   type Region,
 } from '../blizzard/blizzard.constants.js';
+import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { RunLogger, withRunId } from '../common/logging/run-context.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
+import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
 import { CharacterRepository } from './character.repository.js';
@@ -26,15 +28,21 @@ export interface SweepJobResult {
   written: number;
   droppedBrackets: number;
   error?: string;
+  /** HTTP status when the failure came from the API; null otherwise. */
+  status?: number | null;
 }
 
 export interface SweepResult {
+  /** Correlation id shared by every log line this sweep produced. */
+  runId: string;
   startedAt: Date;
   durationMs: number;
   jobs: SweepJobResult[];
   failed: number;
   /** Characters deleted because they no longer rank in any bracket. */
   removedCharacters: number;
+  /** Failed brackets grouped by status code, for the closing summary. */
+  failures: { status: string; brackets: Bracket[] }[];
 }
 
 /**
@@ -43,7 +51,7 @@ export interface SweepResult {
  */
 @Injectable()
 export class LeaderboardService {
-  private readonly logger = new Logger(LeaderboardService.name);
+  private readonly logger = new RunLogger(LeaderboardService.name);
   private readonly regions: Region[];
   private readonly concurrency: number;
   private running = false;
@@ -57,9 +65,10 @@ export class LeaderboardService {
     private readonly sweeps: SweepEvents,
     private readonly coordinator: IngestionCoordinator,
   ) {
-    this.regions = config
-      .get('BLIZZARD_REGIONS', { infer: true })
-      .filter((region): region is Region => isRegion(region));
+    // Validated as regions at boot, so nothing is filtered out here: a typo in
+    // the deployment config now fails validation instead of silently reducing
+    // coverage to whatever happened to parse.
+    this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.concurrency = config.get('BLIZZARD_CONCURRENCY', { infer: true });
   }
 
@@ -78,44 +87,71 @@ export class LeaderboardService {
     const startedAt = new Date();
 
     try {
-      // Held for the whole sweep so enrichment stays out of the way: it writes
-      // the same documents and draws on the same hourly request quota.
-      const result = await this.coordinator.duringSweep(async () => {
-        const jobs = await this.buildJobs();
-        const results = await mapWithConcurrency(jobs, this.concurrency, (job) =>
-          this.ingestBracket(job.region, job.bracket, job.seasonId),
-        );
-
-        const failed = results.filter((result) => result.error).length;
-
-        // Once per region, after every bracket has had its chance to re-rank
-        // people. The season comes from the jobs rather than from SeasonService:
-        // a rollover detected mid-sweep would otherwise have the cleanup act on
-        // the new season while every write went to the old one.
-        let removedCharacters = 0;
-        let removedRatingRows = 0;
-        const seasonByRegion = new Map(jobs.map((job) => [job.region, job.seasonId]));
-
-        for (const [region, seasonId] of seasonByRegion) {
-          removedCharacters += await this.repository.removeUnranked(seasonId, region);
-          // Only after the characters are gone, so their rows are orphans by then.
-          removedRatingRows += await this.ratings.removeOrphans(seasonId, region);
-          removedRatingRows += await this.ratings.removeRetiredBrackets(
-            seasonId,
-            region,
-            jobs.filter((job) => job.region === region).map((job) => job.bracket),
+      // Every line this run produces carries its id, so a retry warning buried
+      // hundreds of lines up can still be tied back to the sweep it came from.
+      const result = await withRunId('sweep', async (runId) =>
+        // Held for the whole sweep so enrichment stays out of the way: it writes
+        // the same documents and draws on the same hourly request quota.
+        this.coordinator.duringSweep(async () => {
+          const jobs = await this.buildJobs();
+          const results = await mapWithConcurrency(jobs, this.concurrency, (job) =>
+            this.ingestBracket(job.region, job.bracket, job.seasonId),
           );
-        }
 
-        const durationMs = Date.now() - startedAt.getTime();
+          const failed = results.filter((result) => result.error).length;
 
-        this.logger.log(
-          `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
-            `${removedCharacters} characters unranked, ${removedRatingRows} stale rating rows removed`,
-        );
+          // Once per region, after every bracket has had its chance to re-rank
+          // people. The season comes from the jobs rather than from SeasonService:
+          // a rollover detected mid-sweep would otherwise have the cleanup act on
+          // the new season while every write went to the old one.
+          let removedCharacters = 0;
+          let removedRatingRows = 0;
+          let clearedBrackets = 0;
+          const seasonByRegion = new Map(jobs.map((job) => [job.region, job.seasonId]));
 
-        return { startedAt, durationMs, jobs: results, failed, removedCharacters };
-      });
+          for (const [region, seasonId] of seasonByRegion) {
+            const live = jobs.filter((job) => job.region === region).map((job) => job.bracket);
+
+            // Retired ladders first: a character ranked only in brackets that no
+            // longer exist has to reach an empty `brackets` map before the
+            // unranked pass below can see them at all.
+            clearedBrackets += await this.repository.removeRetiredBrackets(seasonId, region, live);
+            removedCharacters += await this.repository.removeUnranked(seasonId, region);
+            // Only after the characters are gone, so their rows are orphans by then.
+            removedRatingRows += await this.ratings.removeOrphans(seasonId, region);
+            removedRatingRows += await this.ratings.removeRetiredBrackets(seasonId, region, live);
+          }
+
+          const durationMs = Date.now() - startedAt.getTime();
+          const failures = groupFailures(results);
+
+          this.logger.log(
+            `Sweep finished in ${durationMs}ms: ${results.length - failed}/${results.length} brackets ok, ` +
+              `${clearedBrackets} retired brackets cleared, ${removedCharacters} characters unranked, ` +
+              `${removedRatingRows} stale rating rows removed`,
+          );
+
+          // Which brackets failed, not only how many: with 332 brackets at
+          // concurrency 8 the individual error lines are scattered hundreds of
+          // lines above and interleaved with seven other jobs.
+          for (const failure of failures) {
+            this.logger.warn(
+              `Failed ${failure.brackets.length} bracket(s) with ${failure.status}: ` +
+                failure.brackets.join(', '),
+            );
+          }
+
+          return {
+            runId,
+            startedAt,
+            durationMs,
+            jobs: results,
+            failed,
+            removedCharacters,
+            failures,
+          };
+        }),
+      );
 
       // Emitted only once the coordinator has released, otherwise the follow-up
       // enrichment pass sees a sweep still in progress and defers itself.
@@ -123,6 +159,7 @@ export class LeaderboardService {
         finishedAt: new Date(),
         brackets: result.jobs.length,
         failed: result.failed,
+        removedCharacters: result.removedCharacters,
       });
 
       return result;
@@ -153,7 +190,12 @@ export class LeaderboardService {
           jobs.push({ region, bracket, seasonId });
         }
       } catch (error) {
-        this.logger.error(`Could not resolve brackets for ${region}`, error as Error);
+        // The stack, not the Error: Logger.error takes a string second
+        // argument, and this is one of the outermost handlers in the service.
+        this.logger.error(
+          `Could not resolve brackets for ${region}: ${describeError(error)}`,
+          errorStack(error),
+        );
       }
     }
 
@@ -169,6 +211,17 @@ export class LeaderboardService {
 
     try {
       const leaderboard = await this.pvpApi.getLeaderboard(region, seasonId, bracket);
+
+      // The payload names the season it describes. During a rollover a stale
+      // edge cache or an early flip can serve one season under the other id,
+      // and persisting it would file a whole ladder under the wrong season with
+      // nothing downstream able to tell.
+      if (leaderboard.season.id !== seasonId) {
+        throw new Error(
+          `season mismatch: requested ${seasonId}, payload describes ${leaderboard.season.id}`,
+        );
+      }
+
       const updates = toCharacterBracketUpdates(leaderboard, {
         region,
         bracket,
@@ -194,7 +247,11 @@ export class LeaderboardService {
 
       return { region, bracket, seasonId, entries: updates.length, written, droppedBrackets };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // `describeError`, not `error.message`: a ZodError message is a
+      // pretty-printed JSON array of every issue, so one malformed payload
+      // would otherwise emit a multi-line block where a log line belongs, and
+      // line-oriented shipping would split it into unrelated records.
+      const message = describeError(error);
       this.logger.error(`Failed ingesting ${region}/${bracket}: ${message}`);
 
       return {
@@ -205,7 +262,27 @@ export class LeaderboardService {
         written: 0,
         droppedBrackets: 0,
         error: message,
+        status: error instanceof BlizzardApiError ? error.statusCode : null,
       };
     }
   }
+}
+
+/** Groups failed jobs by status, so the closing summary names them once. */
+function groupFailures(results: readonly SweepJobResult[]): {
+  status: string;
+  brackets: Bracket[];
+}[] {
+  const grouped = new Map<string, Bracket[]>();
+
+  for (const result of results) {
+    if (!result.error) continue;
+
+    const key = result.status ? String(result.status) : 'no HTTP status';
+    grouped.set(key, [...(grouped.get(key) ?? []), result.bracket]);
+  }
+
+  return [...grouped]
+    .map(([status, brackets]) => ({ status, brackets }))
+    .sort((left, right) => right.brackets.length - left.brackets.length);
 }

@@ -4,6 +4,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SpecRepresentationService } from './spec-representation.service.js';
 import type { Subscription } from 'rxjs';
@@ -75,11 +76,11 @@ export class SpecRepresentationScheduler implements OnApplicationBootstrap, OnMo
     this.running = true;
 
     try {
-      if (await this.representation.hasSnapshotFor(new Date())) return;
+      if (!(await this.representation.isSnapshotDue())) return;
 
       await this.representation.snapshot();
     } catch (error) {
-      this.logger.error('Failed to write the daily representation snapshot', error as Error);
+      this.logger.error('Failed to write the daily representation snapshot', errorStack(error));
     } finally {
       this.running = false;
     }

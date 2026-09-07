@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  apiHost,
   EXCLUDED_BRACKETS,
   isIngestableBracket,
   ratingFamilyOf,
@@ -64,5 +65,26 @@ describe('ratingFamilyOf', () => {
   it('returns null for anything it does not track', () => {
     expect(ratingFamilyOf('shuffle-overall')).toBeNull();
     expect(ratingFamilyOf('some-new-bracket')).toBeNull();
+  });
+});
+
+describe('apiHost', () => {
+  it('builds the production host by default', () => {
+    expect(apiHost('us')).toBe('https://us.api.blizzard.com');
+    expect(apiHost('kr')).toBe('https://kr.api.blizzard.com');
+  });
+
+  it('substitutes the region into an overridden template', () => {
+    // The seam a runtime rehearsal needs: overriding the provider covers the
+    // integration layer, but a running binary has no other way in.
+    expect(apiHost('eu', 'http://localhost:8080/{region}')).toBe('http://localhost:8080/eu');
+  });
+
+  it('substitutes every placeholder, not only the first', () => {
+    expect(apiHost('tw', 'http://{region}.local/{region}')).toBe('http://tw.local/tw');
+  });
+
+  it('leaves a template with no placeholder untouched', () => {
+    expect(apiHost('us', 'http://localhost:8080')).toBe('http://localhost:8080');
   });
 });

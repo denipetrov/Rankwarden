@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { pvpSeasonIndexSchema } from './pvp-season.schema.js';
+import { pvpSeasonIndexSchema, pvpSeasonSchema } from './pvp-season.schema.js';
 
 describe('pvpSeasonIndexSchema', () => {
   it('accepts a season index payload and exposes the current season', () => {
@@ -17,5 +17,28 @@ describe('pvpSeasonIndexSchema', () => {
 
   it('rejects a payload without a current season', () => {
     expect(() => pvpSeasonIndexSchema.parse({ seasons: [] })).toThrow();
+  });
+});
+
+describe('pvpSeasonSchema', () => {
+  const base = { id: 40, season_start_timestamp: 1755010800000 };
+
+  it('reads the end timestamp once a season has finished', () => {
+    const parsed = pvpSeasonSchema.parse({ ...base, season_end_timestamp: 1768888800000 });
+
+    expect(parsed.season_end_timestamp).toBe(1768888800000);
+  });
+
+  it('accepts a running season, which carries no end timestamp', () => {
+    expect(pvpSeasonSchema.parse(base).season_end_timestamp).toBeUndefined();
+  });
+
+  // All three shapes occur across real seasons: a string (39), absent (33), null (40).
+  it('accepts a season name in every shape Blizzard returns', () => {
+    expect(pvpSeasonSchema.parse({ ...base, season_name: 'Midnight Season 1' }).season_name).toBe(
+      'Midnight Season 1',
+    );
+    expect(pvpSeasonSchema.parse(base).season_name).toBeUndefined();
+    expect(pvpSeasonSchema.parse({ ...base, season_name: null }).season_name).toBeNull();
   });
 });

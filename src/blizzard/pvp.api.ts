@@ -35,7 +35,7 @@ export class PvpApi {
 
     return {
       id: season.id,
-      name: season.season_name,
+      name: season.season_name ?? undefined,
       startsAt: new Date(season.season_start_timestamp),
       endsAt: season.season_end_timestamp ? new Date(season.season_end_timestamp) : null,
     };

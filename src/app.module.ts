@@ -8,9 +8,11 @@ import { BlizzardModule } from './blizzard/blizzard.module.js';
 import { SeasonModule } from './season/season.module.js';
 import { LeaderboardModule } from './leaderboard/leaderboard.module.js';
 import { ProfileModule } from './profile/profile.module.js';
+import { ArchiveModule } from './archive/archive.module.js';
 import { RepresentationModule } from './representation/representation.module.js';
 import { SyncModule } from './sync/sync.module.js';
 import { HealthModule } from './health/health.module.js';
+import { AdminModule } from './admin/admin.module.js';
 
 @Module({
   imports: [
@@ -23,8 +25,10 @@ import { HealthModule } from './health/health.module.js';
     LeaderboardModule,
     ProfileModule,
     RepresentationModule,
+    ArchiveModule,
     SyncModule,
     HealthModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

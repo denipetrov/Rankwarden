@@ -2,12 +2,12 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
-  isRegion,
   RATING_FAMILIES,
   SPEC_SPLIT_FAMILIES,
   type RatingFamily,
   type Region,
 } from '../blizzard/blizzard.constants.js';
+import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
 import { CHARACTERS_COLLECTION } from '../leaderboard/entities/character.entity.js';
@@ -43,8 +43,6 @@ export interface SnapshotSummary {
   date: Date;
   written: number;
   skipped: number;
-  /** Snapshots dropped because they predate the current season. */
-  purged: number;
   durationMs: number;
 }
 
@@ -69,9 +67,7 @@ export class SpecRepresentationService implements OnModuleInit {
     private readonly mongo: MongoService,
     private readonly seasons: SeasonService,
   ) {
-    this.regions = config
-      .get('BLIZZARD_REGIONS', { infer: true })
-      .filter((region): region is Region => isRegion(region));
+    this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.minRatings = config.get('REPRESENTATION_MIN_RATINGS', { infer: true });
   }
 
@@ -96,9 +92,31 @@ export class SpecRepresentationService implements OnModuleInit {
     this.logger.log(`Indexes ensured on "${SPEC_REPRESENTATION_COLLECTION}"`);
   }
 
-  /** Whether a snapshot already exists for the given day. */
-  async hasSnapshotFor(date: Date): Promise<boolean> {
-    return (await this.collection.countDocuments({ date: startOfUtcDay(date) }, { limit: 1 })) > 0;
+  /**
+   * Whether today still needs a snapshot, keyed on `(date, region, season)`
+   * rather than the date alone.
+   *
+   * A rollover lands mid-UTC-day, so a day that already has an old-season
+   * snapshot still needs a new-season one. Keying on the date alone made the
+   * first day of every season permanently missing: the early tick wrote the old
+   * season, and no later tick that day could correct it.
+   */
+  async isSnapshotDue(now = new Date()): Promise<boolean> {
+    const date = startOfUtcDay(now);
+
+    for (const region of this.regions) {
+      const seasonId = this.seasons.getCurrentSeason(region);
+      // Unknown season: let `snapshot()` resolve it rather than deciding here.
+      if (seasonId === undefined) return true;
+
+      const written = await this.collection.countDocuments(
+        { date, region, seasonId },
+        { limit: 1 },
+      );
+      if (written === 0) return true;
+    }
+
+    return false;
   }
 
   /**
@@ -111,13 +129,14 @@ export class SpecRepresentationService implements OnModuleInit {
     const computedAt = new Date();
     let written = 0;
     let skipped = 0;
-    let purged = 0;
 
     for (const region of this.regions) {
-      const seasonId =
-        this.seasons.getCurrentSeason(region) ?? (await this.seasons.refresh(region));
-
-      purged += await this.pruneBeforeSeasonStart(region);
+      // Refreshed unconditionally rather than preferring the cache. The cache is
+      // only updated by the sweep and the daily refresher, so a tick inside the
+      // rollover window would file day one of a new season under the old one —
+      // permanently, since a snapshot is written once per day. One request per
+      // region per tick buys the correct attribution.
+      const seasonId = await this.resolveSeason(region);
 
       for (const family of RATING_FAMILIES) {
         for (const minRating of this.minRatings) {
@@ -149,34 +168,31 @@ export class SpecRepresentationService implements OnModuleInit {
     const durationMs = Date.now() - startedAt;
     this.logger.log(
       `Representation snapshot for ${date.toISOString().slice(0, 10)}: ` +
-        `${written} series written, ${skipped} empty, ${purged} stale purged, ${durationMs}ms`,
+        `${written} series written, ${skipped} empty, ${durationMs}ms`,
     );
 
-    return { date, written, skipped, purged, durationMs };
+    return { date, written, skipped, durationMs };
   }
 
   /**
-   * Drops snapshots taken before the current season began. A new season resets
-   * every ladder, so earlier curves describe a population that no longer exists
-   * and would only stretch the visualisation's axis.
+   * The season to file this snapshot under, read fresh and falling back to the
+   * cache only if the API cannot be reached — a snapshot under a slightly stale
+   * season beats no snapshot for the day.
    */
-  private async pruneBeforeSeasonStart(region: Region): Promise<number> {
-    const seasonStart = this.seasons.getSeasonStart(region);
-    if (!seasonStart) return 0;
+  private async resolveSeason(region: Region): Promise<number> {
+    try {
+      return await this.seasons.refresh(region);
+    } catch (error) {
+      const cached = this.seasons.getCurrentSeason(region);
+      if (cached === undefined) throw error;
 
-    const result = await this.collection.deleteMany({
-      region,
-      date: { $lt: startOfUtcDay(seasonStart) },
-    });
-
-    if (result.deletedCount > 0) {
-      this.logger.log(
-        `Purged ${result.deletedCount} ${region} snapshots from before ` +
-          `${seasonStart.toISOString().slice(0, 10)}`,
+      this.logger.warn(
+        `Could not refresh the season for ${region}: ${describeError(error)}; ` +
+          `falling back to the cached season ${cached}`,
       );
-    }
 
-    return result.deletedCount;
+      return cached;
+    }
   }
 
   /** Folds flat tallies into specs, each carrying its own hero talent breakdown. */
@@ -319,10 +335,15 @@ export class SpecRepresentationService implements OnModuleInit {
     let total = 0;
 
     for (const row of rows) {
-      total += row.count;
       // "shuffle-demonhunter-havoc" -> class "demonhunter", spec "havoc".
       const [className, specName] = row._id.bracket.slice(family.length + 1).split('-');
+      // Counted only once the key has parsed. The `^family-` match also accepts
+      // "shuffle-overall", which has no third segment, and counting it before
+      // the check inflated `total` — which is returned as `classified` — with
+      // rows that produced no tally at all.
       if (!className || !specName) continue;
+
+      total += row.count;
 
       tallies.push({
         class: className,

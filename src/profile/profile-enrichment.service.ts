@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { ProfileApi } from '../blizzard/profile.api.js';
 import { activeLoadoutsBySpec } from '../blizzard/schemas/character-profile.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { RunLogger, withRunId } from '../common/logging/run-context.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import type { Env } from '../config/env.schema.js';
@@ -13,6 +14,8 @@ import type { CharacterDocument } from '../leaderboard/entities/character.entity
 type Outcome = 'ok' | 'missing' | 'failed' | 'skipped';
 
 export interface EnrichmentRunResult {
+  /** Correlation id shared by every log line this pass produced. */
+  runId: string;
   selected: number;
   enriched: number;
   missing: number;
@@ -33,7 +36,7 @@ export interface EnrichmentRunResult {
  */
 @Injectable()
 export class ProfileEnrichmentService {
-  private readonly logger = new Logger(ProfileEnrichmentService.name);
+  private readonly logger = new RunLogger(ProfileEnrichmentService.name);
   private readonly batchSize: number;
   private readonly summaryTtlMs: number;
   private readonly specsTtlMs: number;
@@ -78,47 +81,54 @@ export class ProfileEnrichmentService {
     this.requests = 0;
     const startedAt = Date.now();
 
-    try {
-      const due = await this.characters.findProfilesToEnrich(
-        new Date(startedAt - this.summaryTtlMs),
-        new Date(startedAt - this.specsTtlMs),
-        this.batchSize,
-        onlyNew,
-      );
+    // Announced so the archive holds off: enrichment is live data and wins.
+    return withRunId('enrich', (runId) =>
+      this.coordinator
+        .duringEnrichment(async () => {
+          const due = await this.characters.findProfilesToEnrich(
+            new Date(startedAt - this.summaryTtlMs),
+            new Date(startedAt - this.specsTtlMs),
+            this.batchSize,
+            onlyNew,
+          );
 
-      if (due.length === 0) {
-        this.logger.debug(`No ${onlyNew ? 'new ' : ''}characters due for enrichment`);
-        return this.emptyResult();
-      }
+          if (due.length === 0) {
+            this.logger.debug(`No ${onlyNew ? 'new ' : ''}characters due for enrichment`);
+            return this.emptyResult(runId);
+          }
 
-      const outcomes = await mapWithConcurrency(due, this.concurrency, (character) =>
-        this.enrich(character, startedAt),
-      );
+          const outcomes = await mapWithConcurrency(due, this.concurrency, (character) =>
+            this.enrich(character, startedAt),
+          );
 
-      const count = (outcome: Outcome) => outcomes.filter((value) => value === outcome).length;
-      const result: EnrichmentRunResult = {
-        selected: due.length,
-        enriched: count('ok'),
-        missing: count('missing'),
-        failed: count('failed'),
-        skipped: count('skipped'),
-        requests: this.requests,
-        durationMs: Date.now() - startedAt,
-      };
+          const count = (outcome: Outcome) => outcomes.filter((value) => value === outcome).length;
+          const result: EnrichmentRunResult = {
+            runId,
+            selected: due.length,
+            enriched: count('ok'),
+            missing: count('missing'),
+            failed: count('failed'),
+            skipped: count('skipped'),
+            requests: this.requests,
+            durationMs: Date.now() - startedAt,
+          };
 
-      this.logger.log(
-        `Enriched ${result.enriched}/${result.selected}${onlyNew ? ' new' : ''} characters ` +
-          `in ${result.durationMs}ms using ${result.requests} requests ` +
-          `(${result.missing} missing, ${result.failed} failed, ${result.skipped} skipped)`,
-      );
-      return result;
-    } finally {
-      this.running = false;
-    }
+          this.logger.log(
+            `Enriched ${result.enriched}/${result.selected}${onlyNew ? ' new' : ''} characters ` +
+              `in ${result.durationMs}ms using ${result.requests} requests ` +
+              `(${result.missing} missing, ${result.failed} failed, ${result.skipped} skipped)`,
+          );
+          return result;
+        })
+        .finally(() => {
+          this.running = false;
+        }),
+    );
   }
 
-  private emptyResult(): EnrichmentRunResult {
+  private emptyResult(runId: string): EnrichmentRunResult {
     return {
+      runId,
       selected: 0,
       enriched: 0,
       missing: 0,

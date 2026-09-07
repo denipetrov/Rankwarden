@@ -373,6 +373,76 @@ export class CharacterRepository implements OnModuleInit {
   }
 
   /**
+   * Clears brackets Blizzard no longer publishes.
+   *
+   * `pruneBracket` only runs for brackets the sweep visited, and a retired
+   * ladder is by definition not visited — so without this its results stay on
+   * the document, its rating stays queryable through the `bracket_ratings`
+   * wildcard index, and a character who ranked only in retired brackets never
+   * reaches `brackets: {}` for `removeUnranked` to delete.
+   */
+  async removeRetiredBrackets(
+    seasonId: number,
+    region: Region,
+    liveBrackets: readonly Bracket[],
+  ): Promise<number> {
+    // An empty list means the sweep failed for this region, not that every
+    // bracket retired. Unsetting on that basis would strip the whole region.
+    if (liveBrackets.length === 0) return 0;
+
+    const live = new Set(liveBrackets);
+    const stored = await this.storedBrackets(seasonId, region);
+    const retired = stored.filter((bracket) => !live.has(bracket));
+
+    if (retired.length === 0) return 0;
+
+    const unset: Record<string, ''> = {};
+    for (const bracket of retired) {
+      unset[`brackets.${bracket}`] = '';
+      unset[`ratings.${bracket}`] = '';
+    }
+
+    const cleared = await this.collection.updateMany(
+      {
+        seasonId,
+        region,
+        $or: retired.map((bracket) => ({ [`brackets.${bracket}`]: { $exists: true } })),
+      },
+      { $unset: unset },
+    );
+
+    if (cleared.modifiedCount > 0) {
+      this.logger.log(
+        `Cleared ${retired.length} retired bracket(s) from ${cleared.modifiedCount} ` +
+          `characters in ${region}: ${retired.join(', ')}`,
+      );
+    }
+
+    return cleared.modifiedCount;
+  }
+
+  /**
+   * Every bracket key actually present on a region's documents. Read from
+   * `ratings` rather than `brackets` because it is the smaller of the two
+   * mirrored maps, and they always carry the same keys.
+   */
+  private async storedBrackets(seasonId: number, region: Region): Promise<Bracket[]> {
+    const rows = await this.collection
+      .aggregate<{ _id: string }>(
+        [
+          { $match: { seasonId, region } },
+          { $project: { ratings: { $objectToArray: '$ratings' } } },
+          { $unwind: '$ratings' },
+          { $group: { _id: '$ratings.k' } },
+        ],
+        { allowDiskUse: true },
+      )
+      .toArray();
+
+    return rows.map((row) => row._id);
+  }
+
+  /**
    * Deletes characters left ranking in nothing. Runs once per region at the end
    * of a sweep rather than per bracket — with 85 brackets that is 85 collection
    * scans saved.
