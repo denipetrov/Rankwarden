@@ -4,8 +4,10 @@ import type { Db } from 'mongodb';
 import {
   EXCLUDED_BRACKETS,
   RATING_FAMILIES,
+  isIngestableBracket,
   ratingFamilyOf,
 } from '../../src/blizzard/blizzard.constants.js';
+import type { World } from './world.js';
 import { CHARACTERS_COLLECTION } from '../../src/leaderboard/entities/character.entity.js';
 import { RATING_COLLECTIONS } from '../../src/leaderboard/entities/rating.entity.js';
 import { SPEC_REPRESENTATION_COLLECTION } from '../../src/representation/entities/spec-representation.entity.js';
@@ -28,13 +30,20 @@ export const CHARACTER_INDEXES = [
  * the per-case assertions do — a cleanup that removes the wrong thing shows up
  * here even in a test written about something else entirely.
  */
-export async function expectInvariants(db: Db): Promise<void> {
+export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectRatingsMirrorBrackets(db);
   await expectNoExcludedBrackets(db);
   await expectNoOrphanRatingRows(db);
   await expectRowsInCorrectFamily(db);
   await expectIdentityUniqueness(db);
+  await expectIndexInventory(db);
   await expectRepresentationCoherent(db);
+
+  // Every check above is self-consistency: the data agreeing with itself. Pass
+  // the world and I7 also checks it against what was actually served, which is
+  // the only one of the ten that can catch a suite that is perfectly coherent
+  // and uniformly wrong.
+  if (world) await expectStoredMatchesWorld(db, world);
 }
 
 /** I1 — `ratings` is the indexed mirror of `brackets`; drift is invisible. */
@@ -173,6 +182,74 @@ export async function expectIdentityUniqueness(db: Db): Promise<void> {
 
     expect(duplicates, `I6: duplicate rows in ${RATING_COLLECTIONS[family]}`).toEqual([]);
   }
+}
+
+/**
+ * I7 — what is stored is what the fake served.
+ *
+ * The other nine invariants are self-consistency checks: the mirror agrees with
+ * `brackets`, rows point at characters that exist, the snapshot arithmetic adds
+ * up. All of them hold just as well over data that is uniformly wrong. This is
+ * the only one that reaches back to the source of truth, so it is the one that
+ * catches a mapper dropping a field or a prune removing the wrong bracket.
+ *
+ * Compared per bracket rather than in aggregate: a count that matches while the
+ * membership differs is exactly the failure a total would hide.
+ */
+export async function expectStoredMatchesWorld(db: Db, world: World): Promise<void> {
+  for (const region of world.regions) {
+    const seasonId = world.season(region).id;
+
+    for (const bracket of world.brackets(region).filter(isIngestableBracket)) {
+      const family = ratingFamilyOf(bracket);
+      if (!family) continue;
+
+      const served = new Map(
+        world
+          .ladder(region, seasonId, bracket)
+          .entries.map((entry) => [entry.character.id, entry.rating]),
+      );
+
+      const rows = await db
+        .collection(RATING_COLLECTIONS[family])
+        .find({ seasonId, region, bracket }, { projection: { characterId: 1, rating: 1 } })
+        .toArray();
+
+      const stored = new Map(rows.map((row) => [row.characterId as number, row.rating as number]));
+
+      expect(
+        [...stored.keys()].sort((a, b) => a - b),
+        `I7: ${region}/${bracket} membership differs from the ladder served`,
+      ).toEqual([...served.keys()].sort((a, b) => a - b));
+
+      const wrong = [...served].filter(([id, rating]) => stored.get(id) !== rating);
+      expect(
+        wrong.slice(0, 5),
+        `I7: ${region}/${bracket} ratings differ from those served`,
+      ).toEqual([]);
+    }
+  }
+
+  // The mirror on the character document has to agree with the same source, or
+  // a board read from `ratings` disagrees with one read from the flat rows.
+  const characters = await db
+    .collection(CHARACTERS_COLLECTION)
+    .find({}, { projection: { region: 1, characterId: 1, ratings: 1 } })
+    .toArray();
+
+  const mismatched = characters.filter((doc) => {
+    const player = world.players.get(doc.characterId as number);
+    if (!player || player.region !== doc.region) return false;
+
+    return Object.entries((doc.ratings ?? {}) as Record<string, number>).some(
+      ([bracket, rating]) => player.ratings.get(bracket) !== rating,
+    );
+  });
+
+  expect(
+    mismatched.slice(0, 5).map((doc) => doc.characterId),
+    'I7: mirrored ratings differ from those served',
+  ).toEqual([]);
 }
 
 /** I8 — the index inventory does not grow with the bracket count. */

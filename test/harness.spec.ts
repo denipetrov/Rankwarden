@@ -1,15 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
+import { ratingFamilyOf } from '../src/blizzard/blizzard.constants.js';
 import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
+import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson } from './support/http.js';
 import {
-  expectIndexInventory,
   expectInvariants,
   expectNoUnrankedCharacters,
+  expectRatingsMirrorBrackets,
+  expectStoredMatchesWorld,
 } from './support/invariants.js';
 import { World } from './support/world.js';
 import { TEST_DB_PREFIX, assertTestDatabase } from './support/database.js';
@@ -102,9 +105,42 @@ describe('integration harness', () => {
     });
 
     it('holds every standing invariant', async () => {
-      await expectInvariants(db);
+      // With the world, this also runs I7 — every stored rating compared back
+      // against the ladder the fake actually served.
+      await expectInvariants(db, harness.world);
       await expectNoUnrankedCharacters(db);
-      await expectIndexInventory(db);
+    });
+
+    it('I7 fails when stored data drifts from what was served', async () => {
+      const victim = await db.collection(CHARACTERS_COLLECTION).findOne({});
+      const bracket = Object.keys(victim!.ratings as Record<string, number>)[0];
+      const family = ratingFamilyOf(bracket)!;
+
+      const original = (victim!.ratings as Record<string, number>)[bracket];
+      const write = async (rating: number) => {
+        // All three places at once, so the corruption is internally consistent:
+        // the payload, its mirror and the flat row all agree with each other and
+        // only disagree with the ladder that was served.
+        await db
+          .collection(CHARACTERS_COLLECTION)
+          .updateOne(
+            { _id: victim!._id },
+            { $set: { [`brackets.${bracket}.rating`]: rating, [`ratings.${bracket}`]: rating } },
+          );
+        await db
+          .collection(RATING_COLLECTIONS[family])
+          .updateOne({ characterId: victim!.characterId, bracket }, { $set: { rating } });
+      };
+
+      await write(9999);
+
+      await expect(expectStoredMatchesWorld(db, harness.world)).rejects.toThrow(/I7/);
+
+      // Every inward-looking check still passes over the corrupted data, which
+      // is precisely why I7 has to exist.
+      await expectRatingsMirrorBrackets(db);
+
+      await write(original);
     });
 
     it('parsed the fake payloads with the real schemas', async () => {
