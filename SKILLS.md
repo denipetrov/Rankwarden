@@ -160,7 +160,22 @@ summary refresh is necessarily due for specs too — one timestamp paces the que
 field is absent until first enrichment, and absent sorts before any date, so newcomers win.
 A finished sweep also fires an immediate **new-characters-only** pass.
 
-404 → `profileStatus: 'missing'`, both timestamps stamped, not retried.
+**Every outcome stamps a timestamp.** This is load-bearing, not housekeeping: selection
+sorts by `specsFetchedAt` ascending and an absent field sorts before every date, so a
+character that fails without being stamped is re-selected on every pass forever — and once
+enough of them fill a batch, nothing else is ever enriched again while the job goes on
+reporting successful runs.
+
+| Outcome           | Written                                                         | Retried |
+| ----------------- | --------------------------------------------------------------- | ------- |
+| 404               | `profileStatus: 'missing'`, both timestamps, `profile` unset    | no      |
+| schema failure    | `profileStatus: 'unparseable'`, the failing half stamped as now | one TTL |
+| transient failure | the failing half backdated to `TTL - PROFILE_RETRY_BACKOFF_MS`  | ~15m    |
+
+A schema failure is deterministic, so it waits out the full TTL; anything else could be a
+blip and comes back sooner. The backoff is expressed by backdating the timestamp rather
+than carrying another field and another index. Stored profile data survives both — unlike a
+404 the character still exists, and stale-but-real beats nothing.
 
 ### 4.3 Spec representation
 
@@ -252,7 +267,7 @@ through the gap between seasons.
     realmName, title, level, gender, guild,
     averageItemLevel, equippedItemLevel, lastLoginAt,
   },
-  profileStatus: 'ok' | 'missing',
+  profileStatus: 'ok' | 'missing' | 'unparseable',
   profileFetchedAt: Date,   // summary half
   specsFetchedAt: Date,     // spec half
 }
@@ -479,6 +494,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `PROFILE_SUMMARY_TTL_MS`              | `604800000`                         | 7 days                                           |
 | `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                            |
 | `PROFILE_CONCURRENCY`                 | `8`                                 |                                                  |
+| `PROFILE_RETRY_BACKOFF_MS`            | `900000`                            | Wait after a transient enrichment failure        |
 | `PROFILE_REQUESTS_PER_SECOND`         | `20`                                | Token bucket                                     |
 | `SEASON_REFRESH_ENABLED`              | `true`                              | Off switch for the daily season re-check         |
 | `SEASON_REFRESH_INTERVAL_MS`          | `86400000`                          |                                                  |

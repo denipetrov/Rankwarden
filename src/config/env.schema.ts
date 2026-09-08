@@ -135,6 +135,13 @@ export const envSchema = z.object({
   /** Spec and hero talents — moves whenever a player respecs. */
   PROFILE_SPECS_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
+  /**
+   * How long a character waits after a transient enrichment failure before it
+   * is eligible again. Short, because the data is fine and only the fetch
+   * failed — but non-zero, because a character that is never stamped sorts
+   * ahead of everything forever and starves the queue.
+   */
+  PROFILE_RETRY_BACKOFF_MS: z.coerce.number().int().positive().default(900_000),
   PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
 
   /** Every other scheduler has an off switch; this one needs it for the same

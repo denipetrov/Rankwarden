@@ -255,20 +255,17 @@ describe('S2 / S3 — enrichment', () => {
   });
 
   /**
-   * A character whose profile payload never satisfies the schema is retried on
-   * every pass forever, and starves everyone behind it.
+   * A character whose profile payload never satisfies the schema must not be
+   * retried on every pass forever, starving everyone behind it.
    *
-   * `enrich()` returns 'failed' without stamping either timestamp, and
-   * `findProfilesToEnrich` sorts by `specsFetchedAt` ascending — absent first.
-   * So the failing set is re-selected on every pass and characters that are
-   * genuinely due are never reached. A 404 is handled correctly
-   * (`markProfileMissing` stamps both timestamps), which is the contrast that
-   * makes this look like an oversight rather than a decision.
-   *
-   * Written to the desired behaviour and marked `fails`: green while the defect
-   * stands, red the moment it is fixed.
+   * `findProfilesToEnrich` sorts by `specsFetchedAt` ascending and an absent
+   * field sorts before every date, so a failure that stamps nothing is
+   * re-selected indefinitely — and once the failing set fills a batch, nobody
+   * else is ever enriched again while the job keeps reporting successful runs.
+   * A 404 was always handled correctly (`markProfileMissing` stamps both
+   * timestamps); the parse-failure path now does the same.
    */
-  it.fails('ISSUE-1 — unparseable profiles must not starve the enrichment queue', async () => {
+  it('ISSUE-1 — unparseable profiles must not starve the enrichment queue', async () => {
     // Everyone enriched and then aged, so every character is legitimately due.
     await characters().updateMany({}, { $unset: { profileFetchedAt: '', specsFetchedAt: '' } });
     await enrichment.run();
@@ -296,8 +293,8 @@ describe('S2 / S3 — enrichment', () => {
 
     for (let pass = 0; pass < 3; pass += 1) await enrichment.run();
 
-    // Desired: three passes make progress on somebody. Actual: all three burn
-    // the whole batch on the same 20 failures and nobody else moves.
+    // The failing characters yield their place after one pass, so the healthy
+    // ones behind them are reached instead of being starved out.
     const healthyAfter = await characters()
       .find({ characterId: { $nin: victimIds } }, { projection: { specsFetchedAt: 1 } })
       .toArray();

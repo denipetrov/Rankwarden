@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { ratingFamilyOf } from '../src/blizzard/blizzard.constants.js';
+import {
+  activeLoadoutsBySpec,
+  characterProfileSchema,
+  characterSpecializationsSchema,
+} from '../src/blizzard/schemas/character-profile.schema.js';
 import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
 import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
@@ -141,6 +146,33 @@ describe('integration harness', () => {
       await expectRatingsMirrorBrackets(db);
 
       await write(original);
+    });
+
+    it('serves profile payloads the real schemas accept', () => {
+      // Guards the whole enrichment area. Leaderboard payloads were covered by
+      // the assertion below, profile ones were not — so three malformed fields
+      // made every profile fetch fail validation and the gap only surfaced when
+      // someone came to write S2. A shape drifting again fails here instead.
+      const player = [...harness.world.players.values()][0];
+
+      expect(() =>
+        characterProfileSchema.parse(harness.world.profilePayload(player)),
+      ).not.toThrow();
+      expect(() =>
+        characterSpecializationsSchema.parse(harness.world.specsPayload(player)),
+      ).not.toThrow();
+    });
+
+    it('serves a profile the enrichment pass can actually store', () => {
+      const player = [...harness.world.players.values()][0];
+      const parsed = characterProfileSchema.parse(harness.world.profilePayload(player));
+      const specs = characterSpecializationsSchema.parse(harness.world.specsPayload(player));
+
+      // The fields the enrichment writes, so a payload that parses but carries
+      // nothing useful is caught too.
+      expect(parsed.realm.name).toBeTruthy();
+      expect(parsed.active_title?.display_string).toBeTruthy();
+      expect(activeLoadoutsBySpec(specs).length).toBeGreaterThan(0);
     });
 
     it('parsed the fake payloads with the real schemas', async () => {

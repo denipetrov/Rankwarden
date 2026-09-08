@@ -1,15 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ZodError } from 'zod';
 
 import { ProfileApi } from '../blizzard/profile.api.js';
-import { activeLoadoutsBySpec } from '../blizzard/schemas/character-profile.schema.js';
+import {
+  activeLoadoutsBySpec,
+  type CharacterSpecializationsPayload,
+} from '../blizzard/schemas/character-profile.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { RunLogger, withRunId } from '../common/logging/run-context.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
+import { describeError, errorStack } from '../common/utils/errors.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import type { Env } from '../config/env.schema.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
-import type { CharacterDocument } from '../leaderboard/entities/character.entity.js';
+import type {
+  CharacterDocument,
+  NamedRef,
+  SpecLoadout,
+} from '../leaderboard/entities/character.entity.js';
 
 type Outcome = 'ok' | 'missing' | 'failed' | 'skipped';
 
@@ -41,6 +50,7 @@ export class ProfileEnrichmentService {
   private readonly summaryTtlMs: number;
   private readonly specsTtlMs: number;
   private readonly concurrency: number;
+  private readonly retryBackoffMs: number;
   private readonly limiter: RateLimiter;
   private running = false;
   private requests = 0;
@@ -55,6 +65,7 @@ export class ProfileEnrichmentService {
     this.summaryTtlMs = config.get('PROFILE_SUMMARY_TTL_MS', { infer: true });
     this.specsTtlMs = config.get('PROFILE_SPECS_TTL_MS', { infer: true });
     this.concurrency = config.get('PROFILE_CONCURRENCY', { infer: true });
+    this.retryBackoffMs = config.get('PROFILE_RETRY_BACKOFF_MS', { infer: true });
     this.limiter = new RateLimiter(config.get('PROFILE_REQUESTS_PER_SECOND', { infer: true }));
   }
 
@@ -152,6 +163,9 @@ export class ProfileEnrichmentService {
     const { seasonId, region, characterId, realmSlug, characterName } = character;
     const summaryDue = this.isDue(character.profileFetchedAt, this.summaryTtlMs, startedAt);
     const specsDue = this.isDue(character.specsFetchedAt, this.specsTtlMs, startedAt);
+    // Which half is in flight, so a failure stamps the timestamp that actually
+    // governs re-selection rather than guessing.
+    let half: 'summary' | 'specs' = 'summary';
 
     try {
       if (summaryDue) {
@@ -188,6 +202,7 @@ export class ProfileEnrichmentService {
       }
 
       if (specsDue) {
+        half = 'specs';
         const fetchedAt = new Date();
         this.requests += 1;
         await this.limiter.acquire();
@@ -197,6 +212,8 @@ export class ProfileEnrichmentService {
           characterName,
         );
 
+        const loadouts = specializations ? activeLoadoutsBySpec(specializations) : [];
+
         // Stamp the timestamp either way, so a 404 here cannot hot-loop.
         await this.characters.saveProfileSpecs(
           seasonId,
@@ -204,8 +221,8 @@ export class ProfileEnrichmentService {
           characterId,
           {
             spec: specializations?.active_specialization ?? null,
-            heroTalentTree: specializations?.active_hero_talent_tree ?? null,
-            talentLoadouts: specializations ? activeLoadoutsBySpec(specializations) : [],
+            heroTalentTree: activeHeroTalentTree(specializations, loadouts),
+            talentLoadouts: loadouts,
           },
           fetchedAt,
         );
@@ -213,9 +230,76 @@ export class ProfileEnrichmentService {
 
       return 'ok';
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Enrichment failed for ${region}/${realmSlug}/${characterName}: ${message}`);
+      await this.recordFailure(character, half, error);
+
       return 'failed';
     }
   }
+
+  /**
+   * Stamps the failing half so the character leaves the front of the queue.
+   *
+   * A schema failure is deterministic — the same payload will not start parsing
+   * on the next pass — so it waits out the full TTL. Anything else is treated as
+   * transient and retried after a short backoff, expressed by backdating the
+   * timestamp to just short of the TTL rather than carrying another field and
+   * another index for it.
+   */
+  private async recordFailure(
+    character: CharacterDocument,
+    half: 'summary' | 'specs',
+    error: unknown,
+  ): Promise<void> {
+    const { seasonId, region, characterId, realmSlug, characterName } = character;
+    const permanent = error instanceof ZodError;
+    const ttlMs = half === 'summary' ? this.summaryTtlMs : this.specsTtlMs;
+    const retryAfter = permanent ? new Date() : new Date(Date.now() - ttlMs + this.retryBackoffMs);
+
+    this.logger.warn(
+      `Enrichment ${half} failed for ${region}/${realmSlug}/${characterName}: ` +
+        `${describeError(error)}; retrying after ${permanent ? 'the full TTL' : `${this.retryBackoffMs}ms`}`,
+    );
+
+    try {
+      await this.characters.markProfileUnreadable(
+        seasonId,
+        region,
+        characterId,
+        half,
+        retryAfter,
+        permanent,
+      );
+    } catch (writeError) {
+      // If even this write fails the character stays at the front of the queue,
+      // so say so plainly rather than letting the starvation be silent.
+      this.logger.error(
+        `Could not record the enrichment failure for ${region}/${realmSlug}/${characterName}: ` +
+          describeError(writeError),
+        errorStack(writeError),
+      );
+    }
+  }
+}
+
+/**
+ * The active spec's hero talent tree.
+ *
+ * Blizzard reports it twice: once at the top level, and once on the active
+ * loadout of each spec. The top-level field is optional, and when it is absent
+ * the loadout still carries the answer — so falling back keeps hero talent
+ * coverage for the core brackets, whose representation counts read this field
+ * rather than a loadout. The two were verified to agree, so the fallback cannot
+ * contradict the primary source.
+ */
+function activeHeroTalentTree(
+  payload: CharacterSpecializationsPayload | null,
+  loadouts: readonly SpecLoadout[],
+): NamedRef | null {
+  if (!payload) return null;
+  if (payload.active_hero_talent_tree) return payload.active_hero_talent_tree;
+
+  const activeSpecId = payload.active_specialization?.id;
+  if (activeSpecId === undefined) return null;
+
+  return loadouts.find((loadout) => loadout.spec.id === activeSpecId)?.heroTalentTree ?? null;
 }
