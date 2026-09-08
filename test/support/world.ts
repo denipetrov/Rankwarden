@@ -239,14 +239,20 @@ export class World {
       character_class: { id: player.spec.classId, name: player.spec.className },
       active_spec: { id: player.spec.specId, name: player.spec.specName },
       realm: { id: player.realmId, slug: player.realmSlug, name: realmDisplayName(player) },
-      faction: { type: player.faction },
+      faction: {
+        type: player.faction,
+        name: player.faction === 'HORDE' ? 'Horde' : 'Alliance',
+      },
       level: 90,
       gender: { type: 'FEMALE', name: 'Female' },
       guild: { id: 1, name: 'veow' },
       average_item_level: 278,
       equipped_item_level: 278,
       last_login_timestamp: 1_767_225_600_000,
-      active_title: { display_string: `Gladiator ${player.name}` },
+      // Blizzard sends id and name alongside the rendered string, and the
+      // schema requires all three — a title with only `display_string` fails
+      // the whole profile parse.
+      active_title: { id: 654, name: 'Gladiator', display_string: `Gladiator ${player.name}` },
     };
   }
 
@@ -279,6 +285,11 @@ export class World {
         };
       }),
       active_specialization: { id: player.spec.specId, name: player.spec.specName },
+      // Blizzard sends this alongside the loadouts, and it matches the active
+      // loadout's tree. `saveProfileSpecs` reads `profile.heroTalentTree` from
+      // here and nowhere else, so omitting it leaves that field null even
+      // though the loadouts carry the answer.
+      active_hero_talent_tree: player.spec.heroTrees[player.heroTreeIndex],
     };
   }
 
