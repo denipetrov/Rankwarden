@@ -4,6 +4,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
 
 import { withRunId } from '../common/logging/run-context.js';
+import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonEvents } from './season-events.service.js';
@@ -25,6 +26,7 @@ export class SeasonTransitionScheduler implements OnApplicationBootstrap, OnModu
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private subscription?: Subscription;
+  private readonly pending = new PendingWork();
   private running = false;
 
   constructor(
@@ -43,7 +45,7 @@ export class SeasonTransitionScheduler implements OnApplicationBootstrap, OnModu
       return;
     }
 
-    const interval = setInterval(() => void this.tick(), this.intervalMs);
+    const interval = setInterval(() => this.pending.run(() => this.tick()), this.intervalMs);
     this.scheduler.addInterval(INTERVAL_NAME, interval);
     this.logger.log(
       `Checking for a season to retire every ${this.intervalMs}ms` +
@@ -54,7 +56,7 @@ export class SeasonTransitionScheduler implements OnApplicationBootstrap, OnModu
       if (event.kind !== 'rollover') return;
 
       this.logger.log(`Rollover in ${event.region}; checking for seasons to retire`);
-      void this.tick();
+      this.pending.run(() => this.tick());
     });
 
     // Deliberately no bootstrap tick. A purge at boot would land before the
@@ -68,6 +70,11 @@ export class SeasonTransitionScheduler implements OnApplicationBootstrap, OnModu
     if (this.scheduler.doesExist('interval', INTERVAL_NAME)) {
       this.scheduler.deleteInterval(INTERVAL_NAME);
     }
+  }
+
+  /** Test seam: rollover-driven ticks are fire-and-forget in production. */
+  whenSettled(): Promise<void> {
+    return this.pending.whenSettled();
   }
 
   private async tick(): Promise<void> {

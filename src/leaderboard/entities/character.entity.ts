@@ -91,7 +91,14 @@ export interface SpecLoadout {
   heroTalentTree: NamedRef | null;
 }
 
-/** Why a character has no profile, so the worker can skip known-gone ones. */
-export type ProfileStatus = 'ok' | 'missing';
+/**
+ * Why a character has no profile, so the worker can skip known-gone ones.
+ *
+ * `unparseable` is deliberately distinct from `missing`: the character exists
+ * and its ladder entries are fine, but the payload did not match the schema.
+ * Folding the two together would report a live character as deleted and hide a
+ * shape change on Blizzard's side behind a routine-looking count.
+ */
+export type ProfileStatus = 'ok' | 'missing' | 'unparseable';
 
 export const CHARACTERS_COLLECTION = 'characters';

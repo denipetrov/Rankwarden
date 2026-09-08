@@ -309,6 +309,42 @@ export class CharacterRepository implements OnModuleInit {
   }
 
   /**
+   * Records that one half of a character's profile could not be read, and
+   * stamps that half so the character yields its place in the queue.
+   *
+   * The stamp is the whole point. Selection sorts by the fetch timestamps
+   * ascending and an absent field sorts before every date, so a character that
+   * fails without being stamped is re-selected on every pass forever. Once
+   * enough of them accumulate to fill a batch, nothing else is ever enriched
+   * again — and the job goes on reporting successful runs while it happens.
+   *
+   * Whatever profile data is already stored is left alone: unlike a 404, the
+   * character still exists, and stale-but-real data beats no data.
+   */
+  async markProfileUnreadable(
+    seasonId: number,
+    region: Region,
+    characterId: number,
+    half: 'summary' | 'specs',
+    retryAfter: Date,
+    permanent: boolean,
+  ): Promise<void> {
+    const field = half === 'summary' ? 'profileFetchedAt' : 'specsFetchedAt';
+
+    await this.collection.updateOne(
+      { seasonId, region, characterId },
+      {
+        $set: {
+          [field]: retryAfter,
+          // Only a schema failure is worth flagging on the document; a timeout
+          // says nothing about the character and would just churn the field.
+          ...(permanent ? { profileStatus: 'unparseable' as const } : {}),
+        },
+      },
+    );
+  }
+
+  /**
    * Updates an existing character from the sync endpoint. Never inserts: a
    * character absent here holds no rating we care about, and creating one would
    * fill the collection with players no ladder lists.

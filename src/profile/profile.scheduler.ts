@@ -4,6 +4,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ProfileEnrichmentService } from './profile-enrichment.service.js';
@@ -18,6 +19,7 @@ export class ProfileScheduler implements OnApplicationBootstrap, OnModuleDestroy
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private subscription?: Subscription;
+  private readonly pending = new PendingWork();
 
   constructor(
     config: ConfigService<Env, true>,
@@ -38,12 +40,19 @@ export class ProfileScheduler implements OnApplicationBootstrap, OnModuleDestroy
       return;
     }
 
-    const interval = setInterval(() => void this.run(), this.intervalMs);
+    const interval = setInterval(() => this.pending.run(() => this.run()), this.intervalMs);
     this.scheduler.addInterval(INTERVAL_NAME, interval);
     this.logger.log(`Profile enrichment scheduled every ${this.intervalMs}ms`);
 
     // A finished sweep may have added characters; enrich just those right away.
-    this.subscription = this.sweeps.completed$.subscribe(() => void this.run(true));
+    this.subscription = this.sweeps.completed$.subscribe(() =>
+      this.pending.run(() => this.run(true)),
+    );
+  }
+
+  /** Test seam: the post-sweep pass is fire-and-forget in production. */
+  whenSettled(): Promise<void> {
+    return this.pending.whenSettled();
   }
 
   onModuleDestroy(): void {

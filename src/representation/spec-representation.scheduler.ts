@@ -4,6 +4,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SpecRepresentationService } from './spec-representation.service.js';
@@ -24,6 +25,7 @@ export class SpecRepresentationScheduler implements OnApplicationBootstrap, OnMo
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private subscription?: Subscription;
+  private readonly pending = new PendingWork();
   private running = false;
 
   constructor(
@@ -43,16 +45,21 @@ export class SpecRepresentationScheduler implements OnApplicationBootstrap, OnMo
       return;
     }
 
-    const interval = setInterval(() => void this.tick(), this.intervalMs);
+    const interval = setInterval(() => this.pending.run(() => this.tick()), this.intervalMs);
     this.scheduler.addInterval(INTERVAL_NAME, interval);
     this.logger.log(`Checking for a missing daily snapshot every ${this.intervalMs}ms`);
 
     // A snapshot taken right after a sweep sees the freshest ladder, and this is
     // also what catches the startup case: the bootstrap tick below runs while
     // the startup sweep holds the coordinator, so it always defers.
-    this.subscription = this.sweeps.completed$.subscribe(() => void this.tick());
+    this.subscription = this.sweeps.completed$.subscribe(() => this.pending.run(() => this.tick()));
 
-    void this.tick();
+    this.pending.run(() => this.tick());
+  }
+
+  /** Test seam: the bootstrap tick is fire-and-forget in production. */
+  whenSettled(): Promise<void> {
+    return this.pending.whenSettled();
   }
 
   onModuleDestroy(): void {
