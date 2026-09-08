@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
 import type { Region } from '../blizzard/blizzard.constants.js';
+import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { SeasonService } from './season.service.js';
@@ -21,7 +22,9 @@ const INTERVAL_NAME = 'season-refresh';
 export class SeasonScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(SeasonScheduler.name);
   private readonly regions: Region[];
+  private readonly enabled: boolean;
   private readonly intervalMs: number;
+  private readonly pending = new PendingWork();
   private running = false;
 
   constructor(
@@ -30,21 +33,38 @@ export class SeasonScheduler implements OnApplicationBootstrap, OnModuleDestroy 
     private readonly scheduler: SchedulerRegistry,
   ) {
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
+    this.enabled = config.get('SEASON_REFRESH_ENABLED', { infer: true });
     this.intervalMs = config.get('SEASON_REFRESH_INTERVAL_MS', { infer: true });
   }
 
   onApplicationBootstrap(): void {
-    const interval = setInterval(() => void this.refreshAll(), this.intervalMs);
+    if (!this.enabled) {
+      this.logger.log('Season refresh disabled');
+      return;
+    }
+
+    const interval = setInterval(() => this.pending.run(() => this.refreshAll()), this.intervalMs);
     this.scheduler.addInterval(INTERVAL_NAME, interval);
     this.logger.log(`Re-checking the active season every ${this.intervalMs}ms`);
 
-    void this.refreshAll();
+    this.pending.run(() => this.refreshAll());
   }
 
   onModuleDestroy(): void {
     if (this.scheduler.doesExist('interval', INTERVAL_NAME)) {
       this.scheduler.deleteInterval(INTERVAL_NAME);
     }
+  }
+
+  /**
+   * Resolves once the bootstrap refresh and any in-flight tick have finished.
+   *
+   * A test seam: this work is deliberately fire-and-forget in production, but
+   * `season_state` is written by it, so anything asserting on season state
+   * would otherwise have to poll for it or race it.
+   */
+  whenSettled(): Promise<void> {
+    return this.pending.whenSettled();
   }
 
   /**

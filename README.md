@@ -562,20 +562,46 @@ so `outFiles` points at `dist/**/*.js`. The launch configs read `.env` via `envF
 
 ## Scripts
 
-| Script                                                 | Purpose                                 |
-| ------------------------------------------------------ | --------------------------------------- |
-| `npm run start:dev`                                    | Watch mode                              |
-| `npm run build` / `npm run start:prod`                 | Compile to `dist/`, run compiled output |
-| `npm test` / `npm run test:watch` / `npm run test:cov` | Vitest                                  |
-| `npm run typecheck`                                    | `tsc --noEmit`                          |
-| `npm run lint` / `npm run format`                      | ESLint / Prettier                       |
+| Script                                                 | Purpose                                   |
+| ------------------------------------------------------ | ----------------------------------------- |
+| `npm run start:dev`                                    | Watch mode                                |
+| `npm run build` / `npm run start:prod`                 | Compile to `dist/`, run compiled output   |
+| `npm test` / `npm run test:watch` / `npm run test:cov` | Unit tests (no database needed)           |
+| `npm run test:int`                                     | Integration tests (needs `npm run db:up`) |
+| `npm run test:all`                                     | Both projects                             |
+| `npm run typecheck`                                    | `tsc --noEmit`                            |
+| `npm run lint` / `npm run format`                      | ESLint / Prettier                         |
+
+## Tests
+
+Two Vitest projects. `unit` covers `src/**/*.spec.ts` with mocked collaborators and needs
+nothing running. `integration` covers `test/**/*.spec.ts` by booting the real application
+against a real `mongo:8` and a fake Blizzard, so it needs the container up — which is why it
+is kept out of the default `npm test`.
+
+The integration harness lives in `test/support/`: a mutable `World` standing in for
+Blizzard, a `FakeBlizzard` that replaces the HTTP service (so every zod schema still runs),
+`bootTestApp`, and `expectInvariants`.
+
+Two things it enforces, both learned the hard way:
+
+- **Never the development database.** `ConfigModule` falls back to `.env`, where
+  `MONGODB_DB` is the real one, so a test booting `AppModule` could have a sweep write into
+  live data. Test databases must be named `rankwarden_test_*`; anything else is refused.
+- **One configuration per test file.** `ConfigModule.forRoot()` reads the environment when
+  `app.module.ts` is imported and ESM caches that per file, so a second boot asking for
+  different settings would silently reuse the first. It throws instead.
+
+Schedulers start work that no lifecycle hook can await, so each exposes `whenSettled()` and
+the harness drains them before closing the app — otherwise MongoDB shuts down underneath a
+live query and the failure looks like a bug in the test.
 
 ## Notes
 
 - The project is **ESM** (`"type": "module"`, `module: nodenext`), which `got` v16
   requires. Relative imports therefore carry the `.js` extension.
 - Vitest runs sources through SWC so `emitDecoratorMetadata` works and Nest DI can be
-  exercised in unit tests (see `src/season/season.service.spec.ts`).
+  exercised in tests (see `src/season/season.service.spec.ts`).
 - `@denipetrov/blizz-auth` caches tokens per `region + clientId` and refreshes 60s
   before expiry, so `BlizzardTokenService` deliberately holds no cache of its own.
 - MongoDB is written through the official `mongodb` driver, no ODM.

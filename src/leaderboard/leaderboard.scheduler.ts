@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
+import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { LeaderboardService } from './leaderboard.service.js';
@@ -14,6 +15,7 @@ export class LeaderboardScheduler implements OnApplicationBootstrap, OnModuleDes
   private readonly logger = new Logger(LeaderboardScheduler.name);
   private readonly intervalMs: number;
   private readonly runOnStartup: boolean;
+  private readonly pending = new PendingWork();
 
   constructor(
     config: ConfigService<Env, true>,
@@ -25,13 +27,21 @@ export class LeaderboardScheduler implements OnApplicationBootstrap, OnModuleDes
   }
 
   onApplicationBootstrap(): void {
-    const interval = setInterval(() => void this.run('interval'), this.intervalMs);
+    const interval = setInterval(
+      () => this.pending.run(() => this.run('interval')),
+      this.intervalMs,
+    );
     this.scheduler.addInterval(INTERVAL_NAME, interval);
     this.logger.log(`Sweep scheduled every ${this.intervalMs}ms`);
 
     if (this.runOnStartup) {
-      void this.run('startup');
+      this.pending.run(() => this.run('startup'));
     }
+  }
+
+  /** Test seam: the startup sweep is fire-and-forget in production. */
+  whenSettled(): Promise<void> {
+    return this.pending.whenSettled();
   }
 
   onModuleDestroy(): void {

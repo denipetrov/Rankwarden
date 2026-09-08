@@ -137,6 +137,12 @@ export const envSchema = z.object({
   PROFILE_CONCURRENCY: z.coerce.number().int().positive().default(8),
   PROFILE_REQUESTS_PER_SECOND: z.coerce.number().positive().default(20),
 
+  /** Every other scheduler has an off switch; this one needs it for the same
+   * reason, so a test or a rehearsal can boot without it calling out. */
+  SEASON_REFRESH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
   /** How often to re-check which season is active, independently of sweeps. */
   SEASON_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
 

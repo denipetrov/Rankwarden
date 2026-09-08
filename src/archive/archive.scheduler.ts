@@ -5,6 +5,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Region } from '../blizzard/blizzard.constants.js';
 import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from './archive.service.js';
@@ -27,6 +28,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
   private readonly intervalMs: number;
   private readonly pauseMs: number;
   private subscription?: Subscription;
+  private readonly pending = new PendingWork();
   private running = false;
 
   constructor(
@@ -46,7 +48,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
       return;
     }
 
-    const interval = setInterval(() => void this.tick(), this.intervalMs);
+    const interval = setInterval(() => this.pending.run(() => this.tick()), this.intervalMs);
     this.scheduler.addInterval(INTERVAL_NAME, interval);
 
     // Deliberately no tick here. The archive is the lowest priority work in the
@@ -56,7 +58,14 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
     this.logger.log(
       `Archiving will start once live ingestion has warmed up, then every ${this.intervalMs}ms`,
     );
-    this.subscription = this.coordinator.warmedUp$.subscribe(() => void this.tick());
+    this.subscription = this.coordinator.warmedUp$.subscribe(() =>
+      this.pending.run(() => this.tick()),
+    );
+  }
+
+  /** Test seam: the warm-up-driven backfill is fire-and-forget in production. */
+  whenSettled(): Promise<void> {
+    return this.pending.whenSettled();
   }
 
   onModuleDestroy(): void {

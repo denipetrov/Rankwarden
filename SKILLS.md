@@ -480,6 +480,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                            |
 | `PROFILE_CONCURRENCY`                 | `8`                                 |                                                  |
 | `PROFILE_REQUESTS_PER_SECOND`         | `20`                                | Token bucket                                     |
+| `SEASON_REFRESH_ENABLED`              | `true`                              | Off switch for the daily season re-check         |
 | `SEASON_REFRESH_INTERVAL_MS`          | `86400000`                          |                                                  |
 | `SEASON_TRANSITION_ENABLED`           | `true`                              | Retiring finished seasons                        |
 | `SEASON_TRANSITION_CHECK_INTERVAL_MS` | `3600000`                           | A rollover also ticks immediately                |
@@ -608,26 +609,84 @@ is gated on the _next_ season starting, not on a sweep.
 
 ## 10. Testing
 
-`npm test` — 86 tests across 13 files, no database or network required. Vitest runs through
-SWC so Nest DI works in tests.
+Two Vitest projects, because the layers have different prerequisites.
 
-Patterns in use:
+| Command            | Project       | Covers                                          | Needs   |
+| ------------------ | ------------- | ----------------------------------------------- | ------- |
+| `npm test`         | `unit`        | `src/**/*.spec.ts` — pure functions, mocked DI  | nothing |
+| `npm run test:int` | `integration` | `test/**/*.spec.ts` — real Mongo, fake Blizzard | Docker  |
+| `npm run test:all` | both          |                                                 | Docker  |
+
+The integration project is deliberately out of `npm test`, so a push does not demand a
+running container. Vitest runs through SWC in both, so Nest DI works.
+
+### 10.1 Unit patterns
 
 - **Pure functions** tested directly: `mapWithConcurrency`, `RateLimiter`, `toSlug`,
-  `startOfUtcDay`, `activeLoadoutsBySpec`, `ratingFamilyOf`, `isIngestableBracket`.
+  `startOfUtcDay`, `activeLoadoutsBySpec`, `ratingFamilyOf`, `isIngestableBracket`,
+  `describeError`, `redactSecrets`, `PendingWork`.
 - **Services** via `Test.createTestingModule` with repositories and API clients replaced by
   `vi.fn()`. See `profile-enrichment.service.spec.ts` and `archive.service.spec.ts`.
 - **`ConfigService`** stubbed as `{ get: (key) => env[key] }` over a plain object.
-- **`IngestionCoordinator`** used real, not mocked — it is pure state and its interaction
-  with the services under test is the thing worth asserting.
+- **`IngestionCoordinator`** used real, not mocked — it is pure state, and its interaction
+  with the service under test is the thing worth asserting.
+- **`app.module.spec.ts`** compiles the whole graph without initialising it, which catches a
+  provider missing from its module or a cycle between two modules.
 
-What is **not** covered by unit tests: every repository (they are thin wrappers over driver
-calls) and the aggregation pipelines. Those were verified against the live database with
-throwaway probe scripts. When changing a pipeline, verify against real data — a pipeline
-that returns plausible numbers can still be wrong, as §9.2 shows.
+### 10.2 The integration harness
 
-A useful pattern for that: write the pipeline with extra per-document detail retained, run
-it against Mongo, and compare old versus new attribution side by side.
+Everything lives in `test/support/`:
+
+| Piece              | Role                                                                     |
+| ------------------ | ------------------------------------------------------------------------ |
+| `world.ts`         | Mutable model of Blizzard. Scenarios are mutations to it between sweeps. |
+| `specs.ts`         | The 40 real specialisations, so a world publishes the same 85 brackets.  |
+| `fake-blizzard.ts` | Replaces `BlizzardHttpService`, serving the World as raw JSON.           |
+| `app.ts`           | `bootTestApp` — real `AppModule`, real Mongo, fake Blizzard.             |
+| `invariants.ts`    | `expectInvariants` and the individual I1–I10 checks.                     |
+| `database.ts`      | Test database naming and the guard below.                                |
+| `http.ts`          | `fetch` against a real listener; no supertest dependency.                |
+| `seams.ts`         | Every scheduler whose bootstrap work can be awaited.                     |
+
+**The fake sits at the HTTP seam, not at `PvpApi`.** That keeps `PvpApi`, `ProfileApi` and
+every zod schema inside the test, which is where the payload traps of §9.5 live. The fake
+reproduces them deliberately: `leaderboards[].id` on the first entry only, and
+`season_end_timestamp` absent rather than null while a season runs.
+
+### 10.3 Two rules the harness enforces
+
+**One configuration per test file.** `ConfigModule.forRoot()` reads the environment when
+`app.module.ts` is imported, and ESM caches that module for the file's lifetime — so a
+second `bootTestApp` with different settings would silently reuse the first. Configuration
+is applied through `process.env` _before_ the dynamic import, and a second boot that asks
+for something different throws rather than misleading you. Rebooting with identical
+configuration is fine, and is how the restart cases work.
+
+**Never the development database.** `ConfigModule` falls back to `.env`, where `MONGODB_DB`
+is the real database — so a test that boots `AppModule` without overriding it would have a
+sweep write into live data. Every test database is named `rankwarden_test_<file>`, and
+`assertTestDatabase` refuses anything without that prefix. `test/setup/integration-env.ts`
+applies it before any module is imported, and also points `BLIZZARD_API_HOST_TEMPLATE` at a
+dead port so a missed seam fails locally instead of spending real quota.
+
+### 10.4 Awaiting background work
+
+Schedulers start work from lifecycle hooks and timers, neither of which can await anything.
+Each therefore exposes `whenSettled()`, and `TestApp.settle()` drains all of them.
+
+This is not a convenience. `season_state` is written by exactly that un-awaitable call, so
+without the seam a test polls for it or races it; and `app.close()` while a tick is mid-query
+shuts MongoDB down underneath a live read, which surfaces as an intermittent "MongoClient
+must be connected" that looks like a bug in the test. `TestApp.close()` drains before closing
+for that reason.
+
+### 10.5 What is still not covered
+
+Repositories and aggregation pipelines have no _unit_ coverage — they are exercised through
+the integration project instead. When changing a pipeline, verify against real data: one
+that returns plausible numbers can still be wrong, as §9.2 shows. A useful technique is to
+keep extra per-document detail in the pipeline, run it against Mongo, and compare old versus
+new attribution side by side.
 
 ---
 
