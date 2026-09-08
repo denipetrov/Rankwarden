@@ -128,6 +128,11 @@ export async function bootTestApp(
     .useValue({ getAccessToken: async () => 'test-token', validateToken: async () => true })
     .compile();
 
+  // The fake stands in for the service that feeds DependencyHealth, so hand it
+  // the real instance or readiness reports `unknown` for Blizzard forever.
+  const { DependencyHealth } = await import('../../src/common/health/dependency-health.service.js');
+  blizzard.health = moduleRef.get(DependencyHealth);
+
   const app = moduleRef.createNestApplication();
   // Runs onModuleInit (indexes) and onApplicationBootstrap (schedulers).
   await app.init();

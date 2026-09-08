@@ -1,6 +1,7 @@
 import { BlizzardApiError } from '../../src/blizzard/http/blizzard-api.error.js';
 import type { BlizzardGetOptions } from '../../src/blizzard/http/blizzard-http.service.js';
 import type { Region } from '../../src/blizzard/blizzard.constants.js';
+import type { DependencyHealth } from '../../src/common/health/dependency-health.service.js';
 import type { World, WorldPlayer, WorldRegion } from './world.js';
 
 export interface RecordedRequest {
@@ -23,6 +24,15 @@ export class FakeBlizzard {
   readonly requests: RecordedRequest[] = [];
   /** Artificial latency, for asserting concurrency and rate limits. */
   delayMs = 0;
+  /**
+   * Where observed Blizzard health is recorded.
+   *
+   * The real `BlizzardHttpService` is what feeds `DependencyHealth`, and this
+   * fake replaces it — so without this wiring the readiness endpoint would
+   * report `unknown` for Blizzard in every integration test, and the whole
+   * degraded path would be untestable. Set by `bootTestApp`.
+   */
+  health?: DependencyHealth;
   peakInFlight = 0;
   private inFlight = 0;
 
@@ -49,10 +59,21 @@ export class FakeBlizzard {
     this.inFlight += 1;
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
 
+    const startedAt = Date.now();
+
     try {
       if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 
-      return this.route(region as WorldRegion, path);
+      const payload = this.route(region as WorldRegion, path);
+      this.health?.recordBlizzardSuccess(region, Date.now() - startedAt);
+
+      return payload;
+    } catch (error) {
+      const status = error instanceof BlizzardApiError ? error.statusCode : null;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.health?.recordBlizzardFailure(region, reason, status);
+
+      throw error;
     } finally {
       this.inFlight -= 1;
     }
@@ -165,9 +186,20 @@ export class FakeBlizzard {
     return this.world.seasonPayload(region, seasonId) !== null;
   }
 
-  private error(status: number, path: string, message: string): BlizzardApiError {
-    return new BlizzardApiError(status, path, `Blizzard API ${status} for ${path}: ${message}`, {
-      attempts: 1,
-    });
+  /**
+   * Mirrors the message `BlizzardHttpService` builds, attempt count included.
+   *
+   * Anything asserting on error text — and the sweep's own failure lines carry
+   * it straight through — is meaningless if the fake's wording drifts from the
+   * real one.
+   */
+  private error(status: number, path: string, message: string, attempts = 1): BlizzardApiError {
+    return new BlizzardApiError(
+      status,
+      path,
+      `Blizzard API ${status} for ${path} after ${attempts} ` +
+        `${attempts === 1 ? 'attempt' : 'attempts'}: ${message}`,
+      { attempts },
+    );
   }
 }
