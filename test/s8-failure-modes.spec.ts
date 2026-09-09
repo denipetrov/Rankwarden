@@ -81,7 +81,7 @@ describe('S8 — failure modes', () => {
     try {
       await enrichment().run();
     } finally {
-      world.clearFailures();
+      world.clearFaults();
     }
 
     const stored = await characters().findOne({ region: 'us', characterId: denied.id });
@@ -121,7 +121,7 @@ describe('S8 — failure modes', () => {
     try {
       await enrichment().run();
     } finally {
-      world.clearFailures();
+      world.clearFaults();
     }
 
     const stored = await characters().findOne({ region: 'us', characterId: victim.id });
@@ -170,7 +170,7 @@ describe('S8 — failure modes', () => {
       const result = await harness.app.get(LeaderboardService).sweep();
       expect(result!.jobs.find((job) => job.bracket === '3v3')!.entries).toBe(1);
     } finally {
-      world.clearFailures();
+      world.clearFaults();
     }
 
     const stored = await characters().findOne({ region: 'us', characterId: player.id });

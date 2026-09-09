@@ -249,6 +249,41 @@ describe('S2 / S3 — enrichment passes', () => {
     ).toEqual(new Set(['profile-eu']));
   });
 
+  it('the smaller retry budget reaches the calls it was meant for', async () => {
+    // `PROFILE_RETRY_LIMIT` is applied by namespace, and the HTTP-level cases
+    // pass that namespace by hand. This is the other end of the wire: the two
+    // production call paths really do declare different namespaces, so the
+    // budget lands on per-character fetches and not on ladder fetches.
+    // A handful of characters made due again, so the sweep's own pass actually
+    // issues per-character fetches to look at.
+    const due = await characters().find({ region: 'us' }).limit(5).toArray();
+    await characters().updateMany(
+      { _id: { $in: due.map((row) => row._id) } },
+      { $unset: { profileFetchedAt: '', specsFetchedAt: '' } },
+    );
+
+    harness.blizzard.reset();
+    await sweep();
+
+    const namespaces = (prefix: string) =>
+      new Set(
+        harness.blizzard.requests
+          .filter((request) =>
+            prefix === 'profile'
+              ? request.path.startsWith('profile/wow/character/')
+              : request.path.startsWith('data/wow/'),
+          )
+          .map((request) => request.namespace.split('-')[0]),
+      );
+
+    expect(namespaces('data'), 'ladders and seasons keep the full budget').toEqual(
+      new Set(['dynamic']),
+    );
+    expect(namespaces('profile'), 'per-character fetches get the smaller one').toEqual(
+      new Set(['profile']),
+    );
+  });
+
   it('S3.9 — a rename follows through to the next enrichment request', async () => {
     const player = [...world.players.values()].find(
       (candidate) => candidate.region === 'us' && candidate.ratings.size > 0 && !candidate.deleted,

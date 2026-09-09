@@ -277,7 +277,7 @@ describe('S5 — archive backlog and scheduling', () => {
       expect(marker!.endsAt).toBeNull();
       expect(marker!.failedBrackets, 'and the season still counts as complete').toEqual([]);
     } finally {
-      world.clearFailures();
+      world.clearFaults();
       world.fail('us', `brackets:${OLDER}`, 404);
     }
   });

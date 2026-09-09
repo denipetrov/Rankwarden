@@ -353,7 +353,7 @@ describe('S6 — rollover at runtime', () => {
         const row = await snapshots().findOne({ region: 'us', date: startOfUtcDay(new Date()) });
         expect(row!.seasonId).toBe(NEXT);
       } finally {
-        harness.world.clearFailures();
+        harness.world.clearFaults();
       }
     });
 

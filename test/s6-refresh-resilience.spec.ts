@@ -93,7 +93,7 @@ describe('S6 — season tracking under failure', () => {
     );
     expect(health.body.seasons.us.id, 'and it reaches the health endpoint').toBe(NEXT);
 
-    world.clearFailures();
+    world.clearFaults();
   });
 
   it('S6.14 — one region failing does not stop the others refreshing', async () => {
@@ -112,7 +112,7 @@ describe('S6 — season tracking under failure', () => {
     expect(String(refreshed.body.seasons.us)).toMatch(/504/);
     expect(refreshed.body.seasons.eu, 'the loop completes for every remaining region').toBe(NEXT);
 
-    world.clearFailures();
+    world.clearFaults();
   });
 
   it('S6.11 — an empty new season is ingested without error', async () => {

@@ -150,7 +150,7 @@ describe('S2 — enrichment failure handling', () => {
     const age = Date.now() - (after!.profileFetchedAt as Date).getTime();
     expect(age, 'a transient failure is backdated, not stamped as now').toBeGreaterThan(0);
 
-    harness.world.clearFailures();
+    harness.world.clearFaults();
   });
 
   it('ISSUE-2 — the hero talent tree falls back to the active loadout', async () => {

@@ -60,7 +60,7 @@ describe('S4 — falling out of scope', () => {
   });
 
   beforeEach(() => {
-    harness.world.clearFailures();
+    harness.world.clearFaults();
     harness.blizzard.reset();
   });
 
@@ -211,7 +211,7 @@ describe('S4 — falling out of scope', () => {
     );
     expect(after.map((doc) => doc.ratings)).toEqual(snapshot.sample.map((doc) => doc.ratings));
 
-    harness.world.clearFailures();
+    harness.world.clearFaults();
     await sweep();
   });
 
@@ -230,7 +230,7 @@ describe('S4 — falling out of scope', () => {
     expect(await rows('3v3').countDocuments({ region: 'us', bracket: '3v3' })).toBe(rowsBefore);
     expect(await characters().countDocuments({ region: 'us' })).toBe(before);
 
-    harness.world.clearFailures();
+    harness.world.clearFaults();
     await sweep();
   });
 
@@ -250,7 +250,7 @@ describe('S4 — falling out of scope', () => {
     expect(await characters().countDocuments()).toBe(before.characters);
     expect(await rows('3v3').countDocuments()).toBe(before.rows);
 
-    harness.world.clearFailures();
+    harness.world.clearFaults();
     await sweep();
   });
 

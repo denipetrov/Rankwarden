@@ -85,7 +85,7 @@ describe('S10 / S11 — observability', () => {
       logger.reset();
       harness.world.fail('us', 'shuffle-mage-fire', 503);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const failures = logger
         .of('error')
@@ -102,7 +102,7 @@ describe('S10 / S11 — observability', () => {
       logger.reset();
       harness.world.fail('us', '3v3', 500);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const [line] = logger.of('error').filter((record) => /\/3v3\b/.test(record.message));
 
@@ -162,7 +162,7 @@ describe('S10 / S11 — observability', () => {
       harness.world.fail('us', '2v2', 500);
       harness.world.fail('us', 'rbg', 503);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const digest = logger
         .of('warn')
@@ -255,7 +255,7 @@ describe('S10 / S11 — observability', () => {
       harness.world.fail('kr', 'index', 500);
       harness.world.fail('eu', 'brackets', 503);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const ready = await getJson<{
         status: string;
@@ -368,14 +368,14 @@ describe('S10 / S11 — observability', () => {
         ).toBe(429);
         expect(ready.body.dependencies.blizzard.regions.eu.consecutiveFailures).toBeGreaterThan(1);
       } finally {
-        harness.world.clearFailures();
+        harness.world.clearFaults();
       }
     });
 
     it('S11.12 — readiness during a sweep is still ready', async () => {
       // `sweepRunning` is information, not a fault, and the Mongo ping must not
       // queue behind the sweep's own I/O long enough to trip a probe timeout.
-      harness.world.clearFailures();
+      harness.world.clearFaults();
       await sweep();
 
       const coordinator = harness.app.get(IngestionCoordinator);
@@ -410,7 +410,7 @@ describe('S10 / S11 — observability', () => {
       expect(degraded.body.status).toBe('degraded');
       expect(degraded.status, 'degraded still takes traffic').toBe(200);
       expect((await getJson(baseUrl, '/health')).status).toBe(200);
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       // down: the hard dependency is gone
       const ping = vi
@@ -445,7 +445,7 @@ describe('S10 / S11 — observability', () => {
       try {
         await sweep();
       } finally {
-        harness.world.clearFailures();
+        harness.world.clearFaults();
       }
 
       const failures = logger
