@@ -4,8 +4,10 @@ import type { AnyBulkWriteOperation } from 'mongodb';
 import type { Bracket, Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import {
+  ARCHIVE_BRACKETS_COLLECTION,
   ARCHIVE_ENTRIES_COLLECTION,
   ARCHIVE_SEASONS_COLLECTION,
+  type ArchiveBracketDocument,
   type ArchiveEntryDocument,
   type ArchiveSeasonDocument,
 } from './entities/archive.entity.js';
@@ -26,6 +28,10 @@ export class ArchiveRepository implements OnModuleInit {
     return this.mongo.collection<ArchiveSeasonDocument>(ARCHIVE_SEASONS_COLLECTION);
   }
 
+  private get brackets() {
+    return this.mongo.collection<ArchiveBracketDocument>(ARCHIVE_BRACKETS_COLLECTION);
+  }
+
   async onModuleInit(): Promise<void> {
     await this.entries.createIndexes([
       // A past season's ladder, ordered.
@@ -42,6 +48,14 @@ export class ArchiveRepository implements OnModuleInit {
 
     await this.seasons.createIndexes([
       { key: { seasonId: 1, region: 1 }, name: 'season_identity', unique: true },
+    ]);
+
+    await this.brackets.createIndexes([
+      {
+        key: { seasonId: 1, region: 1, bracket: 1 },
+        name: 'bracket_identity',
+        unique: true,
+      },
     ]);
 
     this.logger.log(`Indexes ensured on "${ARCHIVE_ENTRIES_COLLECTION}"`);
@@ -63,13 +77,48 @@ export class ArchiveRepository implements OnModuleInit {
   }
 
   /**
+   * Season/region pairs that have a marker at all, whatever it says.
+   *
+   * The recovery probe is for seasons with no marker. A marker that names
+   * outstanding brackets is an explicit record of what failed, and re-deriving
+   * completeness from the data would overrule it — so the two paths are kept
+   * apart by asking this first.
+   */
+  async markedSeasons(): Promise<Set<string>> {
+    const marked = await this.seasons
+      .find({}, { projection: { seasonId: 1, region: 1 } })
+      .toArray();
+
+    return new Set(marked.map((entry) => `${entry.seasonId}:${entry.region}`));
+  }
+
+  /**
+   * Records that one bracket was fetched, whatever it contained.
+   *
+   * Written per bracket rather than once per season, so a crash mid-archive
+   * leaves an accurate partial record instead of nothing.
+   */
+  async recordBracketFetch(record: ArchiveBracketDocument): Promise<void> {
+    const { seasonId, region, bracket, ...rest } = record;
+
+    await this.brackets.updateOne(
+      { seasonId, region, bracket },
+      { $set: rest, $setOnInsert: { seasonId, region, bracket } },
+      { upsert: true },
+    );
+  }
+
+  /** Brackets known to have been fetched for a season, empty ones included. */
+  async fetchedBrackets(seasonId: number, region: Region): Promise<Bracket[]> {
+    return this.brackets.distinct('bracket', { seasonId, region });
+  }
+
+  /**
    * What is actually stored for a season, brackets named rather than counted.
    *
-   * The names are what makes a partial season recoverable: a crash mid-archive
-   * leaves rows with no marker, and the only way to tell 83 of 83 brackets from
-   * 3 of 83 is to compare these against the bracket list the API publishes.
-   * A sampling probe cannot do it — `distinct` only ever lists brackets that
-   * are present, so it finds rows either way.
+   * Only the rows. Completeness is judged from `fetchedBrackets` instead,
+   * because a ladder nobody qualified for stores nothing and would otherwise be
+   * indistinguishable from one that was never fetched.
    */
   async summariseStored(
     seasonId: number,

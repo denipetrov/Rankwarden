@@ -2,7 +2,10 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { expect } from 'vitest';
 
-import { BLIZZARD_TOKEN_PROVIDER } from '../../src/blizzard/auth/token-provider.js';
+import {
+  BLIZZARD_TOKEN_PROVIDER,
+  type BlizzardTokenProvider,
+} from '../../src/blizzard/auth/token-provider.js';
 import { BlizzardHttpService } from '../../src/blizzard/http/blizzard-http.service.js';
 import { assertTestDatabase, testDbName, testMongoUri } from './database.js';
 import { FakeBlizzard } from './fake-blizzard.js';
@@ -101,6 +104,7 @@ export function resetBootGuard(): void {
 export async function bootTestApp(
   world: World,
   env: Record<string, string> = {},
+  tokens: BlizzardTokenProvider = { getAccessToken: async () => 'test-token' },
 ): Promise<TestApp> {
   const dbName = assertTestDatabase(env.MONGODB_DB ?? testDbName(expect.getState().testPath));
   const resolved = {
@@ -125,8 +129,13 @@ export async function bootTestApp(
     .overrideProvider(BlizzardHttpService)
     .useValue(blizzard)
     .overrideProvider(BLIZZARD_TOKEN_PROVIDER)
-    .useValue({ getAccessToken: async () => 'test-token', validateToken: async () => true })
+    .useValue(tokens)
     .compile();
+
+  // The fake stands in for the service that mints the bearer token, so it has
+  // to consult the same seam — otherwise a failing token provider changes
+  // nothing and an OAuth outage cannot be expressed at all.
+  blizzard.tokens = tokens;
 
   // The fake stands in for the service that feeds DependencyHealth, so hand it
   // the real instance or readiness reports `unknown` for Blizzard forever.

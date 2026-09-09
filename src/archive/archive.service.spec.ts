@@ -23,11 +23,14 @@ describe('ArchiveService', () => {
   const getLeaderboard = vi.fn();
   const getSeason = vi.fn();
   const settledSeasons = vi.fn();
+  const markedSeasons = vi.fn();
   const insertEntries = vi.fn();
   const recordSeason = vi.fn();
   const countEntries = vi.fn();
   const summariseStored = vi.fn();
   const markUnarchivable = vi.fn();
+  const recordBracketFetch = vi.fn();
+  const fetchedBrackets = vi.fn();
   const hasEnded = vi.fn();
   let coordinator: IngestionCoordinator;
   let service: ArchiveService;
@@ -60,9 +63,13 @@ describe('ArchiveService', () => {
       endsAt: new Date('2026-08-11T05:00:00.000Z'),
     });
     settledSeasons.mockResolvedValue(new Set<string>());
+    // No markers at all by default, so the recovery probe is allowed to run.
+    markedSeasons.mockResolvedValue(new Set<string>());
     countEntries.mockResolvedValue(1);
-    // Nothing stored by default, so a season is fetched rather than adopted.
+    // Nothing archived by default, so a season is fetched rather than adopted.
     summariseStored.mockResolvedValue({ brackets: [], entries: 0 });
+    fetchedBrackets.mockResolvedValue([]);
+    recordBracketFetch.mockResolvedValue(undefined);
     hasEnded.mockReturnValue(false);
     coordinator = new IngestionCoordinator();
 
@@ -76,11 +83,14 @@ describe('ArchiveService', () => {
           provide: ArchiveRepository,
           useValue: {
             settledSeasons,
+            markedSeasons,
             insertEntries,
             recordSeason,
             countEntries,
             summariseStored,
             markUnarchivable,
+            recordBracketFetch,
+            fetchedBrackets,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },
@@ -121,11 +131,14 @@ describe('ArchiveService', () => {
           provide: ArchiveRepository,
           useValue: {
             settledSeasons,
+            markedSeasons,
             insertEntries,
             recordSeason,
             countEntries,
             summariseStored,
             markUnarchivable,
+            recordBracketFetch,
+            fetchedBrackets,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },

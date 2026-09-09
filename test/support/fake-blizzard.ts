@@ -1,6 +1,7 @@
 import { BlizzardApiError } from '../../src/blizzard/http/blizzard-api.error.js';
 import type { BlizzardGetOptions } from '../../src/blizzard/http/blizzard-http.service.js';
 import type { Region } from '../../src/blizzard/blizzard.constants.js';
+import type { BlizzardTokenProvider } from '../../src/blizzard/auth/token-provider.js';
 import type { DependencyHealth } from '../../src/common/health/dependency-health.service.js';
 import type { World, WorldPlayer, WorldRegion } from './world.js';
 
@@ -33,6 +34,16 @@ export class FakeBlizzard {
    * degraded path would be untestable. Set by `bootTestApp`.
    */
   health?: DependencyHealth;
+  /**
+   * The token provider, consulted once per request.
+   *
+   * The real `BlizzardHttpService` mints a bearer token in a `beforeRequest`
+   * hook on every call, so a provider that throws fails every request. Without
+   * this the fake never touches the seam at all, and an OAuth outage is simply
+   * not expressible — the whole credentials-failed scenario becomes unreachable
+   * rather than merely unwritten. Set by `bootTestApp`.
+   */
+  tokens?: BlizzardTokenProvider;
   peakInFlight = 0;
   private inFlight = 0;
 
@@ -62,6 +73,10 @@ export class FakeBlizzard {
     const startedAt = Date.now();
 
     try {
+      // Before anything else, exactly as the real service does: no token, no
+      // request, whatever the World would have served.
+      await this.tokens?.getAccessToken();
+
       if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 
       const payload = this.route(region as WorldRegion, path);
@@ -135,7 +150,16 @@ export class FakeBlizzard {
 
     const specs = /^profile\/wow\/character\/([^/]+)\/([^/]+)\/specializations$/.exec(path);
     if (specs) {
-      return this.serve(region, `character:${specs[1]}/${specs[2]}`, path, () =>
+      // Two keys, most specific first. `specs:<realm>/<name>` targets this
+      // response alone; `character:<realm>/<name>` still covers both halves, so
+      // faults injected against the shared key keep working. Without the
+      // narrow key a test aiming at the specializations response has to supply
+      // a payload that also satisfies the profile schema, which is indirect
+      // enough to be mistaken for a product behaviour.
+      const narrow = `specs:${specs[1]}/${specs[2]}`;
+      const key = this.hasFault(region, narrow) ? narrow : `character:${specs[1]}/${specs[2]}`;
+
+      return this.serve(region, key, path, () =>
         this.world.specsPayload(this.characterAt(region, specs[1], specs[2], path)),
       );
     }
@@ -157,6 +181,14 @@ export class FakeBlizzard {
    * parses a structurally wrong payload with the real schema — which is the
    * behaviour under test, not an error the fake should raise itself.
    */
+  /** Whether any fault is registered against a key. */
+  private hasFault(region: WorldRegion, key: string): boolean {
+    return (
+      this.world.failureFor(region, key) !== undefined ||
+      this.world.corruptionFor(region, key) !== undefined
+    );
+  }
+
   private serve(region: WorldRegion, key: string, path: string, build: () => unknown): unknown {
     const status = this.world.failureFor(region, key);
     if (status !== undefined) throw this.error(status, path, `injected ${status}`);

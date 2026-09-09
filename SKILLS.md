@@ -194,13 +194,23 @@ differ by up to 32 hours between regions).
 `ArchiveService` — finished seasons, fetched once, stored separately.
 
 `nextPending()` walks regions × finished seasons (newest first, bounded by
-`ARCHIVE_MIN_SEASON` / `ARCHIVE_MAX_SEASON`) and returns the first without a completion
-marker. Before returning one it samples the data itself — three random brackets, up to ten
-rows each — and if rows exist it writes back the marker and skips. That covers a crash
-mid-season or a dropped `archive_seasons` collection.
+`ARCHIVE_MIN_SEASON` / `ARCHIVE_MAX_SEASON`) and returns the first that is neither complete
+nor known unfetchable.
 
-The scheduler takes one season per pass and comes straight back while work remains,
-pausing `ARCHIVE_SEASON_PAUSE_MS` between seasons.
+For a season with **no marker at all** — a crash mid-season, or a dropped `archive_seasons`
+collection — it first tries to recover one: it compares the brackets already covered (§5.4)
+against the list the API publishes, and writes the marker back if they match, turning ~83
+requests into one. A shortfall is recorded as `failedBrackets` and the season stays pending.
+
+Recovery runs **only** when no marker exists. A marker naming outstanding brackets is an
+explicit record of what failed, and re-deriving completeness from the data would overrule
+it. The retry is cheap regardless, because `archiveSeason` fetches only what is genuinely
+outstanding.
+
+The scheduler takes one season per pass and comes straight back while work remains, pausing
+`ARCHIVE_SEASON_PAUSE_MS` between seasons. A season that 404s is marked `unarchivable` and
+skipped permanently, so one dead season cannot block the backlog behind it; any other
+failure is skipped for the rest of that tick only.
 
 ### 4.5 Season refresh
 
@@ -323,16 +333,19 @@ of `classified`; a hero talent's `share` is a fraction of that spec's `heroTalen
 
 Indexes: `snapshot_identity` (unique), `series` (the time-series read, ~1ms).
 
-### 5.4 Archive — `archive_entries` + `archive_seasons`
+### 5.4 Archive — `archive_entries` + `archive_seasons` + `archive_brackets`
 
 ```js
-// archive_entries
+// archive_entries — the standings themselves
 { seasonId, region, bracket, characterId, characterName, realmId, realmSlug,
   faction, rank, rating, played, won, lost }
 
-// archive_seasons  (the run-once marker)
+// archive_seasons — the run-once marker
 { seasonId, region, name, startsAt, endsAt, brackets, entries,
-  failedBrackets: [], archivedAt }
+  failedBrackets: [], archivedAt, unarchivable?, lastError? }
+
+// archive_brackets — what was fetched, whatever it contained
+{ seasonId, region, bracket, entries, fetchedAt }
 ```
 
 Archive rows are **self-contained** — no reference into `characters`. Historical standings
@@ -340,7 +353,21 @@ must keep reading correctly forever, and a character can be renamed, transferred
 long after the season it played in. No profile enrichment: it costs two requests per
 character and would describe the player _today_, not during that season.
 
-Indexes: `archive_board`, `archive_identity` (unique), `archive_character`.
+**Why `archive_brackets` exists.** Completeness used to be inferred from stored rows, which
+cannot tell a ladder nobody qualified for from one that was never fetched — both store
+nothing. On a small region plenty of the 80 spec ladders finish a season empty, so such a
+season could never be adopted from its rows and the cheap recovery path was defeated exactly
+where it mattered. Recording the fetch removes the inference. It is a separate collection so
+`archive_entries` stays purely the standings and needs no filtering, and so the record
+survives losing `archive_seasons`.
+
+Coverage is `archive_brackets ∪ rows`. The union matters: the fetch record is written after
+the rows, so a crash between the two leaves rows that still count. Seasons archived before
+the collection existed have no records, so their rows stand in — the old inference, with the
+old blind spot, but far better than treating archived history as missing.
+
+Indexes: `archive_board`, `archive_identity` (unique), `archive_character`, and
+`bracket_identity` (unique) on `archive_brackets`.
 
 ---
 
@@ -737,6 +764,9 @@ extending the wildcard-covered maps over adding per-key indexes.
   `/admin/*` triggers are unauthenticated too, which is why they 404 outside development.
 - **Repositories and aggregation pipelines have no automated coverage.** An integration
   suite against a throwaway Mongo would be the highest-value addition.
+- **Completeness for pre-`archive_brackets` seasons is still inferred from rows**, so one of
+  those with an empty ladder stays unadoptable if its marker is lost. Re-archiving the season
+  once populates the record and closes it.
 - **A season Blizzard stops serving is marked `unarchivable`** and skipped forever. That is
   right for seasons below 22, but a prolonged 404 on a season that _should_ exist would be
   recorded the same way; clear the marker by hand to retry it.
