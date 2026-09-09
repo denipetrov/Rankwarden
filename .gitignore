@@ -26,3 +26,6 @@ npm-debug.log*
 !.vscode/tasks.json
 .DS_Store
 Thumbs.db
+
+# Live cross-check run artefact
+crosscheck-plan.json
