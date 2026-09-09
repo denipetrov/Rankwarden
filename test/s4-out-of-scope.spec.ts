@@ -4,7 +4,10 @@ import type { Db } from 'mongodb';
 import { RATING_FAMILIES, ratingFamilyOf } from '../src/blizzard/blizzard.constants.js';
 import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
 import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
+import { CharacterRepository } from '../src/leaderboard/character.repository.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
+import { RatingRepository } from '../src/leaderboard/rating.repository.js';
+import { CharacterSyncService } from '../src/sync/character-sync.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectInvariants, expectNoUnrankedCharacters } from './support/invariants.js';
@@ -296,5 +299,136 @@ describe('S4 — falling out of scope', () => {
 
     expect(await characters().countDocuments({ region: 'eu' })).toBe(euBefore);
     await expectInvariants(db, harness.world);
+  });
+
+  it('S4.3 — the three cleanup paths run in an order that leaves nothing behind', async () => {
+    // Spied per region on one real sweep. The order is load-bearing in both
+    // directions: retired ladders have to be cleared before `removeUnranked`
+    // can see a character as unranked at all, and characters have to be gone
+    // before their rows count as orphans.
+    const characterRepo = harness.app.get(CharacterRepository);
+    const ratingRepo = harness.app.get(RatingRepository);
+    const calls: string[] = [];
+    // Wrapped by hand rather than with `vi.spyOn`: the two repositories share
+    // a method name, and spying on a generic key erases the return type.
+    const restore: (() => void)[] = [];
+    const record = (target: Record<string, unknown>, key: string, label: string) => {
+      const original = target[key] as (...args: never[]) => Promise<number>;
+
+      target[key] = (...args: never[]) => {
+        calls.push(label);
+
+        return original.apply(target, args);
+      };
+      restore.push(() => {
+        target[key] = original;
+      });
+    };
+
+    const characters_ = characterRepo as unknown as Record<string, unknown>;
+    const ratings_ = ratingRepo as unknown as Record<string, unknown>;
+    record(characters_, 'removeRetiredBrackets', 'characters.removeRetiredBrackets');
+    record(characters_, 'removeUnranked', 'characters.removeUnranked');
+    record(ratings_, 'removeOrphans', 'ratings.removeOrphans');
+    record(ratings_, 'removeRetiredBrackets', 'ratings.removeRetiredBrackets');
+
+    try {
+      await sweep();
+    } finally {
+      for (const undo of restore) undo();
+    }
+
+    const perRegion = [
+      'characters.removeRetiredBrackets',
+      'characters.removeUnranked',
+      'ratings.removeOrphans',
+      'ratings.removeRetiredBrackets',
+    ];
+    expect(calls, 'two regions, each cleaned in full before the next').toEqual([
+      ...perRegion,
+      ...perRegion,
+    ]);
+  });
+
+  it('S4.12 — orphan removal chunks past the bulk limit', async () => {
+    // 2,500 rows for characters that do not exist: three chunks of the 1,000
+    // the repository deletes in. A single `$in` of every id would also be a
+    // 2,500-element array in one command, which is the shape this guards.
+    const orphans = Array.from({ length: 2_500 }, (_, index) => ({
+      seasonId: 42,
+      region: 'us',
+      bracket: '3v3',
+      characterId: 900_000_000 + index,
+      characterName: `Ghost${index}`,
+      realmId: 60,
+      realmSlug: 'tarren-mill',
+      faction: 'HORDE',
+      rank: index + 1,
+      rating: 1500,
+      played: 1,
+      won: 1,
+      lost: 0,
+      updatedAt: new Date(),
+      fetchedAt: new Date(),
+    }));
+    await rows('3v3').insertMany(orphans);
+
+    const seasonId = (await characters().findOne({ region: 'us' }))!.seasonId;
+    const removed = await harness.app.get(RatingRepository).removeOrphans(seasonId, 'us');
+
+    expect(removed, 'every chunk is counted, not just the first').toBe(2_500);
+    expect(await rows('3v3').countDocuments({ characterId: { $gte: 900_000_000 } })).toBe(0);
+    await expectInvariants(db, harness.world);
+  });
+
+  it('S4.13 — a sync payload drops every bracket it omits', async () => {
+    const player = pickPlayer(4);
+    const stored = await characters().findOne({ region: 'us', characterId: player.id });
+    const before = Object.keys(stored!.brackets);
+
+    expect(before.length, 'the character is on several ladders to begin with').toBeGreaterThan(3);
+    expect(
+      before.some((bracket) => bracket.startsWith('shuffle-')),
+      'including at least one shuffle ladder',
+    ).toBe(true);
+
+    // The documented contract: the payload is authoritative for every bracket
+    // at once, so sending only 2v2 says the character has left all the others.
+    const kept = before.find((bracket) => bracket === '2v2') ?? before[0];
+    const result = await harness.app.get(CharacterSyncService).sync({
+      seasonId: stored!.seasonId,
+      region: 'us',
+      characterId: player.id,
+      characterName: stored!.characterName,
+      realmId: stored!.realmId,
+      realmSlug: stored!.realmSlug,
+      faction: stored!.faction ?? null,
+      brackets: { [kept]: stored!.brackets[kept] },
+    });
+
+    expect(result.brackets).toBe(1);
+
+    const after = await characters().findOne({ region: 'us', characterId: player.id });
+    expect(Object.keys(after!.brackets)).toEqual([kept]);
+    expect(Object.keys(after!.ratings), 'the mirror follows').toEqual([kept]);
+
+    // The shuffle family receives an empty update list, so its `$nin: []`
+    // deletes everything the character had there. That is the case a
+    // per-bracket diff would miss entirely.
+    for (const family of RATING_FAMILIES) {
+      const remaining = await rows(family).find({ region: 'us', characterId: player.id }).toArray();
+      const expected = ratingFamilyOf(kept) === family ? [kept] : [];
+      expect(
+        remaining.map((row) => row.bracket),
+        family,
+      ).toEqual(expected);
+    }
+
+    expect(
+      Object.values(result.ratingRows).reduce((total, entry) => total + entry.removed, 0),
+      'and the removals are reported back rather than done silently',
+    ).toBeGreaterThan(0);
+
+    await expectInvariants(db);
   });
 });

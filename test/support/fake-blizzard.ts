@@ -115,7 +115,14 @@ export class FakeBlizzard {
 
     const bracketIndex = /^data\/wow\/pvp-season\/(\d+)\/pvp-leaderboard\/index$/.exec(path);
     if (bracketIndex) {
-      return this.serve(region, 'brackets', path, () => {
+      // Two keys, most specific first, as with the profile halves below.
+      // `brackets:<season>` fails one season's bracket list while its
+      // neighbours keep working, which is the only way to express a season
+      // Blizzard has stopped serving while the backlog around it still moves.
+      const narrow = `brackets:${bracketIndex[1]}`;
+      const key = this.hasFault(region, narrow) ? narrow : 'brackets';
+
+      return this.serve(region, key, path, () => {
         if (!this.knowsSeason(region, Number(bracketIndex[1]))) {
           throw this.error(404, path, `no season ${bracketIndex[1]}`);
         }
@@ -174,13 +181,6 @@ export class FakeBlizzard {
     throw this.error(404, path, `no route for ${path}`);
   }
 
-  /**
-   * Applies injected faults, then builds the payload.
-   *
-   * A corruption short-circuits the build and is returned as-is, so the caller
-   * parses a structurally wrong payload with the real schema — which is the
-   * behaviour under test, not an error the fake should raise itself.
-   */
   /** Whether any fault is registered against a key. */
   private hasFault(region: WorldRegion, key: string): boolean {
     return (
@@ -189,6 +189,13 @@ export class FakeBlizzard {
     );
   }
 
+  /**
+   * Applies injected faults, then builds the payload.
+   *
+   * A corruption short-circuits the build and is returned as-is, so the caller
+   * parses a structurally wrong payload with the real schema — which is the
+   * behaviour under test, not an error the fake should raise itself.
+   */
   private serve(region: WorldRegion, key: string, path: string, build: () => unknown): unknown {
     const status = this.world.failureFor(region, key);
     if (status !== undefined) throw this.error(status, path, `injected ${status}`);
