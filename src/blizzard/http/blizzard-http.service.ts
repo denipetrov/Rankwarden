@@ -43,6 +43,7 @@ export class BlizzardHttpService {
   private readonly client: Got;
   private readonly locale: string;
   private readonly hostTemplate: string;
+  private readonly profileRetryLimit: number;
 
   constructor(
     config: ConfigService<Env, true>,
@@ -51,6 +52,7 @@ export class BlizzardHttpService {
   ) {
     this.locale = config.get('BLIZZARD_LOCALE', { infer: true });
     this.hostTemplate = config.get('BLIZZARD_API_HOST_TEMPLATE', { infer: true });
+    this.profileRetryLimit = config.get('PROFILE_RETRY_LIMIT', { infer: true });
 
     this.client = got.extend({
       timeout: { request: config.get('BLIZZARD_REQUEST_TIMEOUT_MS', { infer: true }) },
@@ -87,10 +89,17 @@ export class BlizzardHttpService {
     const startedAt = Date.now();
 
     try {
+      const namespace = options.namespace ?? 'dynamic';
+
       const payload = await this.client
         .get(url, {
+          // Per-character endpoints retry less than everything else. There are
+          // ~332 ladder fetches in a sweep and one profile fetch per character
+          // on the ladders, so the same retry budget means very different
+          // things: see PROFILE_RETRY_LIMIT for the arithmetic.
+          ...(namespace === 'profile' ? { retry: { limit: this.profileRetryLimit } } : {}),
           searchParams: {
-            namespace: namespaceFor(options.namespace ?? 'dynamic', region),
+            namespace: namespaceFor(namespace, region),
             locale: this.locale,
             ...options.searchParams,
           },

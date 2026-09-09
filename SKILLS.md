@@ -394,7 +394,16 @@ Non-2xx becomes `BlizzardApiError` with `statusCode` and `isNotFound`.
 | `/profile/wow/character/{realm}/{name}`                 | profile   | race, class, realm, title, guild             |
 | `/profile/wow/character/{realm}/{name}/specializations` | profile   | spec, hero tree, loadouts                    |
 
-**Quota: 100 requests/second, 36,000/hour.** Everything else follows from that.
+**Quota: 100 requests/second, 36,000/hour.** Everything else follows from that — including
+two different retry budgets.
+
+A sweep is ~332 ladder fetches whatever the population, so retrying one three times costs
+little and saves a bracket. Enrichment is one request per character per half, and at the
+defaults that is 500 characters x 2 every 5 minutes: **12,000 requests an hour before a
+single retry**. Retrying each three times would make it 48,000 and put enrichment alone over
+the cap, starving the sweep that actually serves the boards. Profile-namespace calls
+therefore use `PROFILE_RETRY_LIMIT` (1) rather than `BLIZZARD_RETRY_LIMIT` (3); only the
+limit differs, so the same statuses are retryable either way.
 
 Namespaces are derived per endpoint (`namespaceFor('profile', 'eu')` → `profile-eu`), not
 configured. Character names must be lowercased and percent-encoded (`Zëph`).
@@ -534,7 +543,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_LOCALE`                     | `en_US`                             |                                                  |
 | `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam        |
 | `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                  |
-| `BLIZZARD_RETRY_LIMIT`                | `3`                                 |                                                  |
+| `BLIZZARD_RETRY_LIMIT`                | `3`                                 | Ladder and season endpoints                      |
+| `PROFILE_RETRY_LIMIT`                 | `1`                                 | Per-character endpoints; lower on purpose        |
 | `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep               |
 | `MONGODB_URI`                         | —                                   | **Required**                                     |
 | `MONGODB_DB`                          | `rankwarden`                        |                                                  |

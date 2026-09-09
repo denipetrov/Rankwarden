@@ -12,9 +12,12 @@ import { DependencyHealth } from '../src/common/health/dependency-health.service
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../src/config/env.schema.js';
 
-/** One retry rather than the default: got backs off ~1s per attempt, and the
- * classification is just as well proved by two attempts as by four. */
-const RETRY_LIMIT = 1;
+/** Two retries rather than the default three: got backs off ~1s per attempt,
+ * and the classification is just as well proved by three attempts as by four.
+ * Kept above PROFILE_RETRY_LIMIT so the two budgets are distinguishable. */
+const RETRY_LIMIT = 2;
+/** What the per-character endpoints get. Lower on purpose — see the case below. */
+const PROFILE_RETRY_LIMIT = 1;
 const TIMEOUT_MS = 200;
 
 /**
@@ -53,6 +56,7 @@ describe('BlizzardHttpService — failure handling', () => {
           BLIZZARD_API_HOST_TEMPLATE: hostTemplate,
           BLIZZARD_REQUEST_TIMEOUT_MS: TIMEOUT_MS,
           BLIZZARD_RETRY_LIMIT: RETRY_LIMIT,
+          PROFILE_RETRY_LIMIT,
           BLIZZARD_CLIENT_ID: 'test-client-id',
           BLIZZARD_CLIENT_SECRET: 'test-client-secret',
         })[key as string],
@@ -180,6 +184,36 @@ describe('BlizzardHttpService — failure handling', () => {
       expect((error as Error).message, path).toMatch(/attempt/);
       expect((error as Error).message, path).toContain(path);
     }
+  });
+
+  it('S8.11d — a profile fetch gets its own, smaller retry budget', async () => {
+    // Enrichment is one request per character per half, so the same retry
+    // budget means something very different there than on ~332 ladder fetches:
+    // at the defaults, retrying every profile three times puts enrichment alone
+    // over the hourly quota and starves the sweep that serves the boards.
+    route('character', json(503, { error: 'unavailable' }));
+    route('ladder', json(503, { error: 'unavailable' }));
+
+    await expect(http.get('us', 'character', { namespace: 'profile' })).rejects.toBeInstanceOf(
+      BlizzardApiError,
+    );
+    await expect(http.get('us', 'ladder')).rejects.toBeInstanceOf(BlizzardApiError);
+
+    expect(hitsFor('character'), 'per-character endpoints').toBe(PROFILE_RETRY_LIMIT + 1);
+    expect(hitsFor('ladder'), 'everything else').toBe(RETRY_LIMIT + 1);
+  });
+
+  it('S8.11e — the smaller budget still applies the shared retry rules', async () => {
+    // Only the limit differs. A status got does not consider retryable is still
+    // attempted exactly once, so the narrower budget cannot be read as
+    // "profile calls retry on things ladder calls do not".
+    route('character-404', json(404, { error: 'gone' }));
+
+    await expect(http.get('us', 'character-404', { namespace: 'profile' })).rejects.toBeInstanceOf(
+      BlizzardApiError,
+    );
+
+    expect(hitsFor('character-404')).toBe(1);
   });
 
   it('S8.14b — an empty 200 body is rejected as a transport failure', async () => {

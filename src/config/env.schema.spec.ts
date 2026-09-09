@@ -87,6 +87,26 @@ describe('validateEnv', () => {
     expect(env.SEASON_PURGE_REQUIRE_ARCHIVE).toBe(true);
   });
 
+  it('retries per-character endpoints less than everything else', () => {
+    // Enrichment scales with the population, not the bracket count: at the
+    // defaults it is 12,000 requests an hour before a single retry, against a
+    // 36,000/hour quota.
+    const env = validateEnv({ ...base });
+
+    expect(env.PROFILE_RETRY_LIMIT).toBe(1);
+    expect(env.PROFILE_RETRY_LIMIT).toBeLessThan(env.BLIZZARD_RETRY_LIMIT);
+  });
+
+  it('allows retries to be switched off entirely for profiles', () => {
+    expect(validateEnv({ ...base, PROFILE_RETRY_LIMIT: '0' }).PROFILE_RETRY_LIMIT).toBe(0);
+  });
+
+  it('rejects a negative retry limit', () => {
+    expect(() => validateEnv({ ...base, PROFILE_RETRY_LIMIT: '-1' })).toThrow(
+      /PROFILE_RETRY_LIMIT/,
+    );
+  });
+
   it('leaves the season purge in dry run unless it is explicitly armed', () => {
     // On a first deploy mid-season the gate is already open, so the default has
     // to be the safe one.

@@ -110,6 +110,19 @@ export const envSchema = z.object({
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
+  /**
+   * Retries for the per-character profile endpoints, which are the ones that
+   * scale with the population rather than with the bracket count.
+   *
+   * Deliberately lower than `BLIZZARD_RETRY_LIMIT`. At the defaults a pass is
+   * 500 characters x 2 requests every 5 minutes — 12,000 requests an hour
+   * before a single retry, against a 36,000/hour quota. Retrying each of those
+   * three times turns a degraded upstream into 48,000 and puts enrichment alone
+   * over the cap, starving the sweep that actually serves the boards. A ladder
+   * fetch is worth several attempts because there are only ~332 of them; a
+   * character is not.
+   */
+  PROFILE_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(1),
   BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(8),
 
   // MongoDB.
