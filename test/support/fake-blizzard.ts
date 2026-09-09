@@ -1,4 +1,7 @@
-import { BlizzardApiError } from '../../src/blizzard/http/blizzard-api.error.js';
+import {
+  BlizzardApiError,
+  BlizzardEmptyResponseError,
+} from '../../src/blizzard/http/blizzard-api.error.js';
 import type { BlizzardGetOptions } from '../../src/blizzard/http/blizzard-http.service.js';
 import type { Region } from '../../src/blizzard/blizzard.constants.js';
 import type { BlizzardTokenProvider } from '../../src/blizzard/auth/token-provider.js';
@@ -80,6 +83,16 @@ export class FakeBlizzard {
       if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 
       const payload = this.route(region as WorldRegion, path);
+
+      // Mirrors the real client, which rejects an empty body as a transport
+      // failure rather than letting `''` travel on to fail at the zod boundary
+      // and be misread as a payload Blizzard shaped wrongly. Without this the
+      // fake would answer differently from the service it stands in for, and
+      // any test injecting an empty body would prove the wrong thing.
+      if (payload === '' || payload === null || payload === undefined) {
+        throw new BlizzardEmptyResponseError(path);
+      }
+
       this.health?.recordBlizzardSuccess(region, Date.now() - startedAt);
 
       return payload;

@@ -20,6 +20,10 @@ import { World, type WorldPlayer } from './support/world.js';
  * the same documents.
  */
 describe('S8 — failure modes', () => {
+  /** The defaults the service uses, restated so the arithmetic below is legible. */
+  const SUMMARY_TTL_MS = 604_800_000;
+  const RETRY_BACKOFF_MS = 900_000;
+
   const ENV = {
     SEASON_REFRESH_ENABLED: 'true',
     PROFILE_REQUESTS_PER_SECOND: '2000',
@@ -104,13 +108,14 @@ describe('S8 — failure modes', () => {
     expect(age, 'stamped in the past, not now').toBeGreaterThan(0);
   });
 
-  it('ISSUE-5 — an empty 200 body is treated as permanently unreadable', async () => {
+  it('ISSUE-5 — an empty 200 body is transient, not permanently unreadable', async () => {
     const victim = await freshVictim();
-    // got resolves an empty body to '', so the failure surfaces at the zod
-    // boundary — and `recordFailure` reads a ZodError as deterministic and
-    // parks the character for the full TTL. An empty body from a flaky gateway
-    // is as transient as a 502, and this is the one classification that cannot
-    // self-correct within the day.
+    // An empty body used to travel on as `''` and fail at the zod boundary,
+    // where `recordFailure` reads a ZodError as deterministic and parks the
+    // character for the full TTL — seven days on the summary half. A gateway
+    // shedding load answers 200 with nothing, which is as transient as the 502
+    // the same gateway would otherwise have sent, so the client now rejects it
+    // as a transport failure and it comes back after the short backoff.
     world.corrupt('us', keyFor(victim), '');
 
     try {
@@ -122,13 +127,17 @@ describe('S8 — failure modes', () => {
     const stored = await characters().findOne({ region: 'us', characterId: victim.id });
     const stampedAt = (stored!.profileFetchedAt as Date).getTime();
 
-    expect(stored!.profileStatus).not.toBe('ok');
-    // Stamped at "now" rather than backdated: the full TTL has to elapse before
-    // this character is looked at again.
-    expect(
-      Date.now() - stampedAt,
-      'a transient failure would have been backdated to just short of the TTL',
-    ).toBeLessThan(5_000);
+    // No status: only a genuine schema failure earns `unparseable`, and calling
+    // a gateway blip that would misreport an incident as payload drift.
+    expect(stored!.profileStatus).toBeUndefined();
+
+    // Backdated to just short of the TTL, so the character is due again after
+    // PROFILE_RETRY_BACKOFF_MS rather than a week from now.
+    const dueIn = stampedAt + SUMMARY_TTL_MS - Date.now();
+    expect(dueIn, 'due again within the backoff, not the full TTL').toBeLessThan(
+      RETRY_BACKOFF_MS + 5_000,
+    );
+    expect(dueIn, 'and not immediately, or it would starve the queue').toBeGreaterThan(0);
   });
 
   it('S8.18 — out-of-range numeric values are accepted as-is, deliberately', async () => {

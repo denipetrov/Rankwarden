@@ -3,7 +3,10 @@ import { Logger, type LoggerService } from '@nestjs/common';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { BlizzardApiError } from '../src/blizzard/http/blizzard-api.error.js';
+import {
+  BlizzardApiError,
+  BlizzardEmptyResponseError,
+} from '../src/blizzard/http/blizzard-api.error.js';
 import { BlizzardHttpService } from '../src/blizzard/http/blizzard-http.service.js';
 import { DependencyHealth } from '../src/common/health/dependency-health.service.js';
 import type { ConfigService } from '@nestjs/config';
@@ -179,19 +182,40 @@ describe('BlizzardHttpService — failure handling', () => {
     }
   });
 
-  it('S8.14b — an empty 200 body resolves to an empty string rather than throwing', async () => {
+  it('S8.14b — an empty 200 body is rejected as a transport failure', async () => {
     route('empty', (_, response) => {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end('');
     });
 
-    // got returns '' for an empty body instead of raising a parse error, so the
-    // failure surfaces one layer up, at the zod boundary. That matters: the
-    // enrichment path treats a ZodError as *permanent* and stops retrying the
-    // character, while an empty body from a flaky gateway is as transient as a
-    // 502. Pinned here so the classification is a decision rather than an
-    // accident — see ISSUE-5.
-    await expect(http.get('us', 'empty')).resolves.toBe('');
+    // got returns '' for an empty body rather than raising a parse error, so
+    // left alone the emptiness surfaces one layer up at the zod boundary — and
+    // the enrichment path reads a ZodError as *permanent*, parking the
+    // character for a week. An empty body from a flaky gateway is as transient
+    // as a 502, so it is caught here, where the client still knows it answered
+    // 200 with nothing.
+    const error = await http.get('us', 'empty').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BlizzardEmptyResponseError);
+    expect((error as Error).message).toMatch(/empty response body/);
+    // Not a BlizzardApiError: the response was a 2xx, so calling it one would
+    // put a 200 into the sweep's failure digest.
+    expect(error).not.toBeInstanceOf(BlizzardApiError);
+  });
+
+  it('S8.14c — an empty 200 counts against Blizzard health, not for it', async () => {
+    route('empty-health', (_, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('');
+    });
+
+    await http.get('us', 'empty-health').catch(() => undefined);
+
+    // A gateway shedding load answers 200 with nothing. Recording that as a
+    // success is how readiness reports green through an outage.
+    const observed = health.blizzardByRegion().us;
+    expect(observed.consecutiveFailures).toBeGreaterThan(0);
+    expect(observed.lastError).toMatch(/empty response body/);
   });
 
   it('S8.15 — a route that never answers is bounded by the timeout', async () => {

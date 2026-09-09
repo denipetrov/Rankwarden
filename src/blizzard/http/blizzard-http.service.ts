@@ -6,7 +6,20 @@ import { DependencyHealth } from '../../common/health/dependency-health.service.
 import type { Env } from '../../config/env.schema.js';
 import { apiHost, namespaceFor, type NamespaceKind, type Region } from '../blizzard.constants.js';
 import { BLIZZARD_TOKEN_PROVIDER, type BlizzardTokenProvider } from '../auth/token-provider.js';
-import { BlizzardApiError } from './blizzard-api.error.js';
+import { BlizzardApiError, BlizzardEmptyResponseError } from './blizzard-api.error.js';
+
+/**
+ * Whether a parsed body carries nothing at all.
+ *
+ * `got` resolves an empty body to `''` rather than raising a parse error, so
+ * without this check the emptiness travels one layer up and only fails at the
+ * zod boundary — where it is indistinguishable from a payload Blizzard shaped
+ * wrongly, and gets classified as permanent. Every Game Data endpoint returns a
+ * JSON object, so nothing legitimate lands here.
+ */
+function isEmptyBody(payload: unknown): boolean {
+  return payload === '' || payload === null || payload === undefined;
+}
 
 /** Requests actually spent on a failure — got counts retries from zero. */
 function attemptsSpent(error: unknown): number {
@@ -83,6 +96,11 @@ export class BlizzardHttpService {
           },
         })
         .json<unknown>();
+
+      // Before recording success, because an empty body is not one: a gateway
+      // shedding load answers 200 with nothing, and readiness should see that
+      // as the outage it is rather than as healthy traffic.
+      if (isEmptyBody(payload)) throw new BlizzardEmptyResponseError(url);
 
       this.health.recordBlizzardSuccess(region, Date.now() - startedAt);
 

@@ -172,10 +172,18 @@ reporting successful runs.
 | schema failure    | `profileStatus: 'unparseable'`, the failing half stamped as now | one TTL |
 | transient failure | the failing half backdated to `TTL - PROFILE_RETRY_BACKOFF_MS`  | ~15m    |
 
-A schema failure is deterministic, so it waits out the full TTL; anything else could be a
-blip and comes back sooner. The backoff is expressed by backdating the timestamp rather
-than carrying another field and another index. Stored profile data survives both — unlike a
-404 the character still exists, and stale-but-real beats nothing.
+Permanence is decided by `error instanceof ZodError`. A schema failure is deterministic —
+the same payload will not start parsing next time — so it waits out the full TTL; anything
+else could be a blip and comes back sooner. The backoff is expressed by backdating the
+timestamp rather than carrying another field and another index. Stored profile data survives
+both: unlike a 404 the character still exists, and stale-but-real beats nothing.
+
+That test is only sound because **an empty body never reaches it**. `got` resolves an empty
+`200` to `''` rather than raising a parse error, so it would otherwise arrive as a `ZodError`
+and be read as payload drift — parking every character a load-shedding gateway touched for
+seven days, where a `502` from the same gateway would have returned within the backoff.
+`BlizzardHttpService` rejects it as a `BlizzardEmptyResponseError` instead, at the one place
+that still knows the response was a 200 with nothing in it (§6).
 
 ### 4.3 Spec representation
 
@@ -390,6 +398,23 @@ Non-2xx becomes `BlizzardApiError` with `statusCode` and `isNotFound`.
 
 Namespaces are derived per endpoint (`namespaceFor('profile', 'eu')` → `profile-eu`), not
 configured. Character names must be lowercased and percent-encoded (`Zëph`).
+
+### Failures the client classifies
+
+| Condition            | Raised as                    | Seen by callers as         |
+| -------------------- | ---------------------------- | -------------------------- |
+| non-2xx              | `BlizzardApiError`           | the status; 404 is routine |
+| empty 2xx body       | `BlizzardEmptyResponseError` | transient; no HTTP status  |
+| unparseable 2xx body | the underlying parse error   | transient at this layer    |
+| schema mismatch      | `ZodError`, at the API layer | **permanent** — see §4.2   |
+
+The empty-body case is the one worth knowing about. `got` resolves an empty body to `''`
+instead of raising a parse error, so without an explicit check it flows on and only fails at
+the zod boundary — indistinguishable there from Blizzard shaping a payload wrongly, and
+therefore classified as permanent. It is caught in `BlizzardHttpService`, which is the last
+place that still knows the response was a 200 carrying nothing, and it counts against
+Blizzard's observed health rather than for it: a gateway shedding load answers exactly this
+way, and recording it as a success is how readiness reports green through an outage.
 
 ---
 
