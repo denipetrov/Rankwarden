@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Db } from 'mongodb';
 import type { LoggerService } from '@nestjs/common';
 
+import { IngestionCoordinator } from '../src/common/ingestion-coordinator.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { SweepEvents } from '../src/common/events/sweep-events.service.js';
@@ -84,7 +85,7 @@ describe('S10 / S11 — observability', () => {
       logger.reset();
       harness.world.fail('us', 'shuffle-mage-fire', 503);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const failures = logger
         .of('error')
@@ -101,7 +102,7 @@ describe('S10 / S11 — observability', () => {
       logger.reset();
       harness.world.fail('us', '3v3', 500);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const [line] = logger.of('error').filter((record) => /\/3v3\b/.test(record.message));
 
@@ -161,7 +162,7 @@ describe('S10 / S11 — observability', () => {
       harness.world.fail('us', '2v2', 500);
       harness.world.fail('us', 'rbg', 503);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const digest = logger
         .of('warn')
@@ -254,7 +255,7 @@ describe('S10 / S11 — observability', () => {
       harness.world.fail('kr', 'index', 500);
       harness.world.fail('eu', 'brackets', 503);
       await sweep();
-      harness.world.clearFailures();
+      harness.world.clearFaults();
 
       const ready = await getJson<{
         status: string;
@@ -335,6 +336,133 @@ describe('S10 / S11 — observability', () => {
       expect(ready.body.staleSweep).not.toBeNull();
 
       delete (sweeps as unknown as Record<string, unknown>).last;
+    });
+
+    it('S11.4 — throttling is reported as degraded and named as throttling', async () => {
+      // "We are throttled" and "our credentials died" call for completely
+      // different responses at three in the morning, and both arrive as a
+      // degraded readiness. The status code is what separates them.
+      for (const bracket of harness.world.brackets('eu')) harness.world.fail('eu', bracket, 429);
+
+      try {
+        await sweep();
+        const ready = await getJson<{
+          status: string;
+          dependencies: {
+            blizzard: {
+              failingRegions: string[];
+              regions: Record<
+                string,
+                { lastStatusCode: number | null; consecutiveFailures: number }
+              >;
+            };
+          };
+        }>(baseUrl, '/health/ready');
+
+        expect(ready.status, 'an upstream limit does not withdraw traffic').toBe(200);
+        expect(ready.body.status).toBe('degraded');
+        expect(ready.body.dependencies.blizzard.failingRegions).toContain('eu');
+        expect(
+          ready.body.dependencies.blizzard.regions.eu.lastStatusCode,
+          'the status is carried through, not flattened into a boolean',
+        ).toBe(429);
+        expect(ready.body.dependencies.blizzard.regions.eu.consecutiveFailures).toBeGreaterThan(1);
+      } finally {
+        harness.world.clearFaults();
+      }
+    });
+
+    it('S11.12 — readiness during a sweep is still ready', async () => {
+      // `sweepRunning` is information, not a fault, and the Mongo ping must not
+      // queue behind the sweep's own I/O long enough to trip a probe timeout.
+      harness.world.clearFaults();
+      await sweep();
+
+      const coordinator = harness.app.get(IngestionCoordinator);
+      const probe = await coordinator.duringSweep(async () => {
+        const startedAt = Date.now();
+        const response = await getJson<{ status: string }>(baseUrl, '/health/ready');
+
+        return { response, elapsed: Date.now() - startedAt };
+      });
+
+      expect(probe.response.status).toBe(200);
+      expect(probe.response.body.status).not.toBe('down');
+      expect(probe.elapsed, `readiness took ${probe.elapsed}ms while a sweep held`).toBeLessThan(
+        2_000,
+      );
+
+      const live = await getJson<{ sweepRunning: boolean }>(baseUrl, '/health');
+      expect(live.status).toBe(200);
+    });
+
+    it('S11.13 — the three states map to stable HTTP codes', async () => {
+      const mongo = harness.app.get(MongoService);
+
+      // ok
+      expect((await getJson(baseUrl, '/health')).status).toBe(200);
+      expect((await getJson(baseUrl, '/health/ready')).status).toBe(200);
+
+      // degraded: a soft dependency is failing
+      for (const bracket of harness.world.brackets('eu')) harness.world.fail('eu', bracket, 503);
+      await sweep();
+      const degraded = await getJson<{ status: string }>(baseUrl, '/health/ready');
+      expect(degraded.body.status).toBe('degraded');
+      expect(degraded.status, 'degraded still takes traffic').toBe(200);
+      expect((await getJson(baseUrl, '/health')).status).toBe(200);
+      harness.world.clearFaults();
+
+      // down: the hard dependency is gone
+      const ping = vi
+        .spyOn(mongo, 'ping')
+        .mockResolvedValue({ ok: false, latencyMs: 1, error: 'connection refused' });
+      try {
+        const down = await getJson<{ status: string }>(baseUrl, '/health/ready');
+        expect(down.status, 'only a hard dependency withdraws traffic').toBe(503);
+        expect(down.body.status).toBe('down');
+        expect(
+          (await getJson(baseUrl, '/health')).status,
+          'liveness answers regardless: restarting would not fix the database',
+        ).toBe(200);
+      } finally {
+        ping.mockRestore();
+      }
+    });
+
+    it('S10.6 — a stack trace survives all the way to the transport', async () => {
+      // `Logger.error(message, stack?, context?)` takes a *string* second
+      // argument. Passing the Error object put `[object Object]` where the
+      // stack should be, and the loss was invisible in every field assertion —
+      // which is why this one asserts the record that actually reached the
+      // logger rather than what was passed to it.
+      //
+      // The bracket index, not a single ladder: the per-bracket failure line is
+      // deliberately stackless (one line per bracket, 83 of them), while the
+      // handlers that lose a whole region are the ones worth a stack.
+      logger.reset();
+      harness.world.fail('us', 'brackets', 500);
+
+      try {
+        await sweep();
+      } finally {
+        harness.world.clearFaults();
+      }
+
+      const failures = logger
+        .of('error')
+        .filter((record) => /Could not resolve brackets for us/.test(record.message));
+
+      expect(failures.length, 'the region failure was logged').toBeGreaterThan(0);
+      expect(
+        failures.every(
+          (record) => typeof record.stack === 'string' && record.stack.includes('at '),
+        ),
+        'the second argument carries a real stack, not a stringified Error',
+      ).toBe(true);
+      expect(failures.every((record) => !String(record.stack).includes('[object Object]'))).toBe(
+        true,
+      );
+      expect(failures[0].message.split(String.fromCharCode(10))).toHaveLength(1);
     });
 
     it('S11.10 — the health payload leaks no credentials', async () => {

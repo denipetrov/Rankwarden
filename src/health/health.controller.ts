@@ -9,6 +9,7 @@ import {
 import { hostOf } from '../common/health/redact.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { QuotaBudget, type EnrichmentOutlook } from '../common/quota/quota-budget.service.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
 import { LeaderboardService } from '../leaderboard/leaderboard.service.js';
@@ -40,6 +41,7 @@ export class HealthController {
     private readonly mongo: MongoService,
     private readonly dependencies: DependencyHealth,
     private readonly transitions: SeasonTransitionService,
+    private readonly budget: QuotaBudget,
   ) {
     // The host, never the URI: a connection string carries its password in
     // userinfo and this endpoint is unauthenticated.
@@ -69,6 +71,10 @@ export class HealthController {
     const blizzardRegions = this.dependencies.blizzardByRegion();
     const blizzard = this.dependencies.blizzardStatus();
     const staleSweep = this.staleSweep();
+    // From memory: the budget's own counters and the outlook enrichment
+    // published on its last run. Readiness adds no database work for either.
+    const { enrichment: outlook, ...quota } = this.budget.snapshot();
+    const enrichment = enrichmentVerdict(outlook);
 
     const mongo: DependencyObservation & { host: string } = {
       host: this.mongoHost,
@@ -87,6 +93,10 @@ export class HealthController {
       // Blizzard never fails readiness — it degrades it.
       blizzard === 'down' ? 'degraded' : blizzard,
       staleSweep ? 'degraded' : 'ok',
+      // Enrichment falling behind degrades rather than fails: every stored row
+      // is still served, only its freshness suffers — and restarting the
+      // process would not make the arithmetic come out differently.
+      enrichment.problems.length > 0 ? 'degraded' : 'ok',
     ]);
 
     const payload = {
@@ -101,6 +111,8 @@ export class HealthController {
       },
       jobs: this.jobs(),
       staleSweep,
+      quota,
+      enrichment,
     };
 
     // Only a hard dependency withdraws traffic. The body is identical either
@@ -162,4 +174,37 @@ function worstOf(statuses: readonly DependencyStatus[]): DependencyStatus {
   if (statuses.includes('degraded')) return 'degraded';
 
   return 'ok';
+}
+
+/**
+ * Turns the published outlook into the two things an operator acts on.
+ *
+ * Kept separate from "busy". A first fill has a large backlog and is healthy;
+ * what matters is whether the TTLs can be kept at all (`infeasible`), and
+ * whether the stalest refresh says the queue has stopped keeping up (`behind`).
+ */
+function enrichmentVerdict(outlook: EnrichmentOutlook | null): {
+  outlook: EnrichmentOutlook | null;
+  problems: string[];
+} {
+  if (!outlook) return { outlook: null, problems: [] };
+
+  const problems: string[] = [];
+
+  if (!outlook.feasible) {
+    problems.push(
+      `${outlook.population} characters need ~${outlook.demandPerHour} requests an hour; ` +
+        `capacity is ${outlook.capacityPerHour}, bound by the ${outlook.bindingConstraint}. ` +
+        `Sustainable up to ${outlook.maxSustainablePopulation}.`,
+    );
+  }
+
+  if (outlook.behind && outlook.oldestRefreshAgeMs !== null) {
+    problems.push(
+      `the stalest spec refresh is ${Math.round(outlook.oldestRefreshAgeMs / 3_600_000)}h old, ` +
+        'more than twice its TTL',
+    );
+  }
+
+  return { outlook, problems };
 }

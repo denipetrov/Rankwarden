@@ -9,6 +9,7 @@ import {
 } from '../blizzard/schemas/character-profile.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { RunLogger, withRunId } from '../common/logging/run-context.js';
+import { HOUR_MS, QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
@@ -19,8 +20,24 @@ import type {
   NamedRef,
   SpecLoadout,
 } from '../leaderboard/entities/character.entity.js';
+import { projectCapacity } from './enrichment-capacity.js';
 
 type Outcome = 'ok' | 'missing' | 'failed' | 'skipped';
+
+/**
+ * How far one run may run ahead of its even share of the hour. A run skipped
+ * because a sweep held the coordinator can be made up on the next, without
+ * letting a single run drain the whole hour's share in one burst.
+ */
+const CATCH_UP_FACTOR = 2;
+
+/** What a run was allowed, and why. */
+interface BatchPlan {
+  dueCharacters: number;
+  dueRequests: number;
+  requestBudget: number;
+  batch: number;
+}
 
 export interface EnrichmentRunResult {
   /** Correlation id shared by every log line this pass produced. */
@@ -51,6 +68,7 @@ export class ProfileEnrichmentService {
   private readonly specsTtlMs: number;
   private readonly concurrency: number;
   private readonly retryBackoffMs: number;
+  private readonly intervalMs: number;
   private readonly limiter: RateLimiter;
   private running = false;
   private requests = 0;
@@ -60,8 +78,10 @@ export class ProfileEnrichmentService {
     private readonly profileApi: ProfileApi,
     private readonly characters: CharacterRepository,
     private readonly coordinator: IngestionCoordinator,
+    private readonly budget: QuotaBudget,
   ) {
     this.batchSize = config.get('PROFILE_BATCH_SIZE', { infer: true });
+    this.intervalMs = config.get('PROFILE_INTERVAL_MS', { infer: true });
     this.summaryTtlMs = config.get('PROFILE_SUMMARY_TTL_MS', { infer: true });
     this.specsTtlMs = config.get('PROFILE_SPECS_TTL_MS', { infer: true });
     this.concurrency = config.get('PROFILE_CONCURRENCY', { infer: true });
@@ -96,10 +116,30 @@ export class ProfileEnrichmentService {
     return withRunId('enrich', (runId) =>
       this.coordinator
         .duringEnrichment(async () => {
+          const summaryStaleBefore = new Date(startedAt - this.summaryTtlMs);
+          const specsStaleBefore = new Date(startedAt - this.specsTtlMs);
+          const plan = await this.planBatch(summaryStaleBefore, specsStaleBefore, onlyNew);
+
+          if (plan.batch === 0) {
+            if (plan.dueCharacters > 0) {
+              // Work is waiting but the share is spent. Said plainly, because a
+              // queue that is merely throttled and one that has stopped look
+              // identical from the outside otherwise.
+              this.logger.log(
+                `${plan.dueCharacters} characters due but the enrichment share of the hourly ` +
+                  'quota is spent; waiting for the window to roll',
+              );
+            } else {
+              this.logger.debug(`No ${onlyNew ? 'new ' : ''}characters due for enrichment`);
+            }
+
+            return this.emptyResult(runId);
+          }
+
           const due = await this.characters.findProfilesToEnrich(
-            new Date(startedAt - this.summaryTtlMs),
-            new Date(startedAt - this.specsTtlMs),
-            this.batchSize,
+            summaryStaleBefore,
+            specsStaleBefore,
+            plan.batch,
             onlyNew,
           );
 
@@ -135,6 +175,104 @@ export class ProfileEnrichmentService {
           this.running = false;
         }),
     );
+  }
+
+  /**
+   * Sizes this run from what is due and what the hourly quota still allows.
+   *
+   * The batch used to be a fixed number, which was a ceiling rather than a
+   * spend — a run only ever fetches what is due — but a ceiling that knew
+   * nothing about the population or about the other jobs sharing the quota.
+   * Here it is the smallest of three things:
+   *
+   * - the characters actually due;
+   * - what the request budget buys, at the average cost of those characters —
+   *   one request for specs alone, two when the summary is due as well;
+   * - `PROFILE_BATCH_SIZE`, now only a safety ceiling on run length and memory.
+   *
+   * The request budget is the enrichment allowance from the shared quota,
+   * paced to this run's even share of the hour with room to catch up. Pacing
+   * keeps spend smooth for the sweep and archive; without it the first run of
+   * a backlog would take the whole hour's share at once.
+   */
+  private async planBatch(
+    summaryStaleBefore: Date,
+    specsStaleBefore: Date,
+    onlyNew: boolean,
+  ): Promise<BatchPlan> {
+    const demand = await this.characters.countEnrichmentDemand(
+      summaryStaleBefore,
+      specsStaleBefore,
+      onlyNew,
+    );
+
+    const perRunPace = Math.ceil((this.budget.enrichmentShare * this.intervalMs) / HOUR_MS);
+    const requestBudget = Math.min(
+      this.budget.allowance('enrichment'),
+      perRunPace * CATCH_UP_FACTOR,
+    );
+    const costPerCharacter = demand.characters > 0 ? demand.requests / demand.characters : 1;
+    const batch = Math.max(
+      0,
+      Math.min(demand.characters, Math.floor(requestBudget / costPerCharacter), this.batchSize),
+    );
+
+    const plan: BatchPlan = {
+      dueCharacters: demand.characters,
+      dueRequests: demand.requests,
+      requestBudget,
+      batch,
+    };
+
+    await this.publishOutlook(plan);
+
+    return plan;
+  }
+
+  /**
+   * Records whether enrichment can keep up, for the health endpoint to report
+   * without doing any database work of its own. A failure here must never cost
+   * a run, so it is logged and swallowed.
+   */
+  private async publishOutlook(plan: BatchPlan): Promise<void> {
+    try {
+      const [population, oldest] = await Promise.all([
+        this.characters.population(),
+        this.characters.oldestSpecsRefresh(),
+      ]);
+      const oldestRefreshAgeMs = oldest ? Date.now() - oldest.getTime() : null;
+
+      const projection = projectCapacity({
+        population,
+        specsTtlMs: this.specsTtlMs,
+        summaryTtlMs: this.summaryTtlMs,
+        enrichmentShare: this.budget.enrichmentShare,
+        batchSize: this.batchSize,
+        intervalMs: this.intervalMs,
+        oldestRefreshAgeMs,
+      });
+
+      this.budget.publishEnrichmentOutlook({
+        computedAt: new Date().toISOString(),
+        population,
+        dueCharacters: plan.dueCharacters,
+        dueRequests: plan.dueRequests,
+        requestBudget: plan.requestBudget,
+        batch: plan.batch,
+        oldestRefreshAgeMs,
+        ...projection,
+      });
+
+      if (!projection.feasible) {
+        this.logger.warn(
+          `Enrichment cannot keep its TTLs: ${population} characters need ~${projection.demandPerHour} ` +
+            `requests an hour, capacity is ${projection.capacityPerHour} (bound by the ` +
+            `${projection.bindingConstraint}); sustainable up to ${projection.maxSustainablePopulation}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`Could not compute the enrichment outlook: ${describeError(error)}`);
+    }
   }
 
   private emptyResult(runId: string): EnrichmentRunResult {

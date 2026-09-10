@@ -6,6 +6,7 @@ import { ZodError } from 'zod';
 
 import { ProfileApi } from '../blizzard/profile.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
 import type { CharacterDocument } from '../leaderboard/entities/character.entity.js';
 import { ProfileEnrichmentService } from './profile-enrichment.service.js';
@@ -20,6 +21,11 @@ const env: Record<string, unknown> = {
   PROFILE_CONCURRENCY: 2,
   PROFILE_REQUESTS_PER_SECOND: 1000,
   PROFILE_RETRY_BACKOFF_MS: 900_000,
+  PROFILE_INTERVAL_MS: 300_000,
+  QUOTA_HOURLY_LIMIT: 36_000,
+  QUOTA_UTILISATION: 0.9,
+  QUOTA_ENRICHMENT_HEADROOM: 3,
+  QUOTA_SWEEP_RESERVE: 1_000,
 };
 
 const character = (overrides: Partial<CharacterDocument> = {}): CharacterDocument =>
@@ -27,6 +33,7 @@ const character = (overrides: Partial<CharacterDocument> = {}): CharacterDocumen
     seasonId: 42,
     region: 'eu',
     characterId: 1,
+    characterType: 'PvP',
     characterName: 'Warden',
     realmId: 60,
     realmSlug: 'tarren-mill',
@@ -55,6 +62,43 @@ describe('ProfileEnrichmentService', () => {
   const saveProfileSpecs = vi.fn();
   const markProfileMissing = vi.fn();
   const markProfileUnreadable = vi.fn();
+  const countEnrichmentDemand = vi.fn();
+  const population = vi.fn();
+  const oldestSpecsRefresh = vi.fn();
+  let budget: QuotaBudget;
+
+  /**
+   * Builds the service with optional config overrides. The service reads its
+   * settings in the constructor, so a case that needs a different batch size
+   * has to build its own rather than mutate `env` afterwards.
+   */
+  const build = async (overrides: Record<string, unknown> = {}) => {
+    const settings = { ...env, ...overrides };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ProfileEnrichmentService,
+        { provide: IngestionCoordinator, useValue: coordinator },
+        { provide: QuotaBudget, useValue: budget },
+        { provide: ProfileApi, useValue: { getProfile, getSpecializations } },
+        {
+          provide: CharacterRepository,
+          useValue: {
+            findProfilesToEnrich,
+            saveProfileSummary,
+            saveProfileSpecs,
+            markProfileMissing,
+            markProfileUnreadable,
+            countEnrichmentDemand,
+            population,
+            oldestSpecsRefresh,
+          },
+        },
+        { provide: ConfigService, useValue: { get: (key: string) => settings[key] } },
+      ],
+    }).compile();
+
+    return moduleRef.get(ProfileEnrichmentService);
+  };
   let coordinator: IngestionCoordinator;
   let service: ProfileEnrichmentService;
 
@@ -89,30 +133,14 @@ describe('ProfileEnrichmentService', () => {
       ],
     });
     coordinator = new IngestionCoordinator();
+    budget = new QuotaBudget({ get: (key: string) => env[key] } as never);
+    // Plenty due by default, so the batch is bounded by PROFILE_BATCH_SIZE and
+    // the existing cases keep driving what is fetched through the selection mock.
+    countEnrichmentDemand.mockResolvedValue({ characters: 10_000, requests: 20_000 });
+    population.mockResolvedValue(1000);
+    oldestSpecsRefresh.mockResolvedValue(null);
 
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        ProfileEnrichmentService,
-        { provide: IngestionCoordinator, useValue: coordinator },
-        { provide: ProfileApi, useValue: { getProfile, getSpecializations } },
-        {
-          provide: CharacterRepository,
-          useValue: {
-            findProfilesToEnrich,
-            saveProfileSummary,
-            saveProfileSpecs,
-            markProfileMissing,
-            markProfileUnreadable,
-          },
-        },
-        {
-          provide: ConfigService,
-          useValue: { get: (key: string) => env[key] },
-        },
-      ],
-    }).compile();
-
-    service = moduleRef.get(ProfileEnrichmentService);
+    service = await build();
   });
 
   it('fetches both endpoints for a character that has never been enriched', async () => {
@@ -362,6 +390,113 @@ describe('ProfileEnrichmentService', () => {
       await service.run();
 
       expect(saveProfileSpecs.mock.calls[0][3]).toMatchObject({ heroTalentTree: null });
+    });
+  });
+
+  describe('sizing a run from demand and the quota', () => {
+    beforeEach(() => {
+      findProfilesToEnrich.mockResolvedValue([character()]);
+    });
+
+    const requestedLimit = () => findProfilesToEnrich.mock.calls[0][2] as number;
+
+    it('never asks for more characters than are due', async () => {
+      countEnrichmentDemand.mockResolvedValue({ characters: 3, requests: 6 });
+
+      await service.run();
+
+      expect(requestedLimit()).toBe(3);
+    });
+
+    it('spends the budget on more characters when only their specs are due', async () => {
+      // One request each instead of two, so the same budget buys twice as many.
+      // A fixed batch could not tell the difference.
+      const roomy = await build({ PROFILE_BATCH_SIZE: 100_000 });
+      countEnrichmentDemand.mockResolvedValue({ characters: 50_000, requests: 50_000 });
+
+      await roomy.run();
+      const specsOnly = requestedLimit();
+
+      findProfilesToEnrich.mockClear();
+      countEnrichmentDemand.mockResolvedValue({ characters: 50_000, requests: 100_000 });
+      await roomy.run();
+
+      expect(specsOnly).toBe(requestedLimit() * 2);
+    });
+
+    it('paces a run to its share of the hour, with room to catch up', async () => {
+      // 12,000 an hour over 12 runs is 1,000 a run; one run may take two to
+      // make up a skipped one, never the whole hour in a burst.
+      const roomy = await build({ PROFILE_BATCH_SIZE: 100_000 });
+      countEnrichmentDemand.mockResolvedValue({ characters: 50_000, requests: 50_000 });
+
+      await roomy.run();
+
+      expect(requestedLimit()).toBe(2_000);
+    });
+
+    it('treats PROFILE_BATCH_SIZE as a ceiling, not the batch', async () => {
+      countEnrichmentDemand.mockResolvedValue({ characters: 5_000, requests: 5_000 });
+
+      await service.run();
+
+      expect(requestedLimit()).toBe(env.PROFILE_BATCH_SIZE);
+    });
+
+    it('fetches nothing once the enrichment share is spent', async () => {
+      budget.record('enrichment', budget.enrichmentShare);
+
+      const result = await service.run();
+
+      expect(findProfilesToEnrich).not.toHaveBeenCalled();
+      expect(result?.selected).toBe(0);
+    });
+
+    it('gives way to a sweep and archive that have already spent the hour', async () => {
+      // Enrichment's share is a ceiling, not a guarantee: what the other jobs
+      // have really spent comes first.
+      budget.record('sweep', budget.usable);
+
+      await service.run();
+
+      expect(findProfilesToEnrich).not.toHaveBeenCalled();
+    });
+
+    it('publishes an outlook health can report without querying anything', async () => {
+      // At the real default batch ceiling; this spec's own ceiling of 10 would
+      // correctly report the batch size as binding and the TTLs as unkeepable.
+      const defaults = await build({ PROFILE_BATCH_SIZE: 2_000 });
+      population.mockResolvedValue(143_203);
+      countEnrichmentDemand.mockResolvedValue({ characters: 42, requests: 60 });
+
+      await defaults.run();
+
+      expect(budget.enrichmentOutlook).toMatchObject({
+        population: 143_203,
+        dueCharacters: 42,
+        dueRequests: 60,
+        feasible: true,
+        bindingConstraint: 'quota share',
+      });
+    });
+
+    it('reports the batch size as binding when it is too small to keep the TTLs', async () => {
+      // This spec's own ceiling of 10 a run: the outlook has to say so, and name
+      // the batch rather than the quota as the thing to change.
+      population.mockResolvedValue(143_203);
+
+      await service.run();
+
+      expect(budget.enrichmentOutlook).toMatchObject({
+        feasible: false,
+        bindingConstraint: 'batch size',
+      });
+    });
+
+    it('never lets a failing outlook cost the run', async () => {
+      population.mockRejectedValue(new Error('mongo is slow'));
+
+      await expect(service.run()).resolves.toMatchObject({ selected: 1 });
     });
   });
 });

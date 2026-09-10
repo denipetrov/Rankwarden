@@ -19,8 +19,8 @@ export const CHARACTER_INDEXES = [
   'character_identity',
   'character_lookup',
   'bracket_ratings',
-  'specs_staleness',
-  'profile_staleness',
+  'enrichment_specs_staleness',
+  'enrichment_profile_staleness',
 ];
 
 /**
@@ -38,6 +38,7 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectIdentityUniqueness(db);
   await expectIndexInventory(db);
   await expectRepresentationCoherent(db);
+  await expectEveryCharacterTyped(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -297,6 +298,25 @@ export async function expectRepresentationCoherent(db: Db): Promise<void> {
       expect(Math.abs(shares - 1), `${label} shares must sum to 1`).toBeLessThan(0.005);
     }
   }
+}
+
+/**
+ * I11 — every character carries a type.
+ *
+ * Enrichment selects by type, so an untyped character is not an oddity but a
+ * silent drop-out: it is never selected again and never counted as due.
+ */
+export async function expectEveryCharacterTyped(db: Db): Promise<void> {
+  const untyped = await db
+    .collection(CHARACTERS_COLLECTION)
+    .find({ characterType: { $nin: ['PvP', 'M+'] } }, { projection: { characterId: 1 } })
+    .limit(5)
+    .toArray();
+
+  expect(
+    untyped.map((doc) => doc.characterId),
+    'I11: every character must carry a characterType',
+  ).toEqual([]);
 }
 
 /** I10 — archive rows read correctly with `characters` gone entirely. */

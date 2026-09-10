@@ -121,6 +121,45 @@ which fires once the first sweep _and_ first enrichment pass have both completed
 `markEnrichmentDisabled()` releases the gate when enrichment is switched off — without it
 the archive would wait forever for a pass that never comes.
 
+### 4.0 The shared quota budget
+
+The coordinator decides who runs _now_. [`QuotaBudget`](src/common/quota/quota-budget.service.ts)
+decides how much each may spend _this hour_. They are separate because they fail
+separately: a job can be allowed to run and still have nothing left to spend.
+
+Blizzard enforces **36,000 requests an hour** across the whole client. Before the budget,
+each job carried a private rate limiter sized as if it owned that quota — the archive
+alone was allowed 10/s, which _is_ the whole hourly cap — and nothing added them up. During
+a backfill the archive runs in every gap between enrichment passes, so archive, enrichment
+and sweep together came to roughly 41,000 an hour.
+
+Every real request is charged, **retries included**, by the HTTP client's `beforeRequest`
+hook, which fires once per attempt. It is attributed to the job in progress through the
+run context (`withRunId`), so a season refresh inside a sweep is the sweep's without any
+call site saying so. The window is a rolling hour of one-minute buckets, errring towards
+over-counting.
+
+Shares, in priority order:
+
+| Job        | Share                                                         | Throttled?                  |
+| ---------- | ------------------------------------------------------------- | --------------------------- |
+| Sweep      | `QUOTA_SWEEP_RESERVE` (1,000) held back until it spends it    | **never**                   |
+| Enrichment | `QUOTA_HOURLY_LIMIT / QUOTA_ENRICHMENT_HEADROOM` (12,000)     | yes — batch shrinks to fit  |
+| Archive    | what is left after the reserve and enrichment's unspent share | yes — pauses until it rolls |
+| Other      | season refreshes, snapshots, admin calls                      | never, but counted          |
+
+Only `usable` = `QUOTA_HOURLY_LIMIT × QUOTA_UTILISATION` (32,400) is ever planned against.
+The margin absorbs requests already in flight when a check is made, and retries on batches
+sized before they failed — neither of which a budget can see coming. A boot-time check
+refuses shares that promise more than is usable.
+
+At the defaults: sweep ~340/h, enrichment up to 12,000/h, archive up to 19,400/h — a total
+that fits, where the old per-job limiters did not.
+
+> **Known gap.** The budget lives in memory, so a restart forgets the last hour. Persisting
+> every request would cost more than the overrun it guards against; Blizzard's own 429s,
+> which the client retries, are the backstop.
+
 ### 4.1 Leaderboard sweep
 
 `LeaderboardService.sweep()` — the live data path.
@@ -155,10 +194,48 @@ Two endpoints with **separate TTLs**, because they age differently:
 Only the due halves are fetched, so a refresh costs one request rather than two. Writes
 are field-level (`profile.race`, `profile.spec`, …) so the halves never clobber each other.
 
+**Only `characterType: 'PvP'` characters are enriched.** The ladder sweep knows little
+beyond name, realm and rating, so a ladder character needs these two requests to get a
+profile. An `M+` character arrives with its profile bundled into the one request that finds
+it, so there is nothing left to fetch. Selection, the demand count, the population and the
+stalest-refresh age all filter on the type through one `ENRICHABLE` constant in
+`CharacterRepository`, so the outlook never counts demand no request will be made for.
+
 Selection is `specsFetchedAt` ascending. Specs have the shorter TTL, so anything due for a
 summary refresh is necessarily due for specs too — one timestamp paces the queue. The
 field is absent until first enrichment, and absent sorts before any date, so newcomers win.
-A finished sweep also fires an immediate **new-characters-only** pass.
+
+**The batch is computed every run**, not configured. It is the smallest of:
+
+1. **the characters actually due** — counted with the same filter selection uses, so the
+   two cannot disagree about which set they mean;
+2. **what the request budget buys** at the average cost of those characters — one request
+   when only specs are due, two when the summary is too. The same budget buys twice as many
+   specs-only refreshes, which a fixed batch could not tell apart;
+3. **`PROFILE_BATCH_SIZE`** (2,000) — now only a safety ceiling on run length and memory.
+
+The request budget is the enrichment allowance from the shared quota, **paced** to this
+run's even share of the hour (12,000 / 12 runs = 1,000) with a catch-up factor of 2, so a
+run skipped for a sweep can be made up without one run draining the hour in a burst.
+
+Each run also publishes an **outlook** — population, what is due, projected demand,
+capacity, and what binds it — which readiness reports from memory (§7):
+
+| Signal        | Means                                                          | Readiness |
+| ------------- | -------------------------------------------------------------- | --------- |
+| `infeasible`  | steady-state demand exceeds capacity; no budget keeps the TTLs | degraded  |
+| `behind`      | the stalest spec refresh is older than twice its TTL           | degraded  |
+| large backlog | many characters due, e.g. first fill                           | _healthy_ |
+
+Demand is `population × (1h/specsTTL + 1h/summaryTTL)`: at 143,203 characters, ~6,800
+requests an hour against a 12,000 share. **Past ~252,000 characters no budget formula keeps
+the 1-day specs TTL** at a third of the quota — the lever then is the TTL, not the batch.
+
+> **Why `PROFILE_BATCH_SIZE` moved from 500 to 2,000.** At 500 the batch, not the quota,
+> was the binding limit: it capped the sustainable population at ~144,000 against 143,203
+> in the database — a 0.6% margin, with nothing reporting it. The outlook names the binding
+> constraint so a limit like that cannot hide again.
+> A finished sweep also fires an immediate **new-characters-only** pass.
 
 **Every outcome stamps a timestamp.** This is load-bearing, not housekeeping: selection
 sorts by `specsFetchedAt` ascending and an absent field sorts before every date, so a
@@ -172,10 +249,18 @@ reporting successful runs.
 | schema failure    | `profileStatus: 'unparseable'`, the failing half stamped as now | one TTL |
 | transient failure | the failing half backdated to `TTL - PROFILE_RETRY_BACKOFF_MS`  | ~15m    |
 
-A schema failure is deterministic, so it waits out the full TTL; anything else could be a
-blip and comes back sooner. The backoff is expressed by backdating the timestamp rather
-than carrying another field and another index. Stored profile data survives both — unlike a
-404 the character still exists, and stale-but-real beats nothing.
+Permanence is decided by `error instanceof ZodError`. A schema failure is deterministic —
+the same payload will not start parsing next time — so it waits out the full TTL; anything
+else could be a blip and comes back sooner. The backoff is expressed by backdating the
+timestamp rather than carrying another field and another index. Stored profile data survives
+both: unlike a 404 the character still exists, and stale-but-real beats nothing.
+
+That test is only sound because **an empty body never reaches it**. `got` resolves an empty
+`200` to `''` rather than raising a parse error, so it would otherwise arrive as a `ZodError`
+and be read as payload drift — parking every character a load-shedding gateway touched for
+seven days, where a `502` from the same gateway would have returned within the backoff.
+`BlizzardHttpService` rejects it as a `BlizzardEmptyResponseError` instead, at the one place
+that still knows the response was a 200 with nothing in it (§6).
 
 ### 4.3 Spec representation
 
@@ -194,13 +279,23 @@ differ by up to 32 hours between regions).
 `ArchiveService` — finished seasons, fetched once, stored separately.
 
 `nextPending()` walks regions × finished seasons (newest first, bounded by
-`ARCHIVE_MIN_SEASON` / `ARCHIVE_MAX_SEASON`) and returns the first without a completion
-marker. Before returning one it samples the data itself — three random brackets, up to ten
-rows each — and if rows exist it writes back the marker and skips. That covers a crash
-mid-season or a dropped `archive_seasons` collection.
+`ARCHIVE_MIN_SEASON` / `ARCHIVE_MAX_SEASON`) and returns the first that is neither complete
+nor known unfetchable.
 
-The scheduler takes one season per pass and comes straight back while work remains,
-pausing `ARCHIVE_SEASON_PAUSE_MS` between seasons.
+For a season with **no marker at all** — a crash mid-season, or a dropped `archive_seasons`
+collection — it first tries to recover one: it compares the brackets already covered (§5.4)
+against the list the API publishes, and writes the marker back if they match, turning ~83
+requests into one. A shortfall is recorded as `failedBrackets` and the season stays pending.
+
+Recovery runs **only** when no marker exists. A marker naming outstanding brackets is an
+explicit record of what failed, and re-deriving completeness from the data would overrule
+it. The retry is cheap regardless, because `archiveSeason` fetches only what is genuinely
+outstanding.
+
+The scheduler takes one season per pass and comes straight back while work remains, pausing
+`ARCHIVE_SEASON_PAUSE_MS` between seasons. A season that 404s is marked `unarchivable` and
+skipped permanently, so one dead season cannot block the backlog behind it; any other
+failure is skipped for the rest of that tick only.
 
 ### 4.5 Season refresh
 
@@ -250,6 +345,7 @@ through the gap between seasons.
 ```js
 {
   seasonId: 42, region: 'us', characterId: 195802602,
+  characterType: 'PvP',                          // 'PvP' | 'M+'; set on insert only
   characterName: 'Goküü', realmId: 61, realmSlug: 'emerald-dream', faction: 'HORDE',
 
   brackets: {                                    // full payload, never indexed
@@ -274,8 +370,22 @@ through the gap between seasons.
 ```
 
 Indexes: `character_identity` (unique `seasonId+region+characterId`), `character_lookup`
-(`characterName+realmSlug`), `profile_staleness`, `specs_staleness`, and **`bracket_ratings`**
-— a compound wildcard `{ seasonId: 1, region: 1, 'ratings.$**': 1 }`.
+(`characterName+realmSlug`), `enrichment_specs_staleness` and `enrichment_profile_staleness`
+(`characterType` then the timestamp), and **`bracket_ratings`** — a compound wildcard
+`{ seasonId: 1, region: 1, 'ratings.$**': 1 }`.
+
+**`characterType`** says where a character came from: `PvP` from the ladder sweep, `M+`
+from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
+(§4.2). The sweep sets it with `$setOnInsert`, so a document another source created is never
+reclassified into the enrichment queue. Documents from before the field existed are
+backfilled to `PvP` at boot, in `onModuleInit` and so before any scheduler starts. The sweep
+was the only writer then. The sync endpoint never touches the type.
+
+> **Why the staleness indexes lead with the type.** A character that is never enriched
+> never gets a timestamp, and an absent field sorts ahead of every date. Keyed on the
+> timestamp alone, every M+ character would sit at the front of the index order, and each
+> enrichment run would read all of them before reaching one it can use. The superseded
+> `specs_staleness` / `profile_staleness` are dropped at boot, after their replacements exist.
 
 > **Why the wildcard.** MongoDB caps a collection at 64 indexes; one per bracket would need
 > 85+. Mirroring only `rating` (the sole searchable field) into a flat map lets a single
@@ -323,16 +433,19 @@ of `classified`; a hero talent's `share` is a fraction of that spec's `heroTalen
 
 Indexes: `snapshot_identity` (unique), `series` (the time-series read, ~1ms).
 
-### 5.4 Archive — `archive_entries` + `archive_seasons`
+### 5.4 Archive — `archive_entries` + `archive_seasons` + `archive_brackets`
 
 ```js
-// archive_entries
+// archive_entries — the standings themselves
 { seasonId, region, bracket, characterId, characterName, realmId, realmSlug,
   faction, rank, rating, played, won, lost }
 
-// archive_seasons  (the run-once marker)
+// archive_seasons — the run-once marker
 { seasonId, region, name, startsAt, endsAt, brackets, entries,
-  failedBrackets: [], archivedAt }
+  failedBrackets: [], archivedAt, unarchivable?, lastError? }
+
+// archive_brackets — what was fetched, whatever it contained
+{ seasonId, region, bracket, entries, fetchedAt }
 ```
 
 Archive rows are **self-contained** — no reference into `characters`. Historical standings
@@ -340,7 +453,21 @@ must keep reading correctly forever, and a character can be renamed, transferred
 long after the season it played in. No profile enrichment: it costs two requests per
 character and would describe the player _today_, not during that season.
 
-Indexes: `archive_board`, `archive_identity` (unique), `archive_character`.
+**Why `archive_brackets` exists.** Completeness used to be inferred from stored rows, which
+cannot tell a ladder nobody qualified for from one that was never fetched — both store
+nothing. On a small region plenty of the 80 spec ladders finish a season empty, so such a
+season could never be adopted from its rows and the cheap recovery path was defeated exactly
+where it mattered. Recording the fetch removes the inference. It is a separate collection so
+`archive_entries` stays purely the standings and needs no filtering, and so the record
+survives losing `archive_seasons`.
+
+Coverage is `archive_brackets ∪ rows`. The union matters: the fetch record is written after
+the rows, so a crash between the two leaves rows that still count. Seasons archived before
+the collection existed have no records, so their rows stand in — the old inference, with the
+old blind spot, but far better than treating archived history as missing.
+
+Indexes: `archive_board`, `archive_identity` (unique), `archive_character`, and
+`bracket_identity` (unique) on `archive_brackets`.
 
 ---
 
@@ -359,10 +486,36 @@ Non-2xx becomes `BlizzardApiError` with `statusCode` and `isNotFound`.
 | `/profile/wow/character/{realm}/{name}`                 | profile   | race, class, realm, title, guild             |
 | `/profile/wow/character/{realm}/{name}/specializations` | profile   | spec, hero tree, loadouts                    |
 
-**Quota: 100 requests/second, 36,000/hour.** Everything else follows from that.
+**Quota: 100 requests/second, 36,000/hour.** Everything else follows from that. The hour is
+governed by the shared budget (§4.0); the second by each job's own `RateLimiter`.
+
+Retries get two budgets as well. A sweep is ~332 ladder fetches whatever the population,
+so retrying one three times costs little and saves a bracket. Enrichment is one request per
+character per half, so the same retry limit would multiply a far larger number.
+Profile-namespace calls therefore use `PROFILE_RETRY_LIMIT` (1) rather than
+`BLIZZARD_RETRY_LIMIT` (3); only the limit differs, so the same statuses are retryable
+either way. Because retries are charged to the budget like any other attempt, a
+retry-heavy run simply leaves less for the next one — it can no longer push the hour over.
 
 Namespaces are derived per endpoint (`namespaceFor('profile', 'eu')` → `profile-eu`), not
 configured. Character names must be lowercased and percent-encoded (`Zëph`).
+
+### Failures the client classifies
+
+| Condition            | Raised as                    | Seen by callers as         |
+| -------------------- | ---------------------------- | -------------------------- |
+| non-2xx              | `BlizzardApiError`           | the status; 404 is routine |
+| empty 2xx body       | `BlizzardEmptyResponseError` | transient; no HTTP status  |
+| unparseable 2xx body | the underlying parse error   | transient at this layer    |
+| schema mismatch      | `ZodError`, at the API layer | **permanent** — see §4.2   |
+
+The empty-body case is the one worth knowing about. `got` resolves an empty body to `''`
+instead of raising a parse error, so without an explicit check it flows on and only fails at
+the zod boundary — indistinguishable there from Blizzard shaping a payload wrongly, and
+therefore classified as permanent. It is caught in `BlizzardHttpService`, which is the last
+place that still knows the response was a 200 carrying nothing, and it counts against
+Blizzard's observed health rather than for it: a gateway shedding load answers exactly this
+way, and recording it as a success is how readiness reports green through an outage.
 
 ---
 
@@ -399,6 +552,7 @@ Pings Mongo (cached ~3s) and reports what real traffic has already observed of B
 | everything healthy                   | `ok`       | **200** |
 | Blizzard failing (any/all regions)   | `degraded` | **200** |
 | no sweep for 2× `INGEST_INTERVAL_MS` | `degraded` | **200** |
+| enrichment infeasible or behind      | `degraded` | **200** |
 | Mongo unreachable                    | `down`     | **503** |
 
 Mongo is a **hard** dependency and Blizzard a **soft** one. Without Mongo the service can
@@ -406,6 +560,10 @@ do nothing, so readiness fails and traffic should be withdrawn. Without Blizzard
 holds every row already ingested, so only ingestion is degraded — failing readiness there
 would have an orchestrator restart-loop the service through an incident it cannot fix.
 **Do not "fix" the Blizzard case into a 503.**
+
+Readiness also carries `quota` — the rolling-hour spend per job, current allowances and
+shares — and `enrichment`, the outlook from the last run plus any `problems` in plain words.
+Both are read from memory, so neither adds I/O to a probe.
 
 Two further rules this endpoint must keep:
 
@@ -482,7 +640,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_LOCALE`                     | `en_US`                             |                                                  |
 | `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam        |
 | `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                  |
-| `BLIZZARD_RETRY_LIMIT`                | `3`                                 |                                                  |
+| `BLIZZARD_RETRY_LIMIT`                | `3`                                 | Ladder and season endpoints                      |
+| `PROFILE_RETRY_LIMIT`                 | `1`                                 | Per-character endpoints; lower on purpose        |
 | `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep               |
 | `MONGODB_URI`                         | —                                   | **Required**                                     |
 | `MONGODB_DB`                          | `rankwarden`                        |                                                  |
@@ -490,7 +649,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                  |
 | `PROFILE_ENRICHMENT_ENABLED`          | `true`                              | `false` releases the archive warm-up gate        |
 | `PROFILE_INTERVAL_MS`                 | `300000`                            |                                                  |
-| `PROFILE_BATCH_SIZE`                  | `500`                               | Characters per pass                              |
+| `PROFILE_BATCH_SIZE`                  | `2000`                              | Per-run ceiling; the batch itself is computed    |
 | `PROFILE_SUMMARY_TTL_MS`              | `604800000`                         | 7 days                                           |
 | `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                            |
 | `PROFILE_CONCURRENCY`                 | `8`                                 |                                                  |
@@ -513,6 +672,10 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `ARCHIVE_MIN_SEASON` / `_MAX_SEASON`  | `0` / `0`                           | 0 = unbounded; the real size lever               |
 | `ARCHIVE_MAX_ENTRIES_PER_BRACKET`     | `5000`                              | Top N by rating; saves only ~1%                  |
 | `NODE_ENV` / `PORT` / `LOG_LEVEL`     | `development` / `3000` / `log`      |                                                  |
+| `QUOTA_HOURLY_LIMIT`                  | `36000`                             | Blizzard's cap on the whole client               |
+| `QUOTA_UTILISATION`                   | `0.9`                               | Fraction ever planned against                    |
+| `QUOTA_ENRICHMENT_HEADROOM`           | `3`                                 | Enrichment plans at most cap / this              |
+| `QUOTA_SWEEP_RESERVE`                 | `1000`                              | Held back for the sweep each hour                |
 
 ---
 
@@ -659,7 +822,7 @@ Everything lives in `test/support/`:
 | `specs.ts`         | The 40 real specialisations, so a world publishes the same 85 brackets.  |
 | `fake-blizzard.ts` | Replaces `BlizzardHttpService`, serving the World as raw JSON.           |
 | `app.ts`           | `bootTestApp` — real `AppModule`, real Mongo, fake Blizzard.             |
-| `invariants.ts`    | `expectInvariants` and the individual I1–I10 checks.                     |
+| `invariants.ts`    | `expectInvariants` and the individual I1–I11 checks.                     |
 | `database.ts`      | Test database naming and the guard below.                                |
 | `http.ts`          | `fetch` against a real listener; no supertest dependency.                |
 | `seams.ts`         | Every scheduler whose bootstrap work can be awaited.                     |
@@ -737,6 +900,9 @@ extending the wildcard-covered maps over adding per-key indexes.
   `/admin/*` triggers are unauthenticated too, which is why they 404 outside development.
 - **Repositories and aggregation pipelines have no automated coverage.** An integration
   suite against a throwaway Mongo would be the highest-value addition.
+- **Completeness for pre-`archive_brackets` seasons is still inferred from rows**, so one of
+  those with an empty ladder stays unadoptable if its marker is lost. Re-archiving the season
+  once populates the record and closes it.
 - **A season Blizzard stops serving is marked `unarchivable`** and skipped forever. That is
   right for seasons below 22, but a prolonged 404 on a season that _should_ exist would be
   recorded the same way; clear the marker by hand to retry it.

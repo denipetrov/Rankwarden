@@ -48,5 +48,28 @@ export interface ArchiveSeasonDocument {
   lastError?: string;
 }
 
+/**
+ * One bracket that was actually fetched, whatever it turned out to contain.
+ *
+ * Completeness used to be inferred from stored rows, which cannot tell a ladder
+ * nobody qualified for from one that was never fetched at all: both store
+ * nothing. On a small region plenty of the 80 spec ladders finish a season
+ * empty, so a season with any of them could never be adopted from its rows and
+ * the cheap recovery path was defeated for exactly the seasons it mattered on.
+ *
+ * Recording the fetch rather than its output removes the inference. Kept in its
+ * own collection so `archive_entries` stays purely the standings and needs no
+ * filtering, and so the record survives losing `archive_seasons`.
+ */
+export interface ArchiveBracketDocument {
+  seasonId: number;
+  region: Region;
+  bracket: Bracket;
+  /** How many rows this bracket contributed; zero is a real, useful answer. */
+  entries: number;
+  fetchedAt: Date;
+}
+
 export const ARCHIVE_ENTRIES_COLLECTION = 'archive_entries';
 export const ARCHIVE_SEASONS_COLLECTION = 'archive_seasons';
+export const ARCHIVE_BRACKETS_COLLECTION = 'archive_brackets';

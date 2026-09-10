@@ -394,8 +394,17 @@ export class World {
     this.failures.set(`${region}:${key}`, status);
   }
 
-  clearFailures(): void {
+  /**
+   * Removes every injected fault, status failures and corruptions alike.
+   *
+   * One method rather than two: it used to clear only the status failures, so a
+   * `finally` block that read as "undo what I injected" left the corrupted
+   * payload in place and the next case in the file quietly ran against it. That
+   * is invisible when the next case happens to pass anyway.
+   */
+  clearFaults(): void {
     this.failures.clear();
+    this.corruptions.clear();
   }
 
   /** Serve a structurally wrong payload, to exercise the zod boundary. */

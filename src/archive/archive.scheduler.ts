@@ -5,6 +5,8 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Region } from '../blizzard/blizzard.constants.js';
 import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { withRunId } from '../common/logging/run-context.js';
+import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -36,6 +38,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
     private readonly archive: ArchiveService,
     private readonly scheduler: SchedulerRegistry,
     private readonly coordinator: IngestionCoordinator,
+    private readonly budget: QuotaBudget,
   ) {
     this.enabled = config.get('ARCHIVE_ENABLED', { infer: true });
     this.intervalMs = config.get('ARCHIVE_CHECK_INTERVAL_MS', { infer: true });
@@ -92,26 +95,39 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
     const failedThisTick = new Set<string>();
 
     try {
-      for (;;) {
-        // Re-checked between seasons: a sweep or enrichment pass starting mid
-        // backlog takes the quota back immediately.
-        if (this.coordinator.isLiveIngestionActive) {
-          this.logger.log('Live ingestion in progress, pausing the archive');
-          return;
+      // Every request below is charged to the archive's share of the quota.
+      await withRunId('archive', async () => {
+        for (;;) {
+          // Re-checked between seasons: a sweep or enrichment pass starting mid
+          // backlog takes the quota back immediately.
+          if (this.coordinator.isLiveIngestionActive) {
+            this.logger.log('Live ingestion in progress, pausing the archive');
+            return;
+          }
+
+          // The archive gets only what the sweep and enrichment leave, so it
+          // is the job that waits when the hour runs short. The interval
+          // brings it back once the window has rolled.
+          if (this.budget.allowance('archive') <= 0) {
+            this.logger.log(
+              'Archive share of the hourly quota is spent; pausing until the window rolls',
+            );
+            return;
+          }
+
+          const pending = await this.archive.nextPending(failedThisTick);
+          if (!pending) return;
+
+          try {
+            await this.archive.archiveSeason(pending.seasonId, pending.region);
+          } catch (error) {
+            await this.recordFailure(pending.seasonId, pending.region, error);
+            failedThisTick.add(`${pending.seasonId}:${pending.region}`);
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, this.pauseMs));
         }
-
-        const pending = await this.archive.nextPending(failedThisTick);
-        if (!pending) return;
-
-        try {
-          await this.archive.archiveSeason(pending.seasonId, pending.region);
-        } catch (error) {
-          await this.recordFailure(pending.seasonId, pending.region, error);
-          failedThisTick.add(`${pending.seasonId}:${pending.region}`);
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, this.pauseMs));
-      }
+      });
     } catch (error) {
       this.logger.error('Archiving failed', errorStack(error));
     } finally {

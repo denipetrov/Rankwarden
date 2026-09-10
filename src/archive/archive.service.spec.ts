@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { ArchiveRepository } from './archive.repository.js';
 import { ArchiveService } from './archive.service.js';
@@ -15,6 +16,10 @@ const env: Record<string, unknown> = {
   ARCHIVE_MIN_SEASON: 0,
   ARCHIVE_MAX_SEASON: 0,
   ARCHIVE_MAX_ENTRIES_PER_BRACKET: 3,
+  QUOTA_HOURLY_LIMIT: 36_000,
+  QUOTA_UTILISATION: 0.9,
+  QUOTA_ENRICHMENT_HEADROOM: 3,
+  QUOTA_SWEEP_RESERVE: 1_000,
 };
 
 describe('ArchiveService', () => {
@@ -23,13 +28,17 @@ describe('ArchiveService', () => {
   const getLeaderboard = vi.fn();
   const getSeason = vi.fn();
   const settledSeasons = vi.fn();
+  const markedSeasons = vi.fn();
   const insertEntries = vi.fn();
   const recordSeason = vi.fn();
   const countEntries = vi.fn();
   const summariseStored = vi.fn();
   const markUnarchivable = vi.fn();
+  const recordBracketFetch = vi.fn();
+  const fetchedBrackets = vi.fn();
   const hasEnded = vi.fn();
   let coordinator: IngestionCoordinator;
+  let budget: QuotaBudget;
   let service: ArchiveService;
 
   beforeEach(async () => {
@@ -60,27 +69,36 @@ describe('ArchiveService', () => {
       endsAt: new Date('2026-08-11T05:00:00.000Z'),
     });
     settledSeasons.mockResolvedValue(new Set<string>());
+    // No markers at all by default, so the recovery probe is allowed to run.
+    markedSeasons.mockResolvedValue(new Set<string>());
     countEntries.mockResolvedValue(1);
-    // Nothing stored by default, so a season is fetched rather than adopted.
+    // Nothing archived by default, so a season is fetched rather than adopted.
     summariseStored.mockResolvedValue({ brackets: [], entries: 0 });
+    fetchedBrackets.mockResolvedValue([]);
+    recordBracketFetch.mockResolvedValue(undefined);
     hasEnded.mockReturnValue(false);
     coordinator = new IngestionCoordinator();
+    budget = new QuotaBudget({ get: (key: string) => env[key] } as never);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArchiveService,
         { provide: IngestionCoordinator, useValue: coordinator },
+        { provide: QuotaBudget, useValue: budget },
         { provide: PvpApi, useValue: { getSeasonIndex, getBrackets, getLeaderboard, getSeason } },
         { provide: SeasonService, useValue: { hasEnded } },
         {
           provide: ArchiveRepository,
           useValue: {
             settledSeasons,
+            markedSeasons,
             insertEntries,
             recordSeason,
             countEntries,
             summariseStored,
             markUnarchivable,
+            recordBracketFetch,
+            fetchedBrackets,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },
@@ -115,17 +133,21 @@ describe('ArchiveService', () => {
       providers: [
         ArchiveService,
         { provide: IngestionCoordinator, useValue: coordinator },
+        { provide: QuotaBudget, useValue: budget },
         { provide: PvpApi, useValue: { getSeasonIndex, getBrackets, getLeaderboard, getSeason } },
         { provide: SeasonService, useValue: { hasEnded } },
         {
           provide: ArchiveRepository,
           useValue: {
             settledSeasons,
+            markedSeasons,
             insertEntries,
             recordSeason,
             countEntries,
             summariseStored,
             markUnarchivable,
+            recordBracketFetch,
+            fetchedBrackets,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },

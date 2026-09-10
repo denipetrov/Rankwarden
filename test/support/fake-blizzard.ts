@@ -1,7 +1,13 @@
-import { BlizzardApiError } from '../../src/blizzard/http/blizzard-api.error.js';
+import {
+  BlizzardApiError,
+  BlizzardEmptyResponseError,
+} from '../../src/blizzard/http/blizzard-api.error.js';
 import type { BlizzardGetOptions } from '../../src/blizzard/http/blizzard-http.service.js';
 import type { Region } from '../../src/blizzard/blizzard.constants.js';
+import type { BlizzardTokenProvider } from '../../src/blizzard/auth/token-provider.js';
 import type { DependencyHealth } from '../../src/common/health/dependency-health.service.js';
+import { currentRunKind } from '../../src/common/logging/run-context.js';
+import { quotaConsumerFor, type QuotaBudget } from '../../src/common/quota/quota-budget.service.js';
 import type { World, WorldPlayer, WorldRegion } from './world.js';
 
 export interface RecordedRequest {
@@ -33,6 +39,23 @@ export class FakeBlizzard {
    * degraded path would be untestable. Set by `bootTestApp`.
    */
   health?: DependencyHealth;
+  /**
+   * The token provider, consulted once per request.
+   *
+   * The real `BlizzardHttpService` mints a bearer token in a `beforeRequest`
+   * hook on every call, so a provider that throws fails every request. Without
+   * this the fake never touches the seam at all, and an OAuth outage is simply
+   * not expressible — the whole credentials-failed scenario becomes unreachable
+   * rather than merely unwritten. Set by `bootTestApp`.
+   */
+  tokens?: BlizzardTokenProvider;
+  /**
+   * The shared quota, charged once per request exactly as the real client
+   * charges it. The fake replaces that client, so without this every
+   * integration test would run against a budget that never fills and the
+   * throttling paths could not be reached. Set by `bootTestApp`.
+   */
+  budget?: QuotaBudget;
   peakInFlight = 0;
   private inFlight = 0;
 
@@ -58,13 +81,30 @@ export class FakeBlizzard {
 
     this.inFlight += 1;
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
+    // Charged to the job in progress, as the real client's beforeRequest hook
+    // does. The fake never retries, so one call is one charge.
+    this.budget?.record(quotaConsumerFor(currentRunKind()));
 
     const startedAt = Date.now();
 
     try {
+      // Before anything else, exactly as the real service does: no token, no
+      // request, whatever the World would have served.
+      await this.tokens?.getAccessToken();
+
       if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 
       const payload = this.route(region as WorldRegion, path);
+
+      // Mirrors the real client, which rejects an empty body as a transport
+      // failure rather than letting `''` travel on to fail at the zod boundary
+      // and be misread as a payload Blizzard shaped wrongly. Without this the
+      // fake would answer differently from the service it stands in for, and
+      // any test injecting an empty body would prove the wrong thing.
+      if (payload === '' || payload === null || payload === undefined) {
+        throw new BlizzardEmptyResponseError(path);
+      }
+
       this.health?.recordBlizzardSuccess(region, Date.now() - startedAt);
 
       return payload;
@@ -100,7 +140,14 @@ export class FakeBlizzard {
 
     const bracketIndex = /^data\/wow\/pvp-season\/(\d+)\/pvp-leaderboard\/index$/.exec(path);
     if (bracketIndex) {
-      return this.serve(region, 'brackets', path, () => {
+      // Two keys, most specific first, as with the profile halves below.
+      // `brackets:<season>` fails one season's bracket list while its
+      // neighbours keep working, which is the only way to express a season
+      // Blizzard has stopped serving while the backlog around it still moves.
+      const narrow = `brackets:${bracketIndex[1]}`;
+      const key = this.hasFault(region, narrow) ? narrow : 'brackets';
+
+      return this.serve(region, key, path, () => {
         if (!this.knowsSeason(region, Number(bracketIndex[1]))) {
           throw this.error(404, path, `no season ${bracketIndex[1]}`);
         }
@@ -135,7 +182,16 @@ export class FakeBlizzard {
 
     const specs = /^profile\/wow\/character\/([^/]+)\/([^/]+)\/specializations$/.exec(path);
     if (specs) {
-      return this.serve(region, `character:${specs[1]}/${specs[2]}`, path, () =>
+      // Two keys, most specific first. `specs:<realm>/<name>` targets this
+      // response alone; `character:<realm>/<name>` still covers both halves, so
+      // faults injected against the shared key keep working. Without the
+      // narrow key a test aiming at the specializations response has to supply
+      // a payload that also satisfies the profile schema, which is indirect
+      // enough to be mistaken for a product behaviour.
+      const narrow = `specs:${specs[1]}/${specs[2]}`;
+      const key = this.hasFault(region, narrow) ? narrow : `character:${specs[1]}/${specs[2]}`;
+
+      return this.serve(region, key, path, () =>
         this.world.specsPayload(this.characterAt(region, specs[1], specs[2], path)),
       );
     }
@@ -148,6 +204,14 @@ export class FakeBlizzard {
     }
 
     throw this.error(404, path, `no route for ${path}`);
+  }
+
+  /** Whether any fault is registered against a key. */
+  private hasFault(region: WorldRegion, key: string): boolean {
+    return (
+      this.world.failureFor(region, key) !== undefined ||
+      this.world.corruptionFor(region, key) !== undefined
+    );
   }
 
   /**

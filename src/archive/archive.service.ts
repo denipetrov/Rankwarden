@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { isIngestableBracket, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import { describeError } from '../common/utils/errors.js';
@@ -44,6 +45,7 @@ export class ArchiveService {
     private readonly seasons: SeasonService,
     private readonly repository: ArchiveRepository,
     private readonly coordinator: IngestionCoordinator,
+    private readonly budget: QuotaBudget,
   ) {
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.concurrency = config.get('ARCHIVE_CONCURRENCY', { infer: true });
@@ -63,6 +65,7 @@ export class ArchiveService {
     skip: ReadonlySet<string> = new Set(),
   ): Promise<{ seasonId: number; region: Region } | null> {
     const settled = await this.repository.settledSeasons();
+    const marked = await this.repository.markedSeasons();
 
     for (const region of this.regions) {
       const seasonIds = await this.archivableSeasons(region);
@@ -71,11 +74,16 @@ export class ArchiveService {
         const key = `${seasonId}:${region}`;
         if (settled.has(key) || skip.has(key)) continue;
 
-        // No marker, but the rows may still be there — a crash mid-season, or a
+        // No marker, but the data may still be there — a crash mid-season, or a
         // dropped markers collection. Re-fetching months-old standings that are
-        // already stored is pure waste, so check the data before trusting the
-        // absence of a marker.
-        if (await this.adoptStoredSeason(seasonId, region)) continue;
+        // already archived is pure waste, so check before trusting the absence
+        // of a marker.
+        //
+        // Only when there is no marker. One that names outstanding brackets is
+        // an explicit record of what failed, and re-deriving completeness from
+        // the data would overrule it; the retry below is cheap anyway, because
+        // it fetches only what is genuinely outstanding.
+        if (!marked.has(key) && (await this.adoptStoredSeason(seasonId, region))) continue;
 
         return { seasonId, region };
       }
@@ -85,22 +93,26 @@ export class ArchiveService {
   }
 
   /**
-   * Recognises a season whose rows are already stored and writes back the marker
-   * that was missing, so the next startup takes the cheap path.
+   * Recognises a season that is already archived and writes back the marker that
+   * was missing, so the next startup takes the cheap path.
    *
-   * Adoption is only safe when the stored brackets match the ones the API
-   * publishes. A process killed partway through leaves rows with no marker, and
-   * adopting on the mere presence of rows would write a marker claiming nothing
+   * Adoption is only safe when the brackets covered match the ones the API
+   * publishes. A process killed partway leaves data with no marker, and adopting
+   * on the mere presence of it would write a marker claiming nothing is
    * outstanding — after which the missing brackets are never fetched and nothing
    * reports a problem. One request to compare against is far cheaper than the
    * ~83 a re-fetch costs, and cheaper still than losing the data silently.
+   *
+   * Coverage comes from what was fetched rather than what was stored, because
+   * an empty ladder stores nothing and would otherwise read as never fetched.
    */
   private async adoptStoredSeason(seasonId: number, region: Region): Promise<boolean> {
     const stored = await this.repository.summariseStored(seasonId, region);
-    if (stored.entries === 0) return false;
+    const covered = await this.coveredBrackets(seasonId, region, stored.brackets);
+    if (covered.length === 0) return false;
 
     const expected = await this.publishedBrackets(region, seasonId);
-    const missing = expected.filter((bracket) => !stored.brackets.includes(bracket));
+    const missing = expected.filter((bracket) => !covered.includes(bracket));
     const season = await this.seasonMetadata(region, seasonId);
 
     await this.repository.recordSeason({
@@ -109,7 +121,7 @@ export class ArchiveService {
       name: season?.name,
       startsAt: season?.startsAt ?? null,
       endsAt: season?.endsAt ?? null,
-      brackets: stored.brackets.length,
+      brackets: covered.length,
       entries: stored.entries,
       failedBrackets: missing,
       archivedAt: new Date(),
@@ -117,7 +129,7 @@ export class ArchiveService {
 
     if (missing.length > 0) {
       this.logger.warn(
-        `Season ${seasonId} ${region} is only partly stored (${stored.brackets.length}/` +
+        `Season ${seasonId} ${region} is only partly archived (${covered.length}/` +
           `${expected.length} brackets); ${missing.length} outstanding and will be fetched`,
       );
 
@@ -125,11 +137,34 @@ export class ArchiveService {
     }
 
     this.logger.log(
-      `Season ${seasonId} ${region} is already stored (${stored.entries} entries across ` +
-        `${stored.brackets.length} brackets); skipping the fetch`,
+      `Season ${seasonId} ${region} is already archived (${stored.entries} entries across ` +
+        `${covered.length} brackets); skipping the fetch`,
     );
 
     return true;
+  }
+
+  /**
+   * The brackets a season can be shown to have covered.
+   *
+   * Prefers the durable fetch record, which counts a ladder nobody qualified
+   * for — those store no rows and would otherwise look identical to a ladder
+   * that was never fetched, leaving the season permanently unadoptable on
+   * exactly the small regions where empty ladders are common.
+   *
+   * Seasons archived before that record existed have none, so their stored rows
+   * stand in. That is the old inference and carries the old blind spot, but it
+   * is strictly better than treating already-archived history as missing and
+   * re-fetching all of it.
+   */
+  private async coveredBrackets(
+    seasonId: number,
+    region: Region,
+    storedBrackets: readonly Bracket[],
+  ): Promise<Bracket[]> {
+    const fetched = await this.repository.fetchedBrackets(seasonId, region);
+
+    return fetched.length > 0 ? [...new Set([...fetched, ...storedBrackets])] : [...storedBrackets];
   }
 
   /**
@@ -185,10 +220,13 @@ export class ArchiveService {
     const startedAt = Date.now();
     await this.limiter.acquire();
     const brackets = (await this.pvpApi.getBrackets(region, seasonId)).filter(isIngestableBracket);
-    const stored = new Set((await this.repository.summariseStored(seasonId, region)).brackets);
-    const outstanding = brackets.filter((bracket) => !stored.has(bracket));
+    const stored = await this.repository.summariseStored(seasonId, region);
+    // From the fetch record, so a retry does not keep re-fetching the empty
+    // ladders it already visited.
+    const covered = new Set(await this.coveredBrackets(seasonId, region, stored.brackets));
+    const outstanding = brackets.filter((bracket) => !covered.has(bracket));
 
-    if (stored.size > 0) {
+    if (covered.size > 0) {
       this.logger.log(
         `Resuming season ${seasonId} ${region}: ${outstanding.length} of ${brackets.length} ` +
           'brackets outstanding',
@@ -241,9 +279,11 @@ export class ArchiveService {
     region: Region,
     bracket: Bracket,
   ): Promise<{ bracket: Bracket; entries: number; failed: boolean }> {
-    // Live data outranks history that has already waited months. Leaving the
-    // bracket unfinished keeps the season pending, so it resumes later.
-    if (this.coordinator.isLiveIngestionActive) {
+    // Live data outranks history that has already waited months, and so does
+    // the quota it runs on. Leaving the bracket unfinished keeps the season
+    // pending, and the fetch record means the resumed run picks up exactly
+    // where this one stopped.
+    if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
       return { bracket, entries: 0, failed: true };
     }
 
@@ -274,6 +314,16 @@ export class ArchiveService {
       }));
 
       await this.repository.insertEntries(documents);
+      // Recorded even when the ladder is empty. That is the whole point: an
+      // empty bracket stores no rows, so without this there is no durable
+      // evidence it was ever fetched.
+      await this.repository.recordBracketFetch({
+        seasonId,
+        region,
+        bracket,
+        entries: documents.length,
+        fetchedAt: new Date(),
+      });
 
       return { bracket, entries: documents.length, failed: false };
     } catch (error) {

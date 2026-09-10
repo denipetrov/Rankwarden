@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import {
+  ARCHIVE_BRACKETS_COLLECTION,
   ARCHIVE_ENTRIES_COLLECTION,
   ARCHIVE_SEASONS_COLLECTION,
 } from '../src/archive/entities/archive.entity.js';
@@ -43,6 +44,7 @@ describe('S9 — restart and resumption', () => {
 
   const entries = () => db.collection(ARCHIVE_ENTRIES_COLLECTION);
   const markers = () => db.collection(ARCHIVE_SEASONS_COLLECTION);
+  const fetched = () => db.collection(ARCHIVE_BRACKETS_COLLECTION);
 
   /** Closes the app and boots a new one against the same database. */
   const restart = async () => {
@@ -151,9 +153,13 @@ describe('S9 — restart and resumption', () => {
   });
 
   it('S9.4 — a crash mid-archive is not mistaken for a complete season', async () => {
-    // A process killed partway leaves rows for some brackets and no marker.
+    // A process killed partway leaves the brackets it finished and nothing for
+    // the rest — no rows, and no record of having fetched them. Both have to go,
+    // because completeness is judged from the fetch record: deleting only the
+    // rows would simulate 79 empty ladders rather than 79 unvisited ones.
     const kept = ['3v3', '2v2'];
     await entries().deleteMany({ seasonId: FINISHED, region: 'us', bracket: { $nin: kept } });
+    await fetched().deleteMany({ seasonId: FINISHED, region: 'us', bracket: { $nin: kept } });
     await markers().deleteMany({});
     const partial = await entries().countDocuments({ seasonId: FINISHED, region: 'us' });
     expect(partial).toBeGreaterThan(0);
@@ -290,7 +296,7 @@ describe('S9 — restart and resumption', () => {
    * finish a season with nobody on them. Not data loss, and it self-heals after
    * one wasteful pass, which is why it is low severity rather than urgent.
    */
-  it.fails('ISSUE-4 — an empty ladder must not make a season unadoptable', async () => {
+  it('ISSUE-4 — an empty ladder must not make a season unadoptable', async () => {
     const empty = 'blitz-warrior-protection';
     for (const player of world.players.values()) player.ratings.delete(empty);
 

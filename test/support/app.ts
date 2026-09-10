@@ -1,8 +1,11 @@
-import type { INestApplication } from '@nestjs/common';
+import type { INestApplication, LoggerService } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { expect } from 'vitest';
 
-import { BLIZZARD_TOKEN_PROVIDER } from '../../src/blizzard/auth/token-provider.js';
+import {
+  BLIZZARD_TOKEN_PROVIDER,
+  type BlizzardTokenProvider,
+} from '../../src/blizzard/auth/token-provider.js';
 import { BlizzardHttpService } from '../../src/blizzard/http/blizzard-http.service.js';
 import { assertTestDatabase, testDbName, testMongoUri } from './database.js';
 import { FakeBlizzard } from './fake-blizzard.js';
@@ -13,7 +16,7 @@ export interface TestApp {
   world: World;
   blizzard: FakeBlizzard;
   dbName: string;
-  /** Resolves anything a scheduler started at bootstrap. */
+  /** Resolves anything a scheduler started at bootstrap, and anything it went on to start. */
   settle: () => Promise<void>;
   /** Base URL once `listen` has been called; throws before that. */
   url: () => string;
@@ -101,6 +104,8 @@ export function resetBootGuard(): void {
 export async function bootTestApp(
   world: World,
   env: Record<string, string> = {},
+  tokens: BlizzardTokenProvider = { getAccessToken: async () => 'test-token' },
+  logger?: LoggerService,
 ): Promise<TestApp> {
   const dbName = assertTestDatabase(env.MONGODB_DB ?? testDbName(expect.getState().testPath));
   const resolved = {
@@ -121,17 +126,32 @@ export async function bootTestApp(
   const { AppModule } = await import('../../src/app.module.js');
 
   const blizzard = new FakeBlizzard(world);
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  // `compile()` silences Nest's logger unless one is set here, and everything a
+  // bootstrap-ordering case wants to read happens inside `app.init()` — which
+  // `app.useLogger` is already too late for.
+  if (logger) builder.setLogger(logger);
+
+  const moduleRef = await builder
     .overrideProvider(BlizzardHttpService)
     .useValue(blizzard)
     .overrideProvider(BLIZZARD_TOKEN_PROVIDER)
-    .useValue({ getAccessToken: async () => 'test-token', validateToken: async () => true })
+    .useValue(tokens)
     .compile();
+
+  // The fake stands in for the service that mints the bearer token, so it has
+  // to consult the same seam — otherwise a failing token provider changes
+  // nothing and an OAuth outage cannot be expressed at all.
+  blizzard.tokens = tokens;
 
   // The fake stands in for the service that feeds DependencyHealth, so hand it
   // the real instance or readiness reports `unknown` for Blizzard forever.
   const { DependencyHealth } = await import('../../src/common/health/dependency-health.service.js');
   blizzard.health = moduleRef.get(DependencyHealth);
+
+  // And the shared quota, which the real client charges on every attempt.
+  const { QuotaBudget } = await import('../../src/common/quota/quota-budget.service.js');
+  blizzard.budget = moduleRef.get(QuotaBudget);
 
   const app = moduleRef.createNestApplication();
   // Runs onModuleInit (indexes) and onApplicationBootstrap (schedulers).
@@ -141,7 +161,14 @@ export async function bootTestApp(
 
   const settle = async () => {
     const { schedulerSeams } = await import('./seams.js');
-    await Promise.all(schedulerSeams(app).map((seam) => seam.whenSettled()));
+
+    // Several rounds, because the jobs form a chain: a sweep finishing starts an
+    // enrichment pass, which warms the coordinator up, which releases the
+    // archive. One round awaits only what was already in flight when it began,
+    // so the work each link starts is left running with nobody waiting on it.
+    for (let round = 0; round < 4; round += 1) {
+      await Promise.all(schedulerSeams(app).map((seam) => seam.whenSettled()));
+    }
   };
 
   return {

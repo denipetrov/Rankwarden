@@ -110,6 +110,19 @@ export const envSchema = z.object({
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
+  /**
+   * Retries for the per-character profile endpoints, which are the ones that
+   * scale with the population rather than with the bracket count.
+   *
+   * Deliberately lower than `BLIZZARD_RETRY_LIMIT`. At the defaults a pass is
+   * 500 characters x 2 requests every 5 minutes — 12,000 requests an hour
+   * before a single retry, against a 36,000/hour quota. Retrying each of those
+   * three times turns a degraded upstream into 48,000 and puts enrichment alone
+   * over the cap, starving the sweep that actually serves the boards. A ladder
+   * fetch is worth several attempts because there are only ~332 of them; a
+   * character is not.
+   */
+  PROFILE_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(1),
   BLIZZARD_CONCURRENCY: z.coerce.number().int().positive().default(8),
 
   // MongoDB.
@@ -129,7 +142,18 @@ export const envSchema = z.object({
     .default('true')
     .transform((value) => value === 'true'),
   PROFILE_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
-  PROFILE_BATCH_SIZE: z.coerce.number().int().positive().default(500),
+  /**
+   * Upper bound on characters per enrichment run — a safety ceiling on memory
+   * and run length, not the working batch. The working batch is computed each
+   * run from how many characters are due and what the hourly quota share still
+   * allows, and is only ever lowered by this.
+   *
+   * It has to sit comfortably above what the share needs, or it silently
+   * becomes the binding limit: at the old 500, a specs-only pass bought 500
+   * requests a run, 6,000 an hour — against ~6,800 an hour of steady demand at
+   * 143k characters, so the queue was already on the edge of falling behind.
+   */
+  PROFILE_BATCH_SIZE: z.coerce.number().int().positive().default(2_000),
   /** Race, class, realm, title — changes rarely, so refreshed weekly. */
   PROFILE_SUMMARY_TTL_MS: z.coerce.number().int().positive().default(604_800_000),
   /** Spec and hero talents — moves whenever a player respecs. */
@@ -214,12 +238,50 @@ export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['error', 'warn', 'log', 'debug', 'verbose']).default('log'),
+
+  // Shared Blizzard quota. One hourly budget that every job draws from.
+  /** Blizzard's documented cap on the whole client. */
+  QUOTA_HOURLY_LIMIT: z.coerce.number().int().positive().default(36_000),
+  /**
+   * Fraction of the cap ever planned against. The rest absorbs requests already
+   * in flight when a check is made, and retries on batches sized before they
+   * failed — neither of which a budget can see coming.
+   */
+  QUOTA_UTILISATION: z.coerce.number().positive().max(1).default(0.9),
+  /** Enrichment plans at most `QUOTA_HOURLY_LIMIT / this` requests an hour. */
+  QUOTA_ENRICHMENT_HEADROOM: z.coerce.number().min(1).default(3),
+  /**
+   * Requests an hour held back for the sweep before anything else may spend.
+   * A sweep is ~340 at four regions; this leaves room for its retries.
+   */
+  QUOTA_SWEEP_RESERVE: z.coerce.number().int().nonnegative().default(1_000),
+});
+
+/**
+ * The shares have to fit inside what is usable, or the budget promises the
+ * sweep and enrichment more than it can ever give them and the archive's
+ * allowance is negative from the first request. A boot failure beats that.
+ */
+const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
+  const usable = Math.floor(env.QUOTA_HOURLY_LIMIT * env.QUOTA_UTILISATION);
+  const promised =
+    env.QUOTA_SWEEP_RESERVE + Math.floor(env.QUOTA_HOURLY_LIMIT / env.QUOTA_ENRICHMENT_HEADROOM);
+
+  if (promised > usable) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['QUOTA_SWEEP_RESERVE'],
+      message:
+        `the sweep reserve and enrichment share come to ${promised} requests an hour, ` +
+        `more than the ${usable} that QUOTA_HOURLY_LIMIT x QUOTA_UTILISATION leaves usable`,
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
 
 export function validateEnv(raw: Record<string, unknown>): Env {
-  const result = envSchema.safeParse(raw);
+  const result = validatedEnvSchema.safeParse(raw);
 
   if (!result.success) {
     const issues = result.error.issues
