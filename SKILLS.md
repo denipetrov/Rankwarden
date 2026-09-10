@@ -194,6 +194,13 @@ Two endpoints with **separate TTLs**, because they age differently:
 Only the due halves are fetched, so a refresh costs one request rather than two. Writes
 are field-level (`profile.race`, `profile.spec`, …) so the halves never clobber each other.
 
+**Only `characterType: 'PvP'` characters are enriched.** The ladder sweep knows little
+beyond name, realm and rating, so a ladder character needs these two requests to get a
+profile. An `M+` character arrives with its profile bundled into the one request that finds
+it, so there is nothing left to fetch. Selection, the demand count, the population and the
+stalest-refresh age all filter on the type through one `ENRICHABLE` constant in
+`CharacterRepository`, so the outlook never counts demand no request will be made for.
+
 Selection is `specsFetchedAt` ascending. Specs have the shorter TTL, so anything due for a
 summary refresh is necessarily due for specs too — one timestamp paces the queue. The
 field is absent until first enrichment, and absent sorts before any date, so newcomers win.
@@ -338,6 +345,7 @@ through the gap between seasons.
 ```js
 {
   seasonId: 42, region: 'us', characterId: 195802602,
+  characterType: 'PvP',                          // 'PvP' | 'M+'; set on insert only
   characterName: 'Goküü', realmId: 61, realmSlug: 'emerald-dream', faction: 'HORDE',
 
   brackets: {                                    // full payload, never indexed
@@ -362,8 +370,22 @@ through the gap between seasons.
 ```
 
 Indexes: `character_identity` (unique `seasonId+region+characterId`), `character_lookup`
-(`characterName+realmSlug`), `profile_staleness`, `specs_staleness`, and **`bracket_ratings`**
-— a compound wildcard `{ seasonId: 1, region: 1, 'ratings.$**': 1 }`.
+(`characterName+realmSlug`), `enrichment_specs_staleness` and `enrichment_profile_staleness`
+(`characterType` then the timestamp), and **`bracket_ratings`** — a compound wildcard
+`{ seasonId: 1, region: 1, 'ratings.$**': 1 }`.
+
+**`characterType`** says where a character came from: `PvP` from the ladder sweep, `M+`
+from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
+(§4.2). The sweep sets it with `$setOnInsert`, so a document another source created is never
+reclassified into the enrichment queue. Documents from before the field existed are
+backfilled to `PvP` at boot, in `onModuleInit` and so before any scheduler starts. The sweep
+was the only writer then. The sync endpoint never touches the type.
+
+> **Why the staleness indexes lead with the type.** A character that is never enriched
+> never gets a timestamp, and an absent field sorts ahead of every date. Keyed on the
+> timestamp alone, every M+ character would sit at the front of the index order, and each
+> enrichment run would read all of them before reaching one it can use. The superseded
+> `specs_staleness` / `profile_staleness` are dropped at boot, after their replacements exist.
 
 > **Why the wildcard.** MongoDB caps a collection at 64 indexes; one per bracket would need
 > 85+. Mirroring only `rating` (the sole searchable field) into a flat map lets a single
@@ -800,7 +822,7 @@ Everything lives in `test/support/`:
 | `specs.ts`         | The 40 real specialisations, so a world publishes the same 85 brackets.  |
 | `fake-blizzard.ts` | Replaces `BlizzardHttpService`, serving the World as raw JSON.           |
 | `app.ts`           | `bootTestApp` — real `AppModule`, real Mongo, fake Blizzard.             |
-| `invariants.ts`    | `expectInvariants` and the individual I1–I10 checks.                     |
+| `invariants.ts`    | `expectInvariants` and the individual I1–I11 checks.                     |
 | `database.ts`      | Test database naming and the guard below.                                |
 | `http.ts`          | `fetch` against a real listener; no supertest dependency.                |
 | `seams.ts`         | Every scheduler whose bootstrap work can be awaited.                     |

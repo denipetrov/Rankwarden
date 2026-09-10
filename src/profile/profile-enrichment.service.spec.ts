@@ -33,6 +33,7 @@ const character = (overrides: Partial<CharacterDocument> = {}): CharacterDocumen
     seasonId: 42,
     region: 'eu',
     characterId: 1,
+    characterType: 'PvP',
     characterName: 'Warden',
     realmId: 60,
     realmSlug: 'tarren-mill',

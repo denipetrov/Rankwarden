@@ -11,6 +11,16 @@ export interface BracketStats {
 }
 
 /**
+ * Where a character came from, which decides how its profile gets filled in.
+ *
+ * `PvP` characters are found by the ladder sweep, which knows little beyond
+ * name, realm and rating, so the enrichment worker fetches their profile
+ * separately. `M+` characters arrive with their profile bundled into the one
+ * request that finds them, so there is nothing left to enrich.
+ */
+export type CharacterType = 'PvP' | 'M+';
+
+/**
  * One document per character per season+region, with every bracket they appear
  * in nested under `brackets`. Identity (name, realm, faction) is stored once
  * instead of being repeated for each ladder they show up on.
@@ -19,6 +29,8 @@ export interface CharacterDocument {
   seasonId: number;
   region: Region;
   characterId: number;
+  /** Set once, when the document is created; nothing reclassifies it later. */
+  characterType: CharacterType;
   characterName: string;
   realmId: number;
   realmSlug: string;
@@ -50,9 +62,10 @@ export interface NamedRef {
 }
 
 /**
- * Character detail from the profile endpoints. Filled in by the enrichment
- * worker rather than the leaderboard sweep, because it costs two API requests
- * per character and the hourly quota does not allow refetching every sweep.
+ * Character detail from the profile endpoints. For `PvP` characters it is
+ * filled in by the enrichment worker rather than the leaderboard sweep, because
+ * it costs two API requests per character and the hourly quota does not allow
+ * refetching every sweep.
  */
 export interface CharacterProfile {
   race: NamedRef;

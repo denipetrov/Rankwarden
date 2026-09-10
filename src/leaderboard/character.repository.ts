@@ -42,18 +42,30 @@ import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 const BULK_CHUNK_SIZE = 1_000;
 const DUPLICATE_KEY = 11000;
 
+/** Indexes an earlier build created and a later one replaced. */
+const SUPERSEDED_INDEXES = new Set(['specs_staleness', 'profile_staleness']);
+
+/**
+ * The characters enrichment serves at all. Only ladder characters need it:
+ * every other type arrives with its profile already bundled in.
+ */
+const ENRICHABLE = { characterType: 'PvP' } as const satisfies Filter<CharacterDocument>;
+
 /**
  * The characters enrichment would pick, shared by selection and by the demand
  * count so the two can never disagree about which set they mean.
+ *
+ * Exported so the integration suite can explain it against a real query plan.
  */
-function enrichmentFilter(
+export function enrichmentFilter(
   summaryStaleBefore: Date,
   specsStaleBefore: Date,
   onlyNew: boolean,
 ): Filter<CharacterDocument> {
-  if (onlyNew) return { profileFetchedAt: { $exists: false } };
+  if (onlyNew) return { ...ENRICHABLE, profileFetchedAt: { $exists: false } };
 
   return {
+    ...ENRICHABLE,
     $or: [
       { profileFetchedAt: { $exists: false } },
       { profileFetchedAt: { $lt: summaryStaleBefore } },
@@ -84,28 +96,59 @@ export class CharacterRepository implements OnModuleInit {
       { key: { seasonId: 1, region: 1, 'ratings.$**': 1 }, name: 'bracket_ratings' },
       // Enrichment selects the least recently fetched characters first;
       // never-enriched ones sort ahead of everything because the field is absent.
-      { key: { specsFetchedAt: 1 }, name: 'specs_staleness' },
-      { key: { profileFetchedAt: 1 }, name: 'profile_staleness' },
+      // Led by the type because characters that are never enriched never get a
+      // timestamp either: without the prefix they would sit at the very front
+      // of the timestamp order, and every run would walk past all of them
+      // before reaching the first character it can use.
+      { key: { characterType: 1, specsFetchedAt: 1 }, name: 'enrichment_specs_staleness' },
+      { key: { characterType: 1, profileFetchedAt: 1 }, name: 'enrichment_profile_staleness' },
     ];
 
     await this.collection.createIndexes(indexes);
-    await this.dropLegacyBracketIndexes();
+    await this.dropSupersededIndexes();
+    await this.backfillCharacterType();
     await this.purgeExcludedBrackets();
     this.logger.log(`Indexes ensured on "${CHARACTERS_COLLECTION}"`);
   }
 
   /**
-   * Earlier builds created one index per bracket. They are superseded by
-   * `bracket_ratings` and would only cost write throughput, so clear them out.
+   * Clears indexes a later build replaced. Earlier builds created one per
+   * bracket, superseded by `bracket_ratings`; and the staleness indexes before
+   * they were led by `characterType`. Either kind would only cost write
+   * throughput. Runs after `createIndexes`, so enrichment is never left without
+   * an index to select by.
    */
-  private async dropLegacyBracketIndexes(): Promise<void> {
-    const legacy = (await this.collection.indexes())
+  private async dropSupersededIndexes(): Promise<void> {
+    const superseded = (await this.collection.indexes())
       .map((index) => index.name)
-      .filter((name): name is string => /^bracket_.+_rank$|^best_in_family$/.test(name ?? ''));
+      .filter(
+        (name): name is string =>
+          /^bracket_.+_rank$|^best_in_family$/.test(name ?? '') ||
+          SUPERSEDED_INDEXES.has(name ?? ''),
+      );
 
-    for (const name of legacy) {
+    for (const name of superseded) {
       await this.collection.dropIndex(name);
       this.logger.log(`Dropped superseded index "${name}"`);
+    }
+  }
+
+  /**
+   * Stamps a type on characters stored before the field existed. The ladder
+   * sweep was the only way a character could get into the collection then, so
+   * every one of them is `PvP`.
+   *
+   * This has to finish before any scheduler starts: enrichment selects by type,
+   * and an untyped character would simply never be picked up again.
+   */
+  private async backfillCharacterType(): Promise<void> {
+    const backfilled = await this.collection.updateMany(
+      { characterType: { $exists: false } },
+      { $set: { characterType: 'PvP' } },
+    );
+
+    if (backfilled.modifiedCount > 0) {
+      this.logger.log(`Backfilled characterType "PvP" on ${backfilled.modifiedCount} characters`);
     }
   }
 
@@ -113,6 +156,10 @@ export class CharacterRepository implements OnModuleInit {
    * Merges a bracket's results into each character's document, creating the
    * document on first sight. Identity fields are refreshed on every sweep so
    * renames and faction changes follow along.
+   *
+   * A character the sweep creates is `PvP`. The type is set on insert only: the
+   * sweep reclassifying a document some other source created would put it in
+   * the enrichment queue and spend quota on a profile that source already has.
    */
   async upsertBracketEntries(updates: readonly CharacterBracketUpdate[]): Promise<number> {
     let written = 0;
@@ -140,6 +187,7 @@ export class CharacterRepository implements OnModuleInit {
               seasonId: update.seasonId,
               region: update.region,
               characterId: update.characterId,
+              characterType: 'PvP',
             },
           },
           upsert: true,
@@ -277,9 +325,13 @@ export class CharacterRepository implements OnModuleInit {
     return { characters, requests: summaryDue + specsDue };
   }
 
-  /** Characters enrichment serves. Metadata only, so it costs nothing to ask. */
+  /**
+   * Characters enrichment serves. A real count rather than collection metadata
+   * now that characters needing no enrichment share the collection. It is
+   * answered from the prefix of the staleness index, so it stays cheap.
+   */
   population(): Promise<number> {
-    return this.collection.estimatedDocumentCount();
+    return this.collection.countDocuments(ENRICHABLE);
   }
 
   /**
@@ -289,7 +341,10 @@ export class CharacterRepository implements OnModuleInit {
    */
   async oldestSpecsRefresh(): Promise<Date | null> {
     const oldest = await this.collection
-      .find({ specsFetchedAt: { $exists: true } }, { projection: { specsFetchedAt: 1 } })
+      .find(
+        { ...ENRICHABLE, specsFetchedAt: { $exists: true } },
+        { projection: { specsFetchedAt: 1 } },
+      )
       .sort({ specsFetchedAt: 1 })
       .limit(1)
       .next();
@@ -297,9 +352,9 @@ export class CharacterRepository implements OnModuleInit {
     return oldest?.specsFetchedAt ?? null;
   }
 
-  /** How many characters have never had a profile fetched. */
+  /** How many enrichable characters have never had a profile fetched. */
   countUnenriched(): Promise<number> {
-    return this.collection.countDocuments({ profileFetchedAt: { $exists: false } });
+    return this.collection.countDocuments({ ...ENRICHABLE, profileFetchedAt: { $exists: false } });
   }
 
   /**
@@ -422,9 +477,11 @@ export class CharacterRepository implements OnModuleInit {
    * stamped, so the worker still fills in whatever was left out.
    */
   async updateCharacter(
+    // No `characterType`: this never inserts, so the type is whatever the
+    // document was created with.
     document: Omit<
       CharacterDocument,
-      'profile' | 'profileStatus' | 'profileFetchedAt' | 'specsFetchedAt'
+      'characterType' | 'profile' | 'profileStatus' | 'profileFetchedAt' | 'specsFetchedAt'
     >,
     profile?: Partial<CharacterProfile>,
   ): Promise<{ matched: boolean }> {
