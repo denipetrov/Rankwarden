@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { ArchiveRepository } from './archive.repository.js';
 import { ArchiveService } from './archive.service.js';
@@ -15,6 +16,10 @@ const env: Record<string, unknown> = {
   ARCHIVE_MIN_SEASON: 0,
   ARCHIVE_MAX_SEASON: 0,
   ARCHIVE_MAX_ENTRIES_PER_BRACKET: 3,
+  QUOTA_HOURLY_LIMIT: 36_000,
+  QUOTA_UTILISATION: 0.9,
+  QUOTA_ENRICHMENT_HEADROOM: 3,
+  QUOTA_SWEEP_RESERVE: 1_000,
 };
 
 describe('ArchiveService', () => {
@@ -33,6 +38,7 @@ describe('ArchiveService', () => {
   const fetchedBrackets = vi.fn();
   const hasEnded = vi.fn();
   let coordinator: IngestionCoordinator;
+  let budget: QuotaBudget;
   let service: ArchiveService;
 
   beforeEach(async () => {
@@ -72,11 +78,13 @@ describe('ArchiveService', () => {
     recordBracketFetch.mockResolvedValue(undefined);
     hasEnded.mockReturnValue(false);
     coordinator = new IngestionCoordinator();
+    budget = new QuotaBudget({ get: (key: string) => env[key] } as never);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArchiveService,
         { provide: IngestionCoordinator, useValue: coordinator },
+        { provide: QuotaBudget, useValue: budget },
         { provide: PvpApi, useValue: { getSeasonIndex, getBrackets, getLeaderboard, getSeason } },
         { provide: SeasonService, useValue: { hasEnded } },
         {
@@ -125,6 +133,7 @@ describe('ArchiveService', () => {
       providers: [
         ArchiveService,
         { provide: IngestionCoordinator, useValue: coordinator },
+        { provide: QuotaBudget, useValue: budget },
         { provide: PvpApi, useValue: { getSeasonIndex, getBrackets, getLeaderboard, getSeason } },
         { provide: SeasonService, useValue: { hasEnded } },
         {

@@ -149,6 +149,10 @@ export async function bootTestApp(
   const { DependencyHealth } = await import('../../src/common/health/dependency-health.service.js');
   blizzard.health = moduleRef.get(DependencyHealth);
 
+  // And the shared quota, which the real client charges on every attempt.
+  const { QuotaBudget } = await import('../../src/common/quota/quota-budget.service.js');
+  blizzard.budget = moduleRef.get(QuotaBudget);
+
   const app = moduleRef.createNestApplication();
   // Runs onModuleInit (indexes) and onApplicationBootstrap (schedulers).
   await app.init();

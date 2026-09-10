@@ -2,6 +2,7 @@ import { Controller, Logger, NotFoundException, OnModuleInit, Post } from '@nest
 import { ConfigService } from '@nestjs/config';
 
 import type { Region } from '../blizzard/blizzard.constants.js';
+import { withRunId } from '../common/logging/run-context.js';
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from '../archive/archive.service.js';
@@ -76,11 +77,16 @@ export class AdminController implements OnModuleInit {
   @Post('archive')
   async archiveOne() {
     this.guard();
-    const pending = await this.archive.nextPending();
 
-    if (!pending) return { archived: null, reason: 'nothing pending' };
+    // Charged to the archive's share like a scheduled pass, so a rehearsal
+    // driven from here sees the same budget the scheduler would.
+    return withRunId('archive', async () => {
+      const pending = await this.archive.nextPending();
 
-    return this.archive.archiveSeason(pending.seasonId, pending.region);
+      if (!pending) return { archived: null, reason: 'nothing pending' };
+
+      return this.archive.archiveSeason(pending.seasonId, pending.region);
+    });
   }
 
   @Post('season-refresh')

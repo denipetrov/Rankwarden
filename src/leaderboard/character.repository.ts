@@ -42,6 +42,27 @@ import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 const BULK_CHUNK_SIZE = 1_000;
 const DUPLICATE_KEY = 11000;
 
+/**
+ * The characters enrichment would pick, shared by selection and by the demand
+ * count so the two can never disagree about which set they mean.
+ */
+function enrichmentFilter(
+  summaryStaleBefore: Date,
+  specsStaleBefore: Date,
+  onlyNew: boolean,
+): Filter<CharacterDocument> {
+  if (onlyNew) return { profileFetchedAt: { $exists: false } };
+
+  return {
+    $or: [
+      { profileFetchedAt: { $exists: false } },
+      { profileFetchedAt: { $lt: summaryStaleBefore } },
+      { specsFetchedAt: { $exists: false } },
+      { specsFetchedAt: { $lt: specsStaleBefore } },
+    ],
+  };
+}
+
 @Injectable()
 export class CharacterRepository implements OnModuleInit {
   private readonly logger = new Logger(CharacterRepository.name);
@@ -215,20 +236,65 @@ export class CharacterRepository implements OnModuleInit {
     limit: number,
     onlyNew = false,
   ): Promise<CharacterDocument[]> {
-    const filter: Filter<CharacterDocument> = onlyNew
-      ? { profileFetchedAt: { $exists: false } }
-      : {
-          $or: [
-            { profileFetchedAt: { $exists: false } },
-            { profileFetchedAt: { $lt: summaryStaleBefore } },
-            { specsFetchedAt: { $exists: false } },
-            { specsFetchedAt: { $lt: specsStaleBefore } },
-          ],
-        };
+    const filter = enrichmentFilter(summaryStaleBefore, specsStaleBefore, onlyNew);
 
     // Specs have the shorter TTL, so their timestamp is the one that paces the
     // queue: anything due for a summary refresh is necessarily due for specs too.
     return this.collection.find(filter).sort({ specsFetchedAt: 1 }).limit(limit).toArray();
+  }
+
+  /**
+   * How much enrichment work is due: characters, and the requests they need.
+   *
+   * Uses the same filter selection does, deliberately — a batch sized from a
+   * count of a different set would buy the wrong number of characters. A
+   * character due for both halves costs two requests, one due for specs alone
+   * costs one, so the request total is the two half-counts added rather than
+   * the character count doubled.
+   */
+  async countEnrichmentDemand(
+    summaryStaleBefore: Date,
+    specsStaleBefore: Date,
+    onlyNew = false,
+  ): Promise<{ characters: number; requests: number }> {
+    const base = enrichmentFilter(summaryStaleBefore, specsStaleBefore, onlyNew);
+    const summaryStale: Filter<CharacterDocument> = {
+      $or: [
+        { profileFetchedAt: { $exists: false } },
+        { profileFetchedAt: { $lt: summaryStaleBefore } },
+      ],
+    };
+    const specsStale: Filter<CharacterDocument> = {
+      $or: [{ specsFetchedAt: { $exists: false } }, { specsFetchedAt: { $lt: specsStaleBefore } }],
+    };
+
+    const [characters, summaryDue, specsDue] = await Promise.all([
+      this.collection.countDocuments(base),
+      this.collection.countDocuments({ $and: [base, summaryStale] }),
+      this.collection.countDocuments({ $and: [base, specsStale] }),
+    ]);
+
+    return { characters, requests: summaryDue + specsDue };
+  }
+
+  /** Characters enrichment serves. Metadata only, so it costs nothing to ask. */
+  population(): Promise<number> {
+    return this.collection.estimatedDocumentCount();
+  }
+
+  /**
+   * The stalest spec refresh among characters that have had one, or null.
+   * Never-enriched characters are excluded: a backlog on first fill is not the
+   * same thing as a queue that has stopped keeping up.
+   */
+  async oldestSpecsRefresh(): Promise<Date | null> {
+    const oldest = await this.collection
+      .find({ specsFetchedAt: { $exists: true } }, { projection: { specsFetchedAt: 1 } })
+      .sort({ specsFetchedAt: 1 })
+      .limit(1)
+      .next();
+
+    return oldest?.specsFetchedAt ?? null;
   }
 
   /** How many characters have never had a profile fetched. */

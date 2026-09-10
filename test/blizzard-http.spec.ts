@@ -9,6 +9,8 @@ import {
 } from '../src/blizzard/http/blizzard-api.error.js';
 import { BlizzardHttpService } from '../src/blizzard/http/blizzard-http.service.js';
 import { DependencyHealth } from '../src/common/health/dependency-health.service.js';
+import { withRunId } from '../src/common/logging/run-context.js';
+import { QuotaBudget } from '../src/common/quota/quota-budget.service.js';
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../src/config/env.schema.js';
 
@@ -33,6 +35,7 @@ describe('BlizzardHttpService — failure handling', () => {
   let server: Server;
   let http: BlizzardHttpService;
   let health: DependencyHealth;
+  let budget: QuotaBudget;
 
   /** No testing module here, so the global logger is the one to intercept. */
   const captured: { level: string; message: string }[] = [];
@@ -59,6 +62,10 @@ describe('BlizzardHttpService — failure handling', () => {
           PROFILE_RETRY_LIMIT,
           BLIZZARD_CLIENT_ID: 'test-client-id',
           BLIZZARD_CLIENT_SECRET: 'test-client-secret',
+          QUOTA_HOURLY_LIMIT: 36_000,
+          QUOTA_UTILISATION: 0.9,
+          QUOTA_ENRICHMENT_HEADROOM: 3,
+          QUOTA_SWEEP_RESERVE: 1_000,
         })[key as string],
     }) as unknown as ConfigService<Env, true>;
 
@@ -86,7 +93,13 @@ describe('BlizzardHttpService — failure handling', () => {
     // listener stands in for every region.
     const settings = config(`http://127.0.0.1:${port}/{region}`);
     health = new DependencyHealth(settings);
-    http = new BlizzardHttpService(settings, { getAccessToken: async () => 'test-token' }, health);
+    budget = new QuotaBudget(settings);
+    http = new BlizzardHttpService(
+      settings,
+      { getAccessToken: async () => 'test-token' },
+      health,
+      budget,
+    );
   });
 
   afterEach(() => {
@@ -214,6 +227,38 @@ describe('BlizzardHttpService — failure handling', () => {
     );
 
     expect(hitsFor('character-404')).toBe(1);
+  });
+
+  it('QUOTA — every attempt is charged, retries included', async () => {
+    // Blizzard counts a retry exactly like a first attempt, so a budget that
+    // counted calls rather than attempts would under-report during precisely
+    // the incidents where the quota is under the most pressure.
+    route('charged', json(503, { error: 'unavailable' }));
+    const before = budget.spent();
+
+    await http.get('us', 'charged').catch(() => undefined);
+
+    expect(hitsFor('charged')).toBe(RETRY_LIMIT + 1);
+    expect(budget.spent() - before, 'one charge per attempt the server saw').toBe(
+      hitsFor('charged'),
+    );
+  });
+
+  it('QUOTA — a request is charged to the job it was made for', async () => {
+    route('attributed', json(200, { ok: true }));
+    const enrichmentBefore = budget.spent('enrichment');
+    const archiveBefore = budget.spent('archive');
+    const otherBefore = budget.spent('other');
+
+    await withRunId('enrich', () => http.get('us', 'attributed'));
+    await withRunId('archive', () => http.get('us', 'attributed'));
+    await http.get('us', 'attributed');
+
+    // Attributed from the run in progress, so no call site has to say which
+    // job it belongs to — and a season refresh inside a sweep is the sweep's.
+    expect(budget.spent('enrichment') - enrichmentBefore).toBe(1);
+    expect(budget.spent('archive') - archiveBefore).toBe(1);
+    expect(budget.spent('other') - otherBefore, 'outside any job').toBe(1);
   });
 
   it('S8.14b — an empty 200 body is rejected as a transport failure', async () => {

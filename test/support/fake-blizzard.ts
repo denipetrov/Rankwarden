@@ -6,6 +6,8 @@ import type { BlizzardGetOptions } from '../../src/blizzard/http/blizzard-http.s
 import type { Region } from '../../src/blizzard/blizzard.constants.js';
 import type { BlizzardTokenProvider } from '../../src/blizzard/auth/token-provider.js';
 import type { DependencyHealth } from '../../src/common/health/dependency-health.service.js';
+import { currentRunKind } from '../../src/common/logging/run-context.js';
+import { quotaConsumerFor, type QuotaBudget } from '../../src/common/quota/quota-budget.service.js';
 import type { World, WorldPlayer, WorldRegion } from './world.js';
 
 export interface RecordedRequest {
@@ -47,6 +49,13 @@ export class FakeBlizzard {
    * rather than merely unwritten. Set by `bootTestApp`.
    */
   tokens?: BlizzardTokenProvider;
+  /**
+   * The shared quota, charged once per request exactly as the real client
+   * charges it. The fake replaces that client, so without this every
+   * integration test would run against a budget that never fills and the
+   * throttling paths could not be reached. Set by `bootTestApp`.
+   */
+  budget?: QuotaBudget;
   peakInFlight = 0;
   private inFlight = 0;
 
@@ -72,6 +81,9 @@ export class FakeBlizzard {
 
     this.inFlight += 1;
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
+    // Charged to the job in progress, as the real client's beforeRequest hook
+    // does. The fake never retries, so one call is one charge.
+    this.budget?.record(quotaConsumerFor(currentRunKind()));
 
     const startedAt = Date.now();
 

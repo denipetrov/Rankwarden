@@ -3,6 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import got, { HTTPError, RequestError, type Got } from 'got';
 
 import { DependencyHealth } from '../../common/health/dependency-health.service.js';
+import { currentRunKind } from '../../common/logging/run-context.js';
+import {
+  QuotaBudget,
+  quotaConsumerFor,
+  type QuotaConsumer,
+} from '../../common/quota/quota-budget.service.js';
 import type { Env } from '../../config/env.schema.js';
 import { apiHost, namespaceFor, type NamespaceKind, type Region } from '../blizzard.constants.js';
 import { BLIZZARD_TOKEN_PROVIDER, type BlizzardTokenProvider } from '../auth/token-provider.js';
@@ -49,6 +55,7 @@ export class BlizzardHttpService {
     config: ConfigService<Env, true>,
     @Inject(BLIZZARD_TOKEN_PROVIDER) private readonly tokens: BlizzardTokenProvider,
     private readonly health: DependencyHealth,
+    private readonly budget: QuotaBudget,
   ) {
     this.locale = config.get('BLIZZARD_LOCALE', { infer: true });
     this.hostTemplate = config.get('BLIZZARD_API_HOST_TEMPLATE', { infer: true });
@@ -65,6 +72,12 @@ export class BlizzardHttpService {
       hooks: {
         beforeRequest: [
           async (options) => {
+            // Charged per attempt, here rather than once per `get`: this hook
+            // runs again for every retry, and Blizzard counts retries against
+            // the quota exactly like first attempts.
+            const consumer = (options.context as { consumer?: QuotaConsumer }).consumer;
+            this.budget.record(consumer ?? 'other');
+
             const token = await this.tokens.getAccessToken();
             options.headers.authorization = `Bearer ${token}`;
           },
@@ -93,6 +106,10 @@ export class BlizzardHttpService {
 
       const payload = await this.client
         .get(url, {
+          // Captured here, in the caller's async context, and carried to the
+          // hook explicitly rather than trusting async local storage to survive
+          // the trip through got's internals.
+          context: { consumer: quotaConsumerFor(currentRunKind()) },
           // Per-character endpoints retry less than everything else. There are
           // ~332 ladder fetches in a sweep and one profile fetch per character
           // on the ladders, so the same retry budget means very different

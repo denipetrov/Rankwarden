@@ -107,6 +107,38 @@ describe('validateEnv', () => {
     );
   });
 
+  it('defaults the shared quota to Blizzard cap and a third for enrichment', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.QUOTA_HOURLY_LIMIT).toBe(36_000);
+    expect(env.QUOTA_UTILISATION).toBe(0.9);
+    expect(env.QUOTA_ENRICHMENT_HEADROOM).toBe(3);
+    expect(env.QUOTA_SWEEP_RESERVE).toBe(1_000);
+  });
+
+  it('treats PROFILE_BATCH_SIZE as a ceiling well above what the share needs', () => {
+    // At 500 the batch, not the quota, was the binding limit — see quota.spec.ts.
+    expect(validateEnv({ ...base }).PROFILE_BATCH_SIZE).toBe(2_000);
+  });
+
+  it('refuses shares that promise more than the budget can give', () => {
+    // A sweep reserve plus an enrichment share larger than what is usable
+    // would leave the archive a negative allowance from the first request.
+    expect(() =>
+      validateEnv({ ...base, QUOTA_SWEEP_RESERVE: '25000', QUOTA_ENRICHMENT_HEADROOM: '3' }),
+    ).toThrow(/QUOTA_SWEEP_RESERVE[\s\S]*more than the 32400/);
+  });
+
+  it('refuses a utilisation above the whole cap', () => {
+    expect(() => validateEnv({ ...base, QUOTA_UTILISATION: '1.2' })).toThrow(/QUOTA_UTILISATION/);
+  });
+
+  it('refuses a headroom that would give enrichment more than the whole hour', () => {
+    expect(() => validateEnv({ ...base, QUOTA_ENRICHMENT_HEADROOM: '0.5' })).toThrow(
+      /QUOTA_ENRICHMENT_HEADROOM/,
+    );
+  });
+
   it('leaves the season purge in dry run unless it is explicitly armed', () => {
     // On a first deploy mid-season the gate is already open, so the default has
     // to be the safe one.

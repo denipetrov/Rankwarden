@@ -41,6 +41,18 @@ export function currentRunId(): string | undefined {
   return storage.getStore()?.id;
 }
 
+/**
+ * The kind of run in progress, or undefined outside any run.
+ *
+ * Also what attributes a Blizzard request to the job that made it, for the
+ * shared quota: a request issued anywhere inside a sweep — the season refresh
+ * it triggers included — is the sweep's, without every call site having to
+ * say so.
+ */
+export function currentRunKind(): RunKind | undefined {
+  return storage.getStore()?.kind;
+}
+
 /** `[sweep a1b2c3] ` inside a run, an empty string outside one. */
 export function runTag(): string {
   const context = storage.getStore();

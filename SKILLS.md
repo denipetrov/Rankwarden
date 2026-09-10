@@ -121,6 +121,45 @@ which fires once the first sweep _and_ first enrichment pass have both completed
 `markEnrichmentDisabled()` releases the gate when enrichment is switched off — without it
 the archive would wait forever for a pass that never comes.
 
+### 4.0 The shared quota budget
+
+The coordinator decides who runs _now_. [`QuotaBudget`](src/common/quota/quota-budget.service.ts)
+decides how much each may spend _this hour_. They are separate because they fail
+separately: a job can be allowed to run and still have nothing left to spend.
+
+Blizzard enforces **36,000 requests an hour** across the whole client. Before the budget,
+each job carried a private rate limiter sized as if it owned that quota — the archive
+alone was allowed 10/s, which _is_ the whole hourly cap — and nothing added them up. During
+a backfill the archive runs in every gap between enrichment passes, so archive, enrichment
+and sweep together came to roughly 41,000 an hour.
+
+Every real request is charged, **retries included**, by the HTTP client's `beforeRequest`
+hook, which fires once per attempt. It is attributed to the job in progress through the
+run context (`withRunId`), so a season refresh inside a sweep is the sweep's without any
+call site saying so. The window is a rolling hour of one-minute buckets, errring towards
+over-counting.
+
+Shares, in priority order:
+
+| Job        | Share                                                         | Throttled?                  |
+| ---------- | ------------------------------------------------------------- | --------------------------- |
+| Sweep      | `QUOTA_SWEEP_RESERVE` (1,000) held back until it spends it    | **never**                   |
+| Enrichment | `QUOTA_HOURLY_LIMIT / QUOTA_ENRICHMENT_HEADROOM` (12,000)     | yes — batch shrinks to fit  |
+| Archive    | what is left after the reserve and enrichment's unspent share | yes — pauses until it rolls |
+| Other      | season refreshes, snapshots, admin calls                      | never, but counted          |
+
+Only `usable` = `QUOTA_HOURLY_LIMIT × QUOTA_UTILISATION` (32,400) is ever planned against.
+The margin absorbs requests already in flight when a check is made, and retries on batches
+sized before they failed — neither of which a budget can see coming. A boot-time check
+refuses shares that promise more than is usable.
+
+At the defaults: sweep ~340/h, enrichment up to 12,000/h, archive up to 19,400/h — a total
+that fits, where the old per-job limiters did not.
+
+> **Known gap.** The budget lives in memory, so a restart forgets the last hour. Persisting
+> every request would cost more than the overrun it guards against; Blizzard's own 429s,
+> which the client retries, are the backstop.
+
 ### 4.1 Leaderboard sweep
 
 `LeaderboardService.sweep()` — the live data path.
@@ -158,7 +197,38 @@ are field-level (`profile.race`, `profile.spec`, …) so the halves never clobbe
 Selection is `specsFetchedAt` ascending. Specs have the shorter TTL, so anything due for a
 summary refresh is necessarily due for specs too — one timestamp paces the queue. The
 field is absent until first enrichment, and absent sorts before any date, so newcomers win.
-A finished sweep also fires an immediate **new-characters-only** pass.
+
+**The batch is computed every run**, not configured. It is the smallest of:
+
+1. **the characters actually due** — counted with the same filter selection uses, so the
+   two cannot disagree about which set they mean;
+2. **what the request budget buys** at the average cost of those characters — one request
+   when only specs are due, two when the summary is too. The same budget buys twice as many
+   specs-only refreshes, which a fixed batch could not tell apart;
+3. **`PROFILE_BATCH_SIZE`** (2,000) — now only a safety ceiling on run length and memory.
+
+The request budget is the enrichment allowance from the shared quota, **paced** to this
+run's even share of the hour (12,000 / 12 runs = 1,000) with a catch-up factor of 2, so a
+run skipped for a sweep can be made up without one run draining the hour in a burst.
+
+Each run also publishes an **outlook** — population, what is due, projected demand,
+capacity, and what binds it — which readiness reports from memory (§7):
+
+| Signal        | Means                                                          | Readiness |
+| ------------- | -------------------------------------------------------------- | --------- |
+| `infeasible`  | steady-state demand exceeds capacity; no budget keeps the TTLs | degraded  |
+| `behind`      | the stalest spec refresh is older than twice its TTL           | degraded  |
+| large backlog | many characters due, e.g. first fill                           | _healthy_ |
+
+Demand is `population × (1h/specsTTL + 1h/summaryTTL)`: at 143,203 characters, ~6,800
+requests an hour against a 12,000 share. **Past ~252,000 characters no budget formula keeps
+the 1-day specs TTL** at a third of the quota — the lever then is the TTL, not the batch.
+
+> **Why `PROFILE_BATCH_SIZE` moved from 500 to 2,000.** At 500 the batch, not the quota,
+> was the binding limit: it capped the sustainable population at ~144,000 against 143,203
+> in the database — a 0.6% margin, with nothing reporting it. The outlook names the binding
+> constraint so a limit like that cannot hide again.
+> A finished sweep also fires an immediate **new-characters-only** pass.
 
 **Every outcome stamps a timestamp.** This is load-bearing, not housekeeping: selection
 sorts by `specsFetchedAt` ascending and an absent field sorts before every date, so a
@@ -394,16 +464,16 @@ Non-2xx becomes `BlizzardApiError` with `statusCode` and `isNotFound`.
 | `/profile/wow/character/{realm}/{name}`                 | profile   | race, class, realm, title, guild             |
 | `/profile/wow/character/{realm}/{name}/specializations` | profile   | spec, hero tree, loadouts                    |
 
-**Quota: 100 requests/second, 36,000/hour.** Everything else follows from that — including
-two different retry budgets.
+**Quota: 100 requests/second, 36,000/hour.** Everything else follows from that. The hour is
+governed by the shared budget (§4.0); the second by each job's own `RateLimiter`.
 
-A sweep is ~332 ladder fetches whatever the population, so retrying one three times costs
-little and saves a bracket. Enrichment is one request per character per half, and at the
-defaults that is 500 characters x 2 every 5 minutes: **12,000 requests an hour before a
-single retry**. Retrying each three times would make it 48,000 and put enrichment alone over
-the cap, starving the sweep that actually serves the boards. Profile-namespace calls
-therefore use `PROFILE_RETRY_LIMIT` (1) rather than `BLIZZARD_RETRY_LIMIT` (3); only the
-limit differs, so the same statuses are retryable either way.
+Retries get two budgets as well. A sweep is ~332 ladder fetches whatever the population,
+so retrying one three times costs little and saves a bracket. Enrichment is one request per
+character per half, so the same retry limit would multiply a far larger number.
+Profile-namespace calls therefore use `PROFILE_RETRY_LIMIT` (1) rather than
+`BLIZZARD_RETRY_LIMIT` (3); only the limit differs, so the same statuses are retryable
+either way. Because retries are charged to the budget like any other attempt, a
+retry-heavy run simply leaves less for the next one — it can no longer push the hour over.
 
 Namespaces are derived per endpoint (`namespaceFor('profile', 'eu')` → `profile-eu`), not
 configured. Character names must be lowercased and percent-encoded (`Zëph`).
@@ -460,6 +530,7 @@ Pings Mongo (cached ~3s) and reports what real traffic has already observed of B
 | everything healthy                   | `ok`       | **200** |
 | Blizzard failing (any/all regions)   | `degraded` | **200** |
 | no sweep for 2× `INGEST_INTERVAL_MS` | `degraded` | **200** |
+| enrichment infeasible or behind      | `degraded` | **200** |
 | Mongo unreachable                    | `down`     | **503** |
 
 Mongo is a **hard** dependency and Blizzard a **soft** one. Without Mongo the service can
@@ -467,6 +538,10 @@ do nothing, so readiness fails and traffic should be withdrawn. Without Blizzard
 holds every row already ingested, so only ingestion is degraded — failing readiness there
 would have an orchestrator restart-loop the service through an incident it cannot fix.
 **Do not "fix" the Blizzard case into a 503.**
+
+Readiness also carries `quota` — the rolling-hour spend per job, current allowances and
+shares — and `enrichment`, the outlook from the last run plus any `problems` in plain words.
+Both are read from memory, so neither adds I/O to a probe.
 
 Two further rules this endpoint must keep:
 
@@ -552,7 +627,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                  |
 | `PROFILE_ENRICHMENT_ENABLED`          | `true`                              | `false` releases the archive warm-up gate        |
 | `PROFILE_INTERVAL_MS`                 | `300000`                            |                                                  |
-| `PROFILE_BATCH_SIZE`                  | `500`                               | Characters per pass                              |
+| `PROFILE_BATCH_SIZE`                  | `2000`                              | Per-run ceiling; the batch itself is computed    |
 | `PROFILE_SUMMARY_TTL_MS`              | `604800000`                         | 7 days                                           |
 | `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                            |
 | `PROFILE_CONCURRENCY`                 | `8`                                 |                                                  |
@@ -575,6 +650,10 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `ARCHIVE_MIN_SEASON` / `_MAX_SEASON`  | `0` / `0`                           | 0 = unbounded; the real size lever               |
 | `ARCHIVE_MAX_ENTRIES_PER_BRACKET`     | `5000`                              | Top N by rating; saves only ~1%                  |
 | `NODE_ENV` / `PORT` / `LOG_LEVEL`     | `development` / `3000` / `log`      |                                                  |
+| `QUOTA_HOURLY_LIMIT`                  | `36000`                             | Blizzard's cap on the whole client               |
+| `QUOTA_UTILISATION`                   | `0.9`                               | Fraction ever planned against                    |
+| `QUOTA_ENRICHMENT_HEADROOM`           | `3`                                 | Enrichment plans at most cap / this              |
+| `QUOTA_SWEEP_RESERVE`                 | `1000`                              | Held back for the sweep each hour                |
 
 ---
 

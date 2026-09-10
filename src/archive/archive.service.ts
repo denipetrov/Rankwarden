@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { isIngestableBracket, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import { describeError } from '../common/utils/errors.js';
@@ -44,6 +45,7 @@ export class ArchiveService {
     private readonly seasons: SeasonService,
     private readonly repository: ArchiveRepository,
     private readonly coordinator: IngestionCoordinator,
+    private readonly budget: QuotaBudget,
   ) {
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.concurrency = config.get('ARCHIVE_CONCURRENCY', { infer: true });
@@ -277,9 +279,11 @@ export class ArchiveService {
     region: Region,
     bracket: Bracket,
   ): Promise<{ bracket: Bracket; entries: number; failed: boolean }> {
-    // Live data outranks history that has already waited months. Leaving the
-    // bracket unfinished keeps the season pending, so it resumes later.
-    if (this.coordinator.isLiveIngestionActive) {
+    // Live data outranks history that has already waited months, and so does
+    // the quota it runs on. Leaving the bracket unfinished keeps the season
+    // pending, and the fetch record means the resumed run picks up exactly
+    // where this one stopped.
+    if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
       return { bracket, entries: 0, failed: true };
     }
 
