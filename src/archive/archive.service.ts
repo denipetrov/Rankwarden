@@ -2,7 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { isIngestableBracket, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
+import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
+import type { PvpReward } from '../blizzard/schemas/pvp-reward.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
@@ -12,6 +14,7 @@ import type { Env } from '../config/env.schema.js';
 import { SeasonService } from '../season/season.service.js';
 import { ArchiveRepository } from './archive.repository.js';
 import type { ArchiveEntryDocument } from './entities/archive.entity.js';
+import { mapSeasonRewards, specIdsIn, specLadderSuffix } from './season-rewards.js';
 
 export interface ArchiveSeasonResult {
   seasonId: number;
@@ -21,6 +24,23 @@ export interface ArchiveSeasonResult {
   failedBrackets: Bracket[];
 }
 
+export interface ArchiveRewardsResult {
+  /** Archived seasons that had no rewards when the pass started. */
+  seasons: number;
+  fetched: number;
+  /** Refused outright (403 or 404) and recorded, so never asked again. */
+  failed: number;
+  /** Not fetched this time, and asked again on the next pass. */
+  pending: number;
+}
+
+/**
+ * Statuses that mean Blizzard will not serve a season's rewards, as opposed to
+ * failing to right now. Seasons 22–26 answer 403 and 20–21 answer 404, for the
+ * ladders and the rewards alike.
+ */
+const REFUSED = new Set([403, 404]);
+
 /**
  * Stores finished seasons in their own collections.
  *
@@ -28,6 +48,10 @@ export interface ArchiveSeasonResult {
  * done. Only what the leaderboard endpoint itself returns is kept — no profile
  * enrichment — because that costs two extra requests per character for data
  * that describes the player today rather than during the season.
+ *
+ * Once a season's standings are archived in full, a separate pass records the
+ * titles it awarded and the rating each took. That is one request per season,
+ * plus one per spec the first time a spec is seen.
  */
 @Injectable()
 export class ArchiveService {
@@ -38,6 +62,12 @@ export class ArchiveService {
   private readonly maxSeason: number;
   private readonly maxEntriesPerBracket: number;
   private readonly limiter: RateLimiter;
+  /**
+   * Blizzard spec id to the `class-spec` tail of its ladders. A spec never
+   * changes class, so each id costs one request for the life of the process
+   * rather than one per season.
+   */
+  private readonly specLadders = new Map<number, string>();
 
   constructor(
     config: ConfigService<Env, true>,
@@ -115,6 +145,9 @@ export class ArchiveService {
     const missing = expected.filter((bracket) => !covered.includes(bracket));
     const season = await this.seasonMetadata(region, seasonId);
 
+    // The rewards lived on the marker that was lost, so they go with it. The
+    // recovered marker has none, which is exactly what puts the season back in
+    // the rewards pass.
     await this.repository.recordSeason({
       seasonId,
       region,
@@ -262,6 +295,134 @@ export class ArchiveService {
     );
 
     return { seasonId, region, brackets: brackets.length, entries, failedBrackets };
+  }
+
+  /**
+   * Fetches the title cutoffs for every archived season that lacks them.
+   *
+   * Driven by `archive_seasons` alone: only a season whose standings are
+   * archived in full is asked about (see `seasonsAwaitingRewards`). One that
+   * Blizzard will not serve never gets a marker, so it never costs a rewards
+   * request either. The pass works from a list read once, so each season is
+   * asked at most once per call however it fails.
+   */
+  async archivePendingRewards(): Promise<ArchiveRewardsResult> {
+    const awaiting = await this.repository.seasonsAwaitingRewards(this.regions);
+    const result: ArchiveRewardsResult = {
+      seasons: awaiting.length,
+      fetched: 0,
+      failed: 0,
+      pending: 0,
+    };
+
+    for (const [index, { seasonId, region }] of awaiting.entries()) {
+      // Yields for the same reasons a bracket does. What is left over stays
+      // pending and is picked up by the next pass.
+      if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
+        result.pending += awaiting.length - index;
+        break;
+      }
+
+      result[await this.archiveSeasonRewards(seasonId, region)] += 1;
+    }
+
+    if (result.seasons > 0) {
+      this.logger.log(
+        `Season rewards: ${result.fetched} fetched, ${result.failed} refused, ` +
+          `${result.pending} still pending, of ${result.seasons} archived season(s) without them`,
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * One archived season's rewards, attached to the ladders they were earned on.
+   *
+   * A 403 or 404 is Blizzard refusing the season's rewards outright. It is
+   * recorded as a failure and never retried. Anything else — a timeout, a 5xx,
+   * an empty body, a spec whose class could not be looked up — could be a blip,
+   * and leaves the season pending for the next pass.
+   */
+  private async archiveSeasonRewards(
+    seasonId: number,
+    region: Region,
+  ): Promise<'fetched' | 'failed' | 'pending'> {
+    let fetched: PvpReward[];
+    try {
+      await this.limiter.acquire();
+      fetched = await this.pvpApi.getSeasonRewards(region, seasonId);
+    } catch (error) {
+      if (error instanceof BlizzardApiError && REFUSED.has(error.statusCode)) {
+        const reason = describeError(error);
+        this.logger.warn(
+          `Blizzard refused the rewards for season ${seasonId} ${region} (${reason}); ` +
+            'recorded as failed and will not be retried',
+        );
+        await this.repository.recordRewardsFailure(seasonId, region, {
+          statusCode: error.statusCode,
+          reason,
+          at: new Date(),
+        });
+
+        return 'failed';
+      }
+
+      this.logger.warn(
+        `Could not fetch rewards for season ${seasonId} ${region}: ${describeError(error)}; ` +
+          'will retry',
+      );
+      return 'pending';
+    }
+
+    try {
+      await this.resolveSpecs(region, specIdsIn(fetched));
+    } catch (error) {
+      // Recorded without the class, a spec's reward would be dropped for good.
+      this.logger.warn(
+        `Could not resolve the specs in season ${seasonId} ${region}'s rewards: ` +
+          `${describeError(error)}; will retry`,
+      );
+      return 'pending';
+    }
+
+    // The archive's own view of the season's ladders, so this costs no request.
+    const stored = await this.repository.summariseStored(seasonId, region);
+    const ladders = await this.coveredBrackets(seasonId, region, stored.brackets);
+    const { rewards, unmatched } = mapSeasonRewards(fetched, this.specLadders, new Set(ladders));
+
+    if (unmatched.length > 0) {
+      this.logger.warn(
+        `Season ${seasonId} ${region}: ${unmatched.length} reward(s) match no archived ladder ` +
+          `and were not recorded: ${unmatched.join('; ')}`,
+      );
+    }
+
+    await this.repository.recordRewards(seasonId, region, rewards, new Date());
+
+    return 'fetched';
+  }
+
+  /**
+   * Looks up the class of every spec not already known.
+   *
+   * A spec Blizzard does not recognise is skipped rather than failing the lot:
+   * its reward is reported as unmatched and the rest are kept. Any other error
+   * propagates, because a reward recorded without its ladder would be recorded
+   * for good.
+   */
+  private async resolveSpecs(region: Region, specIds: readonly number[]): Promise<void> {
+    for (const specId of specIds) {
+      if (this.specLadders.has(specId)) continue;
+
+      try {
+        await this.limiter.acquire();
+        const spec = await this.pvpApi.getSpecialization(region, specId);
+        this.specLadders.set(specId, specLadderSuffix(spec.className, spec.name));
+      } catch (error) {
+        if (!(error instanceof BlizzardApiError && error.isNotFound)) throw error;
+      }
+    }
   }
 
   private async seasonMetadata(region: Region, seasonId: number) {

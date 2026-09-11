@@ -46,6 +46,43 @@ export interface ArchiveSeasonDocument {
    */
   unarchivable?: boolean;
   lastError?: string;
+  /**
+   * The titles the season awarded and the rating each took, one entry per
+   * ladder and, where the reward is split that way, per faction. Fetched only
+   * once the season's standings are archived in full.
+   */
+  rewards?: ArchiveSeasonReward[];
+  /** When `rewards` was fetched. */
+  rewardsFetchedAt?: Date;
+  /**
+   * Set when Blizzard refused the rewards outright (403 or 404). Recorded so
+   * the season is never asked again — unlike a timeout or a 5xx, which leaves
+   * both this and `rewardsFetchedAt` unset and is retried on the next pass.
+   */
+  rewardsFailed?: { statusCode: number; reason: string; at: Date };
+}
+
+/**
+ * One title and its cutoff, attached to the ladder it was earned on.
+ *
+ * `bracket` uses the same keys as `archive_entries`, so a season's cutoff for
+ * `shuffle-warrior-fury` sits next to the standings for that same ladder.
+ */
+export interface ArchiveSeasonReward {
+  bracket: Bracket;
+  /**
+   * `ALLIANCE` or `HORDE` where the title differs by side — Blitz's Marshal and
+   * Warlord, rated battlegrounds' Hero of the Alliance and of the Horde — and
+   * null where one title serves both. Cutoffs usually match across the pair,
+   * but not always: Shadowlands 3v3 had a different cutoff on each side.
+   */
+  faction: string | null;
+  ratingCutoff: number;
+  /** The achievement as Blizzard names it, e.g. "Galactic Legend: Midnight Season 1". */
+  title: string;
+  achievementId: number;
+  /** Blizzard's spec, on the per-spec ladders; the same id `profile.spec` carries. */
+  specialization: { id: number; name: string } | null;
 }
 
 /**

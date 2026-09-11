@@ -89,6 +89,14 @@ export class AdminController implements OnModuleInit {
     });
   }
 
+  /** Fetches the rewards for every archived season that lacks them. */
+  @Post('archive-rewards')
+  async archiveRewards() {
+    this.guard();
+
+    return withRunId('archive', () => this.archive.archivePendingRewards());
+  }
+
   @Post('season-refresh')
   async seasonRefresh() {
     this.guard();

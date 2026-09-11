@@ -163,7 +163,9 @@ describe('S5 — archive backlog and scheduling', () => {
     const seasonOf = (path: string) => Number(/pvp-season\/(\d+)/.exec(path)?.[1] ?? 0);
     const spans = new Map<number, { first: number; last: number }>();
 
-    for (const request of backlogRequests) {
+    // The rewards pass runs once the backlog is done, so its requests would
+    // stretch every season's span to the end of the tick.
+    for (const request of backlogRequests.filter((entry) => !entry.path.includes('/pvp-reward/'))) {
       const seasonId = seasonOf(request.path);
       const span = spans.get(seasonId);
       if (span) span.last = Math.max(span.last, request.at);

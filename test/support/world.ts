@@ -198,6 +198,109 @@ export class World {
     return [...(this.published.get(region) ?? [])];
   }
 
+  /**
+   * The season's title cutoffs, shaped as Blizzard's `pvp-reward/index` shapes
+   * them — including the splits that make the mapping non-trivial. Shuffle is
+   * per spec; Blitz is per spec and per faction, with a different title on each
+   * side; rated battlegrounds are per faction; 3v3 is one reward; 2v2 awards
+   * nothing. Spec rewards carry the spec's id and bare name only, never its
+   * class, which is what forces the specialization lookup.
+   *
+   * Derived from the published brackets, so a retired ladder's reward goes with
+   * it. Cutoffs are deterministic per season and ladder, and differ between the
+   * two, so a reward attached to the wrong ladder shows up as a wrong number.
+   */
+  rewardsPayload(region: WorldRegion, seasonId: number) {
+    if (!this.seasonPayload(region, seasonId)) return null;
+
+    const era = `Season ${seasonId}`;
+    const factions = [
+      { type: 'ALLIANCE', name: 'Alliance' },
+      { type: 'HORDE', name: 'Horde' },
+    ] as const;
+    const achievement = (id: number, name: string) => ({
+      key: { href: `https://example.test/data/wow/achievement/${id}` },
+      id,
+      name,
+    });
+    const rewards: unknown[] = [];
+
+    for (const [index, bracket] of this.brackets(region).entries()) {
+      const rating_cutoff = 1800 + ((seasonId * 97 + index * 31) % 1400);
+
+      if (bracket === '3v3') {
+        rewards.push({
+          bracket: { id: 1, type: 'ARENA_3v3' },
+          achievement: achievement(seasonId * 100 + 1, `Gladiator: ${era}`),
+          rating_cutoff,
+        });
+        continue;
+      }
+
+      if (bracket === 'rbg') {
+        for (const faction of factions) {
+          rewards.push({
+            bracket: { id: 3, type: 'BATTLEGROUNDS' },
+            achievement: achievement(
+              seasonId * 100 + (faction.type === 'ALLIANCE' ? 2 : 3),
+              `Hero of the ${faction.name}: ${era}`,
+            ),
+            rating_cutoff,
+            faction,
+          });
+        }
+        continue;
+      }
+
+      const split = /^(shuffle|blitz)-(.+)$/.exec(bracket);
+      const spec = split && split[2] !== 'overall' ? SPEC_BY_SLUG.get(split[2]) : undefined;
+      if (!split || !spec) continue;
+
+      const specialization = {
+        key: { href: `https://example.test/data/wow/playable-specialization/${spec.specId}` },
+        name: spec.specName,
+        id: spec.specId,
+      };
+
+      if (split[1] === 'shuffle') {
+        rewards.push({
+          bracket: { id: 6, type: 'SHUFFLE' },
+          achievement: achievement(seasonId * 100 + 4, `Legend: ${era}`),
+          rating_cutoff,
+          specialization,
+        });
+        continue;
+      }
+
+      for (const faction of factions) {
+        rewards.push({
+          bracket: { id: 8, type: 'BLITZ' },
+          achievement: achievement(
+            seasonId * 100 + (faction.type === 'ALLIANCE' ? 5 : 6),
+            `${faction.type === 'ALLIANCE' ? 'Marshal' : 'Warlord'}: ${era}`,
+          ),
+          rating_cutoff,
+          faction,
+          specialization,
+        });
+      }
+    }
+
+    return { season: { id: seasonId }, rewards };
+  }
+
+  /** `playable-specialization/{id}`: the spec, and the class it belongs to. */
+  specializationPayload(specId: number) {
+    const spec = SPECS.find((entry) => entry.specId === specId);
+    if (!spec) return null;
+
+    return {
+      id: spec.specId,
+      name: spec.specName,
+      playable_class: { id: spec.classId, name: spec.className },
+    };
+  }
+
   /** Everyone ranked in a bracket, ordered by rating, with ranks applied. */
   ladder(region: WorldRegion, seasonId: number, bracket: string) {
     const ranked = [...this.players.values()]

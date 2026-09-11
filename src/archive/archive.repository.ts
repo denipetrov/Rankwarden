@@ -10,6 +10,7 @@ import {
   type ArchiveBracketDocument,
   type ArchiveEntryDocument,
   type ArchiveSeasonDocument,
+  type ArchiveSeasonReward,
 } from './entities/archive.entity.js';
 
 const BULK_CHUNK_SIZE = 1_000;
@@ -192,5 +193,54 @@ export class ArchiveRepository implements OnModuleInit {
 
   countEntries(seasonId: number, region: Region): Promise<number> {
     return this.entries.countDocuments({ seasonId, region });
+  }
+
+  /**
+   * Archived seasons still without their rewards, newest first.
+   *
+   * Only seasons whose standings are archived in full. One Blizzard will not
+   * serve is not in the archive at all, and one still missing brackets gets
+   * its rewards once those land — asking for either would spend a request on a
+   * season with nothing to attach the cutoffs to. A season whose rewards were
+   * refused outright is not asked again.
+   */
+  async seasonsAwaitingRewards(
+    regions: readonly Region[],
+  ): Promise<{ seasonId: number; region: Region }[]> {
+    return this.seasons
+      .find(
+        {
+          region: { $in: [...regions] },
+          failedBrackets: { $size: 0 },
+          unarchivable: { $ne: true },
+          rewardsFetchedAt: { $exists: false },
+          rewardsFailed: { $exists: false },
+        },
+        { projection: { _id: 0, seasonId: 1, region: 1 } },
+      )
+      .sort({ seasonId: -1, region: 1 })
+      .toArray();
+  }
+
+  /** Attaches fetched rewards to a season's marker. Never creates one. */
+  async recordRewards(
+    seasonId: number,
+    region: Region,
+    rewards: readonly ArchiveSeasonReward[],
+    fetchedAt: Date,
+  ): Promise<void> {
+    await this.seasons.updateOne(
+      { seasonId, region },
+      { $set: { rewards: [...rewards], rewardsFetchedAt: fetchedAt } },
+    );
+  }
+
+  /** Records that Blizzard refused a season's rewards, so it is not asked again. */
+  async recordRewardsFailure(
+    seasonId: number,
+    region: Region,
+    failure: { statusCode: number; reason: string; at: Date },
+  ): Promise<void> {
+    await this.seasons.updateOne({ seasonId, region }, { $set: { rewardsFailed: failure } });
   }
 }
