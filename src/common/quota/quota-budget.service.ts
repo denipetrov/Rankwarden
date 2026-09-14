@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../../config/env.schema.js';
 import type { RunKind } from '../logging/run-context.js';
+import { RollingWindow } from './rolling-window.js';
 
 /** Who spent a request. Anything outside a known job is `other`. */
 export type QuotaConsumer = 'sweep' | 'enrichment' | 'archive' | 'other';
@@ -16,8 +17,6 @@ export const HOUR_MS = 3_600_000;
 const BUCKET_MS = 60_000;
 /** Minutes counted: the current one and the previous sixty. See `spent`. */
 const WINDOW_MINUTES = 60;
-/** Ring size; anything above WINDOW_MINUTES + 1 works. */
-const SLOTS = 64;
 
 /** Maps a run to the consumer its requests are charged to. */
 export function quotaConsumerFor(kind: RunKind | undefined): QuotaConsumer {
@@ -28,6 +27,14 @@ export function quotaConsumerFor(kind: RunKind | undefined): QuotaConsumer {
       return 'enrichment';
     case 'archive':
       return 'archive';
+    case 'mplus':
+      // Unreachable in practice, and deliberately listed rather than left to
+      // the default: the M+ job talks only to Raider.io, which has its own
+      // budget, so nothing of its should ever be charged against Blizzard's
+      // cap. If a Blizzard call is ever made inside an M+ run this says where
+      // it lands — in the counted-but-never-throttled bucket — instead of
+      // leaving it to be discovered from a quota that mysteriously runs short.
+      return 'other';
     default:
       // Season refreshes, snapshots, transitions and admin calls outside a job.
       // Tiny, never throttled, but counted so they cannot hide from the total.
@@ -75,11 +82,6 @@ export interface QuotaSnapshot {
   enrichment: EnrichmentOutlook | null;
 }
 
-interface Bucket {
-  minute: number;
-  counts: Record<QuotaConsumer, number>;
-}
-
 /**
  * One hourly request budget for every Blizzard call the service makes.
  *
@@ -116,14 +118,17 @@ export class QuotaBudget {
   readonly enrichmentShare: number;
   readonly sweepReserve: number;
 
-  /** Injectable clock, so the rolling window can be tested without waiting. */
-  now: () => number = Date.now;
-
-  private readonly buckets: Bucket[] = Array.from({ length: SLOTS }, () => ({
-    minute: Number.NEGATIVE_INFINITY,
-    counts: emptyCounts(),
-  }));
+  private readonly window = new RollingWindow<QuotaConsumer>(CONSUMERS, BUCKET_MS, WINDOW_MINUTES);
   private outlook: EnrichmentOutlook | null = null;
+
+  /** Injectable clock, so the rolling window can be tested without waiting. */
+  get now(): () => number {
+    return this.window.now;
+  }
+
+  set now(clock: () => number) {
+    this.window.now = clock;
+  }
 
   constructor(config: ConfigService<Env, true>) {
     this.hourlyLimit = config.get('QUOTA_HOURLY_LIMIT', { infer: true });
@@ -136,15 +141,7 @@ export class QuotaBudget {
 
   /** Charges `count` requests to a consumer. Called once per real attempt. */
   record(consumer: QuotaConsumer, count = 1): void {
-    const minute = Math.floor(this.now() / BUCKET_MS);
-    const bucket = this.buckets[minute % SLOTS];
-
-    if (bucket.minute !== minute) {
-      bucket.minute = minute;
-      bucket.counts = emptyCounts();
-    }
-
-    bucket.counts[consumer] += count;
+    this.window.record(consumer, count);
   }
 
   /**
@@ -156,18 +153,7 @@ export class QuotaBudget {
    * for a quota.
    */
   spent(consumer?: QuotaConsumer): number {
-    const current = Math.floor(this.now() / BUCKET_MS);
-    let total = 0;
-
-    for (const bucket of this.buckets) {
-      if (bucket.minute < current - WINDOW_MINUTES || bucket.minute > current) continue;
-
-      total += consumer
-        ? bucket.counts[consumer]
-        : CONSUMERS.reduce((sum, name) => sum + bucket.counts[name], 0);
-    }
-
-    return total;
+    return this.window.spent(consumer);
   }
 
   /** Requests a job may still spend right now without eating a higher share. */
@@ -214,8 +200,4 @@ export class QuotaBudget {
       enrichment: this.outlook,
     };
   }
-}
-
-function emptyCounts(): Record<QuotaConsumer, number> {
-  return { sweep: 0, enrichment: 0, archive: 0, other: 0 };
 }

@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
 import { REGIONS, type Region } from '../blizzard/blizzard.constants.js';
+import {
+  AGGREGATE_REGION,
+  MAX_RUNS_PAGE,
+  RAIDERIO_REGIONS,
+  type RaiderIoRegion,
+} from '../raiderio/raiderio.constants.js';
 
 const split = (value: string) =>
   value
@@ -44,6 +50,56 @@ const regionCsv = (fallback: string) =>
       }
 
       return [...new Set(parts)] as Region[];
+    });
+
+/**
+ * Comma-separated Raider.io regions.
+ *
+ * Its own validator rather than a reuse of `regionCsv`, because the two lists
+ * genuinely differ: Raider.io serves `cn`, which the global Blizzard Game Data
+ * API does not. It also rejects `world` by name - that pseudo-region is the
+ * union of the real ones, so ingesting it alongside them would fetch every run
+ * twice and leave the runs with no region of their own to be filtered by, and
+ * the failure would look like duplicated data rather than a configuration
+ * mistake.
+ */
+const raiderIoRegionCsv = (fallback: string) =>
+  z
+    .string()
+    .default(fallback)
+    .transform((value, ctx) => {
+      const parts = split(value).map((part) => part.toLowerCase());
+
+      if (parts.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'must name at least one region' });
+        return z.NEVER;
+      }
+
+      if (parts.includes(AGGREGATE_REGION)) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `"${AGGREGATE_REGION}" is the union of every other region, so ingesting it ` +
+            'alongside them would store each run twice; list the real regions instead',
+        });
+        return z.NEVER;
+      }
+
+      const unknown = parts.filter(
+        (part) => !(RAIDERIO_REGIONS as readonly string[]).includes(part),
+      );
+
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `unknown region(s) ${unknown.join(', ')}; ` +
+            `expected any of ${RAIDERIO_REGIONS.join(', ')}`,
+        });
+        return z.NEVER;
+      }
+
+      return [...new Set(parts)] as RaiderIoRegion[];
     });
 
 /**
@@ -234,6 +290,98 @@ export const envSchema = z.object({
   /** Rating cutoffs to track. */
   REPRESENTATION_MIN_RATINGS: integerCsv('1500,1800,2100,2300,2700'),
 
+  // Raider.io - the Mythic+ upstream. Metered separately from Blizzard.
+  /**
+   * Application key from https://raider.io/settings/apps. Optional, because the
+   * service runs perfectly well with Mythic+ switched off, and requiring it
+   * would break every existing deployment at boot. `MPLUS_ENABLED` without a
+   * key is rejected below, which is the case that actually matters.
+   */
+  RAIDER_IO_API_KEY: z.string().default(''),
+  /** Base url. Exists so the integration harness can point at a dead port. */
+  RAIDERIO_API_BASE_URL: z
+    .string()
+    .default('https://raider.io/api/v1')
+    .refine((value) => value.startsWith('http://') || value.startsWith('https://'), {
+      message: 'must start with http:// or https://',
+    })
+    .transform(trimTrailingSlashes),
+  /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
+  RAIDERIO_REGIONS: raiderIoRegionCsv('us,eu,kr,tw,cn'),
+  /**
+   * Season slug to ingest, e.g. `season-mn-2`. Empty means "ask Raider.io",
+   * which is the default on purpose: pinned, the service goes on fetching a
+   * frozen ladder after a rollover while reporting every pass as a success.
+   */
+  RAIDERIO_SEASON: z.string().default(''),
+  /** How long a resolved season is reused before it is looked up again. */
+  RAIDERIO_SEASON_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  RAIDERIO_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(2),
+  /** Pages fetched in parallel. At ~0.65s a page, 12 is ~18 pages a second. */
+  RAIDERIO_CONCURRENCY: z.coerce.number().int().positive().default(12),
+  /**
+   * Pages fetched between budget checks and writes.
+   *
+   * The batch is what bounds memory: a page is 20 runs of 5 characters, so 50
+   * pages is ~1,000 runs held before a write. It is also how often the
+   * per-minute budget and the coordinator are re-consulted, which matters
+   * because a full pass runs for minutes and both can change underneath it.
+   */
+  RAIDERIO_PAGE_BATCH: z.coerce.number().int().positive().default(50),
+  /**
+   * Pages per region per pass, counted from zero. The endpoint refuses `page`
+   * above 1000, so 1001 is the whole leaderboard: 20,020 runs. Lower it to
+   * trade coverage for time - `mythicScore` gets less complete as it falls.
+   */
+  RAIDERIO_MAX_PAGES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_RUNS_PAGE + 1)
+    .default(1_001),
+  /**
+   * Raider.io's cap, in requests a minute, across the whole client.
+   *
+   * Their documentation states 200/minute for unauthenticated callers and lifts
+   * it for registered applications; a 300-request burst on the configured key
+   * drew no 429, and no rate-limit header is exposed on a success, so this is
+   * configuration rather than something readable from a response. Lower it if
+   * 429s appear - the client honours `Retry-After`, but a budget that never
+   * runs short is better than retries that do.
+   */
+  RAIDERIO_MINUTE_LIMIT: z.coerce.number().int().positive().default(1_000),
+  /** Fraction of the cap ever planned against; the rest absorbs in-flight requests. */
+  RAIDERIO_UTILISATION: z.coerce.number().positive().max(1).default(0.9),
+  /**
+   * Token bucket, paced to the per-minute ceiling. Kept a little under
+   * `RAIDERIO_MINUTE_LIMIT x RAIDERIO_UTILISATION / 60` so a burst at the start
+   * of a minute cannot spend the window before the budget notices.
+   */
+  RAIDERIO_REQUESTS_PER_SECOND: z.coerce.number().positive().default(14),
+
+  // Mythic+ ingestion.
+  /**
+   * Off by default, unlike every other job's flag.
+   *
+   * Mythic+ is the only job that needs a credential the service did not
+   * previously have, so a default of on would stop an existing deployment from
+   * booting the moment it took this build — the `RAIDER_IO_API_KEY` check below
+   * would fire on configuration that was complete yesterday. Opting in is one
+   * line next to the key it needs.
+   */
+  MPLUS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * How often the M+ pass re-runs. A pass is ~1,001 requests a region, so at
+   * five regions and six hours it is ~20,000 requests a day against a ceiling
+   * of 1,000 a minute - the interval is chosen for how fast the ladder moves
+   * and how much Mongo churn is reasonable, not for the quota.
+   */
+  MPLUS_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
+
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -274,6 +422,51 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
       message:
         `the sweep reserve and enrichment share come to ${promised} requests an hour, ` +
         `more than the ${usable} that QUOTA_HOURLY_LIMIT x QUOTA_UTILISATION leaves usable`,
+    });
+  }
+
+  // A key-less M+ job fails every request and reports an outage it caused
+  // itself. Better to refuse to boot naming the variable.
+  if (env.MPLUS_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAIDER_IO_API_KEY'],
+      message: 'is required when MPLUS_ENABLED is true; set it or set MPLUS_ENABLED=false',
+    });
+  }
+
+  // The token bucket and the per-minute budget have to agree, or one of them is
+  // decorative. A bucket above the budget lets a burst spend the window before
+  // the budget is next consulted; a bucket far below it means the budget can
+  // never be reached and the real limit is the bucket, unreported.
+  const raiderIoUsable = Math.floor(env.RAIDERIO_MINUTE_LIMIT * env.RAIDERIO_UTILISATION);
+  const bucketPerMinute = env.RAIDERIO_REQUESTS_PER_SECOND * 60;
+
+  if (bucketPerMinute > raiderIoUsable) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAIDERIO_REQUESTS_PER_SECOND'],
+      message:
+        `${env.RAIDERIO_REQUESTS_PER_SECOND}/second is ${bucketPerMinute} requests a minute, ` +
+        `more than the ${raiderIoUsable} that RAIDERIO_MINUTE_LIMIT x RAIDERIO_UTILISATION ` +
+        'leaves usable',
+    });
+  }
+
+  // A pass that cannot finish inside its own interval means each pass is still
+  // running when the next is due, so the cadence in the configuration is not
+  // the cadence in reality.
+  const pagesPerPass = env.RAIDERIO_MAX_PAGES * env.RAIDERIO_REGIONS.length;
+  const passMs = (pagesPerPass / Math.max(1, bucketPerMinute)) * 60_000;
+
+  if (env.MPLUS_ENABLED && passMs > env.MPLUS_INTERVAL_MS) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MPLUS_INTERVAL_MS'],
+      message:
+        `a pass is ${pagesPerPass} pages, which at ${env.RAIDERIO_REQUESTS_PER_SECOND}/second ` +
+        `takes about ${Math.round(passMs / 60_000)} minutes - longer than the ` +
+        `${Math.round(env.MPLUS_INTERVAL_MS / 60_000)} minute interval it is given`,
     });
   }
 });

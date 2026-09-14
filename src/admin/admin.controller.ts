@@ -7,6 +7,8 @@ import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from '../archive/archive.service.js';
 import { LeaderboardService } from '../leaderboard/leaderboard.service.js';
+import { MplusSeasonService } from '../mplus/mplus-season.service.js';
+import { MplusService } from '../mplus/mplus.service.js';
 import { ProfileEnrichmentService } from '../profile/profile-enrichment.service.js';
 import { SpecRepresentationService } from '../representation/spec-representation.service.js';
 import { SeasonService } from '../season/season.service.js';
@@ -38,6 +40,8 @@ export class AdminController implements OnModuleInit {
     private readonly archive: ArchiveService,
     private readonly seasons: SeasonService,
     private readonly transitions: SeasonTransitionService,
+    private readonly mplus: MplusService,
+    private readonly mplusSeasons: MplusSeasonService,
   ) {
     this.enabled = config.get('NODE_ENV', { infer: true }) !== 'production';
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
@@ -95,6 +99,29 @@ export class AdminController implements OnModuleInit {
     this.guard();
 
     return withRunId('archive', () => this.archive.archivePendingRewards());
+  }
+
+  /**
+   * One full Mythic+ pass. Minutes long at the defaults — ~1,001 requests a
+   * region — so drive it with `RAIDERIO_MAX_PAGES` lowered unless a full
+   * rehearsal is the point.
+   */
+  @Post('mplus')
+  async mplusSweep() {
+    this.guard();
+
+    // `sweep` establishes its own run id, so a rehearsal driven from here is
+    // charged to the Raider.io budget exactly as a scheduled pass is.
+    return (await this.mplus.sweep()) ?? { skipped: 'a Mythic+ pass is already in progress' };
+  }
+
+  /** Re-reads which Mythic+ season is current, bypassing the cached answer. */
+  @Post('mplus-season')
+  async mplusSeason() {
+    this.guard();
+    this.mplusSeasons.invalidate();
+
+    return withRunId('mplus', () => this.mplusSeasons.current());
   }
 
   @Post('season-refresh')

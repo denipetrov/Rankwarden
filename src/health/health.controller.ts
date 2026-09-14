@@ -10,9 +10,11 @@ import { hostOf } from '../common/health/redact.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget, type EnrichmentOutlook } from '../common/quota/quota-budget.service.js';
+import { RaiderIoBudget, type MplusOutlook } from '../common/quota/raiderio-budget.service.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
 import { LeaderboardService } from '../leaderboard/leaderboard.service.js';
+import { MplusService } from '../mplus/mplus.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { SeasonTransitionService } from '../season/season-transition.service.js';
 
@@ -42,6 +44,8 @@ export class HealthController {
     private readonly dependencies: DependencyHealth,
     private readonly transitions: SeasonTransitionService,
     private readonly budget: QuotaBudget,
+    private readonly raiderIo: RaiderIoBudget,
+    private readonly mplus: MplusService,
   ) {
     // The host, never the URI: a connection string carries its password in
     // userinfo and this endpoint is unauthenticated.
@@ -75,6 +79,11 @@ export class HealthController {
     // published on its last run. Readiness adds no database work for either.
     const { enrichment: outlook, ...quota } = this.budget.snapshot();
     const enrichment = enrichmentVerdict(outlook);
+    // Raider.io is a second soft dependency with its own budget. Read from
+    // memory exactly like Blizzard's, so a second upstream adds no I/O to a probe.
+    const { mplus: mplusOutlook, ...raiderIoQuota } = this.raiderIo.snapshot();
+    const mplus = mplusVerdict(mplusOutlook);
+    const raiderIoStatus = this.dependencies.statusFor('raiderio');
 
     const mongo: DependencyObservation & { host: string } = {
       host: this.mongoHost,
@@ -97,6 +106,10 @@ export class HealthController {
       // is still served, only its freshness suffers — and restarting the
       // process would not make the arithmetic come out differently.
       enrichment.problems.length > 0 ? 'degraded' : 'ok',
+      // Raider.io is soft for the same reason Blizzard is: without it the M+
+      // boards go stale, but every row already ingested still serves.
+      raiderIoStatus === 'down' ? 'degraded' : raiderIoStatus,
+      mplus.problems.length > 0 ? 'degraded' : 'ok',
     ]);
 
     const payload = {
@@ -108,11 +121,18 @@ export class HealthController {
           failingRegions: this.dependencies.failingRegions(),
           regions: blizzardRegions,
         },
+        raiderio: {
+          status: raiderIoStatus,
+          failingRegions: this.dependencies.failingRegionsFor('raiderio'),
+          regions: this.dependencies.byRegion('raiderio'),
+        },
       },
       jobs: this.jobs(),
       staleSweep,
       quota,
       enrichment,
+      raiderIoQuota,
+      mplus,
     };
 
     // Only a hard dependency withdraws traffic. The body is identical either
@@ -140,6 +160,7 @@ export class HealthController {
     return {
       sweepRunning: this.coordinator.isSweepActive || this.leaderboards.isRunning,
       enrichmentRunning: this.coordinator.isEnrichmentActive,
+      mplusRunning: this.coordinator.isMplusActive || this.mplus.isRunning,
       warmedUp: this.coordinator.isWarmedUp,
       lastSweep: last
         ? {
@@ -204,6 +225,43 @@ function enrichmentVerdict(outlook: EnrichmentOutlook | null): {
       `the stalest spec refresh is ${Math.round(outlook.oldestRefreshAgeMs / 3_600_000)}h old, ` +
         'more than twice its TTL',
     );
+  }
+
+  return { outlook, problems };
+}
+
+/**
+ * Turns the Mythic+ outlook into what an operator acts on.
+ *
+ * Two distinct failures, deliberately not folded together. `feasible` is
+ * arithmetic — a full pass cannot finish inside its own interval, so the
+ * configured cadence is a fiction and no amount of waiting fixes it. The others
+ * are a pass that did not complete: pages that failed, or a pass cut short.
+ * Neither fails readiness, because the runs already stored still serve.
+ */
+function mplusVerdict(outlook: MplusOutlook | null): {
+  outlook: MplusOutlook | null;
+  problems: string[];
+} {
+  if (!outlook) return { outlook: null, problems: [] };
+
+  const problems: string[] = [];
+
+  if (!outlook.feasible) {
+    problems.push(
+      `a full pass is ${outlook.pagesPlanned} pages, more than the ` +
+        `${outlook.capacityPerMinute} a minute the budget allows can deliver inside one interval`,
+    );
+  }
+
+  if (outlook.pagesFailed > 0) {
+    problems.push(
+      `${outlook.pagesFailed} of ${outlook.pagesPlanned} pages failed on the last pass`,
+    );
+  }
+
+  if (outlook.stoppedEarly) {
+    problems.push(`the last pass stopped early: ${outlook.stoppedEarly}`);
   }
 
   return { outlook, problems };

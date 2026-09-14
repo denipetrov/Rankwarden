@@ -1,9 +1,13 @@
 # Rankwarden — capabilities reference
 
-Ingestion service for World of Warcraft PvP data. It pulls leaderboards and character
-detail from the Blizzard Game Data API, keeps them in MongoDB in shapes tuned for the
-queries a front end actually makes, and maintains a daily record of specialisation
-representation plus an archive of finished seasons.
+Ingestion service for World of Warcraft competitive data. It pulls PvP leaderboards and
+character detail from the Blizzard Game Data API and top Mythic+ runs from the Raider.io
+API, keeps them in MongoDB in shapes tuned for the queries a front end actually makes, and
+maintains a daily record of specialisation representation plus an archive of finished
+seasons.
+
+The two upstreams are metered, budgeted and health-checked **independently**. Nothing
+Raider.io costs is ever charged against Blizzard's quota, and vice versa.
 
 This document is written for agents that need to test or extend the service. It covers
 what exists, why it is shaped that way, and the domain traps that are easy to
@@ -15,15 +19,15 @@ reading the API docs.
 
 ## 1. Stack and hard constraints
 
-|             |                                                                    |
-| ----------- | ------------------------------------------------------------------ |
-| Runtime     | Node ≥ 22 (developed on 26), **ESM** (`"type": "module"`)          |
-| Framework   | NestJS 12                                                          |
-| HTTP client | got 16 (ESM-only — this is why the project is ESM)                 |
-| Validation  | zod 4                                                              |
-| Database    | MongoDB 8 via the official `mongodb` driver 7 (no ODM)             |
-| Tests       | Vitest 4, transformed through SWC so `emitDecoratorMetadata` works |
-| Auth        | `@denipetrov/blizz-auth` (private, GitHub Packages)                |
+|             |                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------- |
+| Runtime     | Node ≥ 22 (developed on 26), **ESM** (`"type": "module"`)                              |
+| Framework   | NestJS 12                                                                              |
+| HTTP client | got 16 (ESM-only — this is why the project is ESM)                                     |
+| Validation  | zod 4                                                                                  |
+| Database    | MongoDB 8 via the official `mongodb` driver 7 (no ODM)                                 |
+| Tests       | Vitest 4, transformed through SWC so `emitDecoratorMetadata` works                     |
+| Auth        | `@denipetrov/blizz-auth` (private, GitHub Packages); Raider.io uses a query-string key |
 
 **Relative imports must carry the `.js` extension.** `module: nodenext` requires it. A
 missing extension fails at runtime, not at compile time.
@@ -76,6 +80,9 @@ src/
     ingestion-coordinator.service.ts   job priority + warm-up gate
     events/sweep-events.service.ts     rxjs Subject for "sweep finished"
     pipes/zod-validation.pipe.ts       request body validation
+    quota/rolling-window.ts            the counter both budgets are built on
+    quota/quota-budget.service.ts      Blizzard's hourly budget + priority shares
+    quota/raiderio-budget.service.ts   Raider.io's per-minute budget
     utils/concurrency.ts               bounded parallel map
     utils/rate-limiter.ts              token bucket
   blizzard/
@@ -85,6 +92,17 @@ src/
     schemas/                    zod schemas for every payload consumed
     pvp.api.ts                  season index/detail, bracket index, leaderboards
     profile.api.ts              character summary + specializations
+  raiderio/
+    raiderio.constants.ts       regions (cn included), page cap, expansion id
+    http/                       shared got instance, key injection, typed errors
+    schemas/                    zod schemas for every Raider.io payload consumed
+    mythic-plus.api.ts          runs pages + season static data
+  mplus/
+    mplus-season.service.ts     which M+ season is current, resolved not configured
+    mplus.mapper.ts             payload -> documents; the per-character score fold
+    mplus.repository.ts         mplus_runs + mplus_characters + mplus_affixes
+    mplus.service.ts            the pass
+    mplus.scheduler.ts          interval + warm-up gate
   season/                       active season per region, daily refresh
   leaderboard/                  the sweep, character + rating repositories
   profile/                      background profile enrichment
@@ -100,28 +118,38 @@ scripts/migrate-to-characters.mjs
 
 ## 4. Background jobs and their priority
 
-Four jobs run on intervals. They compete for one hourly API quota and, in part, for the
-same documents, so [`IngestionCoordinator`](src/common/ingestion-coordinator.service.ts)
+Five jobs run on intervals. They compete for an upstream quota, for MongoDB, and in part
+for the same documents, so [`IngestionCoordinator`](src/common/ingestion-coordinator.service.ts)
 ranks them:
 
-| Priority | Job                     | Cadence                                                          | Yields to                |
-| -------- | ----------------------- | ---------------------------------------------------------------- | ------------------------ |
-| 1        | **Leaderboard sweep**   | `INGEST_INTERVAL_MS` (1h)                                        | nothing                  |
-| 2        | **Profile enrichment**  | `PROFILE_INTERVAL_MS` (5m) + after each sweep                    | the sweep                |
-| 3        | **Spec representation** | `REPRESENTATION_CHECK_INTERVAL_MS` (1h), writes once per UTC day | the sweep                |
-| 4        | **Season archive**      | `ARCHIVE_CHECK_INTERVAL_MS` (1h)                                 | sweep **and** enrichment |
-| —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)     |
-| —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)   |
+| Priority | Job                     | Cadence                                                          | Yields to                    | Upstream  |
+| -------- | ----------------------- | ---------------------------------------------------------------- | ---------------------------- | --------- |
+| 1        | **Leaderboard sweep**   | `INGEST_INTERVAL_MS` (1h)                                        | nothing                      | Blizzard  |
+| 2        | **Profile enrichment**  | `PROFILE_INTERVAL_MS` (5m) + after each sweep                    | the sweep                    | Blizzard  |
+| 3        | **Mythic+ pass**        | `MPLUS_INTERVAL_MS` (6h), after warm-up                          | sweep **and** enrichment     | Raider.io |
+| 3        | **Spec representation** | `REPRESENTATION_CHECK_INTERVAL_MS` (1h), writes once per UTC day | the sweep                    | none      |
+| 4        | **Season archive**      | `ARCHIVE_CHECK_INTERVAL_MS` (1h)                                 | sweep, enrichment **and** M+ | Blizzard  |
+| —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)         | Blizzard  |
+| —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)       | none      |
 
-The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isLiveIngestionActive`,
-`isWarmedUp`, and `warmedUp$`. `duringSweep()` / `duringEnrichment()` wrap the work.
+The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
+`isLiveIngestionActive`, `isWarmedUp`, and `warmedUp$`. `duringSweep()` /
+`duringEnrichment()` / `duringMplus()` wrap the work.
+
+> **Why M+ yields at all.** The two upstreams meter separately, so no _request_ of the M+
+> pass competes with a Blizzard job — it yields because it shares MongoDB and the process,
+> and a minutes-long pass writing hundreds of thousands of documents alongside a sweep
+> would slow the boards that serve live traffic. `isMplusActive` is deliberately **not**
+> folded into `isLiveIngestionActive`: the archive must wait for M+, but enrichment must
+> not. Enrichment spends Blizzard quota and M+ spends none, so making enrichment yield
+> would cost the PvP profiles freshness to protect a job it is not competing with.
 
 **Warm-up gate.** The archive does not tick at bootstrap. It subscribes to `warmedUp$`,
 which fires once the first sweep _and_ first enrichment pass have both completed.
 `markEnrichmentDisabled()` releases the gate when enrichment is switched off — without it
 the archive would wait forever for a pass that never comes.
 
-### 4.0 The shared quota budget
+### 4.0 The shared Blizzard quota budget
 
 The coordinator decides who runs _now_. [`QuotaBudget`](src/common/quota/quota-budget.service.ts)
 decides how much each may spend _this hour_. They are separate because they fail
@@ -159,6 +187,89 @@ that fits, where the old per-job limiters did not.
 > **Known gap.** The budget lives in memory, so a restart forgets the last hour. Persisting
 > every request would cost more than the overrun it guards against; Blizzard's own 429s,
 > which the client retries, are the backstop.
+
+### 4.0.1 The Raider.io budget
+
+[`RaiderIoBudget`](src/common/quota/raiderio-budget.service.ts) is a **separate budget for
+a separate upstream**, and the separation is load-bearing rather than tidy. `QuotaBudget`
+models Blizzard's 36,000-an-hour cap and divides it between the sweep, enrichment and the
+archive; charging foreign requests to it would throttle all three for no reason and make
+`/health/ready` misreport every one of them.
+
+|                 | Blizzard (`QuotaBudget`)             | Raider.io (`RaiderIoBudget`)           |
+| --------------- | ------------------------------------ | -------------------------------------- |
+| Window          | rolling hour, one-minute buckets     | rolling **minute**, one-second buckets |
+| Ceiling         | `QUOTA_HOURLY_LIMIT` (36,000)        | `RAIDERIO_MINUTE_LIMIT` (1,000)        |
+| Planned against | `x QUOTA_UTILISATION` (32,400)       | `x RAIDERIO_UTILISATION` (900)         |
+| Consumers       | sweep / enrichment / archive / other | mplus / other                          |
+| Shares          | three, in priority order             | one flat allowance                     |
+
+**What they share is [`RollingWindow`](src/common/quota/rolling-window.ts), not the policy
+on top of it.** That was the choice the brief asked to be justified: the counter is the
+only fiddly part — a bucket ring that forgets old events without holding a timestamp per
+event — and the policies have nothing in common, so a provider-keyed budget with two sets
+of share logic inside it would have been one class doing two unrelated jobs. `QuotaBudget`
+was refactored onto the shared window in the same change, so both are exercised by the
+existing budget tests.
+
+The bucket size differs on purpose. Raider.io enforces a **minute**, so a minute-resolution
+window would be a single bucket: the budget would read zero for 59 seconds and then the
+whole minute's spend at once.
+
+Properties it keeps from the Blizzard one: charged **per attempt including retries**, at
+the HTTP client's `beforeRequest` hook rather than at call sites, attributed through
+`withRunId('mplus', …)` so no call site passes a label, readable from memory for readiness,
+and sanity-checked at boot (`superRefine` refuses a token bucket that exceeds the per-minute
+allowance, and an M+ interval too short for a full pass at the permitted rate).
+
+**The numbers, and where they came from.** Raider.io's documentation states **200
+requests/minute unauthenticated**, lifted for applications registered at
+`raider.io/settings/apps`. A measured 300-request burst at concurrency 20 on the configured
+key drew **zero 429s** (2026-09-14), and **no `X-RateLimit-*` header is exposed on a
+success** — so the ceiling is configuration, not something readable back from a response.
+`RAIDERIO_MINUTE_LIMIT` defaults to the 1,000/minute the key is provisioned for; lower it
+if 429s appear. `Retry-After` _is_ honoured, by got's own delay calculation, capped by
+`maxRetryAfter` so a long header cannot park a request past the request timeout.
+
+> **Same known gap.** In memory, per process; a restart forgets the last minute. A minute
+> is short enough that this matters even less than it does for the hour.
+
+### 4.6 Mythic+ ingestion
+
+`MplusService.sweep()` — the top Mythic+ runs of the current season, per region.
+
+1. Resolve the current season from Raider.io (`MplusSeasonService`, cached a day).
+2. Skip regions the season has not opened in yet — they stagger by up to 32 hours.
+3. Per region, page through `mythic-plus/runs?dungeon=all` in batches of
+   `RAIDERIO_PAGE_BATCH`, at `RAIDERIO_CONCURRENCY` in flight.
+4. Write each batch's runs and affixes as it arrives; fold characters across the whole
+   region; write the characters at the end.
+5. Prune runs and characters the pass did not refresh — **only if the pass finished
+   cleanly**.
+6. Purge any season that is no longer current.
+
+Observed live (2026-09-14): 6 pages across us+eu in 987ms; a full pass is **1,001 requests
+per region** — `page` 0–1000 inclusive, 20 runs a page, 20,020 runs. At five regions that
+is **5,005 requests and ~100,000 runs per pass**, roughly 20,000 requests a day at the
+6-hour default.
+
+**Two things are streamed and one is not.** Runs are written per batch, because a region is
+~100,000 roster rows and holding all of them before the first write would make memory scale
+with the ladder. The character fold cannot be: `mythicScore` is a character's best run in
+each dungeon summed across the _whole_ region, so it is only correct once the last page is
+read. The fold keeps ~8 entries per distinct character, so its working set is bounded by
+characters rather than by rows.
+
+**The prune guard is the dangerous part.** A pass that stopped early — spent budget, a
+yielded coordinator, failed pages — looks exactly like a leaderboard that lost most of its
+runs. Pruning on that basis deletes the region and refills it next pass, with a hole in the
+board each time. Same reasoning as `removeRetiredBrackets` refusing an empty bracket list
+(§9.8).
+
+Where the data ends is signalled two ways, and both are handled: a region with fewer runs
+than the page ceiling answers `200` with `rankings: []`, and `page` above 1000 answers
+`400 {"message":"\"page\" must be less than or equal to 1000"}` — the documented end of
+the data, not a failure, so `400` is deliberately absent from the retryable statuses.
 
 ### 4.1 Leaderboard sweep
 
@@ -344,7 +455,7 @@ them in. A lost marker recovered from stored rows comes back without rewards and
 the same way. To ask Blizzard again about a season recorded as failed, unset its
 `rewardsFailed`.
 
-### 4.5 Season refresh
+### 4.7 Season refresh
 
 `SeasonScheduler` re-reads the active season daily, independently of sweeps, so a rollover
 is caught even when ingestion is disabled or failing. Logs two distinct warn-level
@@ -357,7 +468,7 @@ so a rollover that happened while the service was down took the "first observati
 and was never recognised as a rollover at all. The transition purge hangs off that
 comparison, so the persisted copy is what makes a rollover across a restart detectable.
 
-### 4.6 Season transition (retiring a finished season)
+### 4.8 Season transition (retiring a finished season)
 
 `SeasonTransitionService` removes a finished season from the live collections **once the
 next season actually begins** — not when the old one ends, so the boards stay readable
@@ -427,6 +538,37 @@ from the Mythic+ ingestion. It decides whether enrichment owes the character a p
 reclassified into the enrichment queue. Documents from before the field existed are
 backfilled to `PvP` at boot, in `onModuleInit` and so before any scheduler starts. The sweep
 was the only writer then. The sync endpoint never touches the type.
+
+> **In practice `characters` holds only `PvP` today.** M+ characters live in their own
+> collection (§5.5) — three findings ruled out sharing this one, and they are worth knowing
+> before anyone moves them back:
+>
+> 1. **Raider.io's character id is not Blizzard's.** Cross-checked against the Blizzard
+>    profile API on 2026-09-14: exxibae-stormrage is `258653729` to Blizzard and
+>    `228420218` to Raider.io; skollcat-area-52 `246128989` vs `237437412`;
+>    noxiv-zuljin `265250912` vs `257799685`; shakyaa-illidan `233519897` vs `308211232`.
+>    Both id spaces are nine-digit integers in the same range, so one written where the
+>    other is expected collides **silently** under `character_identity`.
+>    (`realm.wowRealmId` _is_ Blizzard's realm id — verified for stormrage 60, area-52
+>    1566, zuljin 61, illidan 57.)
+> 2. **About 1 roster entry in 200 is anonymised, and every one carries `id: 0`** with the
+>    placeholder realm `anonymous`. The id is not unique even within Raider.io's own data.
+> 3. **The seasons collide.** M+ season 2 of Midnight is Blizzard season **18** while the
+>    live PvP season is **42**, and `SeasonTransitionService.purge()` deletes from
+>    `characters` by `{ seasonId, region }` with **no type filter** (nor does
+>    `RatingRepository.removeOrphans` when it builds its known-set). PvP season 18 is a
+>    real historic season, so retiring it would have silently deleted M+ documents.
+>
+> The audit the brief asked for, for the record: `removeUnranked` matches `brackets: {}`,
+> which an M+ document without a `brackets` field would not match — but one written with an
+> empty map **would** be deleted on every sweep. `pruneBracket`, `removeRetiredBrackets` and
+> the excluded-bracket purge are all keyed on bracket names an M+ document has none of, so
+> they are genuine no-ops. The purge and `removeOrphans` are the two that are not.
+
+Enrichment's `ENRICHABLE` filter and the two `characterType`-led staleness indexes are
+therefore belt-and-braces rather than load-bearing today. **Keep them.** They are what makes
+putting an `M+` document in this collection safe if that is ever wanted, and the index
+prefix costs nothing.
 
 > **Why the staleness indexes lead with the type.** A character that is never enriched
 > never gets a timestamp, and an absent field sorts ahead of every date. Keyed on the
@@ -531,6 +673,96 @@ while it is settled, not `unarchivable`, and has neither `rewardsFetchedAt` nor
 Indexes: `archive_board`, `archive_identity` (unique), `archive_character`, and
 `bracket_identity` (unique) on `archive_brackets`.
 
+### 5.5 Mythic+ — `mplus_runs` + `mplus_characters` + `mplus_affixes`
+
+```js
+// mplus_runs - one completed run from the Raider.io leaderboard
+{ season: 'season-mn-2', region: 'us', keystoneRunId: 10211398,
+  rank: 1, score: 502.6,
+  dungeon: { id: 16368, name: 'Den of Nalorakk', slug: 'den-of-nalorakk', shortName: 'DON' },
+  mythicLevel: 21, clearTimeMs: 1785294, keystoneTimeMs: 1920999,
+  timeRemainingMs: 135705, numChests: 1, completedAt: Date,
+  affixIds: [9, 10, 147],                      // names live once, in mplus_affixes
+  faction: 'alliance',
+  roster: [                                    // all five, anonymised members included
+    { rioCharacterId: 228420218,               // Raider.io's id, NOT Blizzard's
+      characterName: 'Exxibae', realmSlug: 'stormrage',
+      realmId: 60,                             // wowRealmId; null when anonymised
+      region: 'us', classId: 1, className: 'Warrior',
+      specId: 71, specName: 'Arms', role: 'dps',
+      faction: 'alliance', anonymized: false },
+  ],
+  rosterKeys: ['us/stormrage/exxibae', …],     // flat mirror, named members only
+  fetchedAt: Date }
+
+// mplus_characters - one per character per M+ season + region
+{ season: 'season-mn-2', seasonId: 18,         // Blizzard's M+ id; reference only
+  region: 'eu', realmSlug: 'nemesis', nameKey: 'lairasp',
+  characterName: 'Lairasp', characterType: 'M+',
+  rioCharacterId: 224292179, realmId: 1316, realmName: 'Nemesis', faction: 'alliance',
+  profile: { classId, className, specId, specName, raceId, raceName, level, role },
+  mythicScore: 3506.7,                         // see the warning below
+  dungeonsCovered: 7,                          // of the season's 8
+  dungeonRuns: [                               // best run per dungeon, best score first
+    { dungeon: {…}, keystoneRunId, mythicLevel, score, clearTimeMs,
+      timeRemainingMs, numChests, completedAt, specId, role },
+  ],
+  updatedAt: Date }
+
+// mplus_affixes - learned from payloads, never hardcoded
+{ id: 9, name: 'Tyrannical', slug: 'tyrannical', description: '…', icon, updatedAt }
+```
+
+Identity is **`season + region + realmSlug + nameKey`** — Blizzard's own notion of a
+character, needing no id from either upstream. `nameKey` is the lowercased name, because
+the payload varies in case for the same character.
+
+> **`mythicScore` is bounded by what was ingested, not by what the character played.** It is
+> the sum of `score` over the best run in each dungeon **among the runs on the ingested
+> leaderboard**. The feed is the top ~20,020 runs per region across all dungeons, so a
+> dungeon the character has no top-20k run in contributes nothing. Measured over the top
+> 1,200 US runs: **392 of 1,096 characters appeared in exactly one dungeon and only 150 in
+> all eight**. It is therefore _not_ Raider.io's own mythic+ score, and is only comparable
+> between characters with the same `dungeonsCovered` — which is why that field is stored
+> next to it and a front end must gate on it, the same way §9.6 gates on `classified`.
+> `dungeon=all` at least spreads evenly across dungeons (90–240 of the top 1,200 US runs per
+> dungeon), so the shortfall is depth, not bias. Per-dungeon querying would fix it at 8x the
+> requests.
+
+**Anonymised players are kept in `roster` and excluded from `mplus_characters`.** The run is
+a fact and a five-person party listing four would be wrong; but they all share `id: 0` and
+the realm `anonymous`, so a character document for one would be all of them folded together
+under one player's name. `isAnonymised` checks three independent signals — the character
+flag, the realm flag, and the `id: 0` / `anonymous` pair — so dropping any one upstream
+degrades into nothing rather than into that fold.
+
+**Runs are self-contained**, for the same reason `archive_entries` are (§5.4): a run is a
+historical fact that must keep reading after the character is renamed, transferred, or
+pruned off the board. `rosterKeys` is a flat mirror purely so one index answers "every run
+this character is in" without scanning nested documents.
+
+**Affixes are a collection, not a constant.** The pool changes between seasons and Blizzard
+has reworded affixes mid-expansion, so names are learned from the payloads that carry them —
+the same approach `season-rewards.ts` takes to specialisations (§7 "things that are not
+improvements"). The saving is real: three affixes with a ~120-character description each,
+across ~100,000 runs a pass, is about **36MB of duplicated prose** not written.
+
+**Upserts are whole-document `$set`, not merges.** For runs it makes no difference (a
+finished run is immutable). For characters it is essential: `dungeonRuns` and `mythicScore`
+are recomputed from the whole pass, so a merge would leave a dungeon they no longer rank in
+on the document and keep counting its score forever.
+
+Indexes — `mplus_runs`: `run_identity` (unique `season+region+keystoneRunId`), `run_board`
+(`season+region+score` desc), `run_dungeon_board`, `run_roster` (`rosterKeys`),
+`run_freshness` (drives the prune). `mplus_characters`: `mplus_character_identity` (unique),
+`mplus_score_board` (`season+region+mythicScore` desc — the front end's sort),
+`mplus_character_lookup`, `mplus_character_freshness`.
+
+**Season rollover is a purge, not an archive.** M+ data here is a snapshot of a live
+leaderboard, rebuilt in full on every pass, so a superseded season is simply stale and is
+deleted at the end of the next pass. There is nothing to preserve and nothing gating it —
+the opposite of §4.8.
+
 ---
 
 ## 6. Blizzard API surface
@@ -579,6 +811,51 @@ place that still knows the response was a 200 carrying nothing, and it counts ag
 Blizzard's observed health rather than for it: a gateway shedding load answers exactly this
 way, and recording it as a success is how readiness reports green through an outage.
 
+### 6.1 Raider.io API surface
+
+All calls go through `RaiderIoHttpService`: one shared got instance, the access key injected
+per request, retries on 408/429/5xx, per-second pacing and per-attempt budget accounting.
+Non-2xx becomes `RaiderIoApiError` with `statusCode`, `isNotFound` and `isBadRequest`.
+
+| Endpoint                                                  | Used by                                   |
+| --------------------------------------------------------- | ----------------------------------------- |
+| `/api/v1/mythic-plus/runs?season&region&dungeon=all&page` | the M+ pass — 1,001 pages a region        |
+| `/api/v1/mythic-plus/static-data?expansion_id`            | which season is current, and its dungeons |
+
+**The access key travels as a query parameter**, which Raider.io requires and which means it
+lands inside every url — including the ones got bakes into its own error messages. It is
+therefore added in `beforeRequest`, exactly where the bearer token is added for Blizzard, so
+no url this class builds, logs or reports contains it; `DependencyHealth` redacts it as a
+second line of defence for messages the client did not build. **An integration case asserts
+the key appears nowhere in `/health/ready`.**
+
+**The token bucket lives in the HTTP client, not in the job.** `RAIDERIO_MINUTE_LIMIT` is a
+per-minute ceiling, so pacing has to hold across every call site sharing the budget, not just
+the one loop that happens to be the biggest spender — the mistake §4.0 records, one layer
+down. It is acquired before the request, never inside the hook: the hook runs again for each
+retry and sleeping in it would hold got's own backoff open on top of the wait already taken.
+
+#### Failures the client classifies
+
+| Condition       | Raised as                    | Seen by callers as                              |
+| --------------- | ---------------------------- | ----------------------------------------------- |
+| **400**         | `RaiderIoApiError`           | **end of the data** — not retried, not an error |
+| 404             | `RaiderIoApiError`           | routine (unknown season/region)                 |
+| other non-2xx   | `RaiderIoApiError`           | the status                                      |
+| empty 2xx body  | `RaiderIoEmptyResponseError` | transient; no HTTP status                       |
+| schema mismatch | `ZodError`, at the API layer | a failed page; the region is not pruned         |
+
+The `400` row is the one that is specific to this upstream: the runs endpoint answers `400`
+rather than an empty page once `page` passes 1000, so retrying it would be three wasted
+requests for a reply that cannot change — which is why 400 is **absent** from the retryable
+statuses while 408/429/5xx are present.
+
+The empty-body case exists for the same reason as Blizzard's (§6): `got` resolves an empty
+body to `''` instead of raising, so without an explicit check it would only fail at the zod
+boundary, indistinguishable there from payload drift. It matters more here, not less —
+Raider.io sits behind Cloudflare, which is exactly the kind of front that answers
+200-with-nothing while shedding load.
+
 ---
 
 ## 7. HTTP endpoints
@@ -609,23 +886,33 @@ killed. **Always 200 while the process is up.**
 Pings Mongo (cached ~3s) and reports what real traffic has already observed of Blizzard,
 **per region**. This is what an orchestrator should poll.
 
-| Condition                            | `status`   | HTTP    |
-| ------------------------------------ | ---------- | ------- |
-| everything healthy                   | `ok`       | **200** |
-| Blizzard failing (any/all regions)   | `degraded` | **200** |
-| no sweep for 2× `INGEST_INTERVAL_MS` | `degraded` | **200** |
-| enrichment infeasible or behind      | `degraded` | **200** |
-| Mongo unreachable                    | `down`     | **503** |
+| Condition                               | `status`   | HTTP    |
+| --------------------------------------- | ---------- | ------- |
+| everything healthy                      | `ok`       | **200** |
+| Blizzard failing (any/all regions)      | `degraded` | **200** |
+| **Raider.io failing (any/all regions)** | `degraded` | **200** |
+| no sweep for 2× `INGEST_INTERVAL_MS`    | `degraded` | **200** |
+| enrichment infeasible or behind         | `degraded` | **200** |
+| **M+ infeasible, failing or cut short** | `degraded` | **200** |
+| Mongo unreachable                       | `down`     | **503** |
 
-Mongo is a **hard** dependency and Blizzard a **soft** one. Without Mongo the service can
+Mongo is a **hard** dependency; Blizzard and Raider.io are both **soft** ones. Without Mongo the service can
 do nothing, so readiness fails and traffic should be withdrawn. Without Blizzard it still
 holds every row already ingested, so only ingestion is degraded — failing readiness there
 would have an orchestrator restart-loop the service through an incident it cannot fix.
 **Do not "fix" the Blizzard case into a 503.**
 
 Readiness also carries `quota` — the rolling-hour spend per job, current allowances and
-shares — and `enrichment`, the outlook from the last run plus any `problems` in plain words.
-Both are read from memory, so neither adds I/O to a probe.
+shares — `enrichment`, the outlook from the last run plus any `problems` in plain words, and
+their Raider.io counterparts `raiderIoQuota` and `mplus`. All four are read from memory, so
+none adds I/O to a probe.
+
+`mplus.problems` separates two distinct failures, deliberately not folded together:
+`feasible: false` is arithmetic — a full pass cannot finish inside its own interval, so the
+configured cadence is a fiction and no amount of waiting fixes it — while `pagesFailed` and
+`stoppedEarly` describe a pass that did not complete. Neither fails readiness: the runs
+already stored still serve. `MplusOutlook` is the Raider.io counterpart to
+`EnrichmentOutlook`, published by the job on each pass.
 
 Two further rules this endpoint must keep:
 
@@ -643,8 +930,8 @@ readiness path because it reads the database.
 
 ### `POST /admin/*` — dev-only job triggers
 
-`sweep`, `enrich`, `snapshot`, `archive`, `archive-rewards`, `season-refresh`,
-`season-transition`. Each drives
+`sweep`, `enrich`, `snapshot`, `archive`, `archive-rewards`, `mplus`, `mplus-season`,
+`season-refresh`, `season-transition`. Each drives
 exactly **one** cycle and returns that cycle's own result object. Every route **404s when
 `NODE_ENV=production`**.
 
@@ -695,50 +982,65 @@ secret or network policy in front of it before it runs anywhere but localhost.
 
 Every variable is validated by zod at boot; anything missing or malformed fails fast.
 
-| Variable                              | Default                             | Notes                                            |
-| ------------------------------------- | ----------------------------------- | ------------------------------------------------ |
-| `BLIZZARD_CLIENT_ID` / `_SECRET`      | —                                   | **Required**                                     |
-| `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)        |
-| `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above      |
-| `BLIZZARD_LOCALE`                     | `en_US`                             |                                                  |
-| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam        |
-| `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                  |
-| `BLIZZARD_RETRY_LIMIT`                | `3`                                 | Ladder and season endpoints                      |
-| `PROFILE_RETRY_LIMIT`                 | `1`                                 | Per-character endpoints; lower on purpose        |
-| `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep               |
-| `MONGODB_URI`                         | —                                   | **Required**                                     |
-| `MONGODB_DB`                          | `rankwarden`                        |                                                  |
-| `INGEST_INTERVAL_MS`                  | `3600000`                           |                                                  |
-| `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                  |
-| `PROFILE_ENRICHMENT_ENABLED`          | `true`                              | `false` releases the archive warm-up gate        |
-| `PROFILE_INTERVAL_MS`                 | `300000`                            |                                                  |
-| `PROFILE_BATCH_SIZE`                  | `2000`                              | Per-run ceiling; the batch itself is computed    |
-| `PROFILE_SUMMARY_TTL_MS`              | `604800000`                         | 7 days                                           |
-| `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                            |
-| `PROFILE_CONCURRENCY`                 | `8`                                 |                                                  |
-| `PROFILE_RETRY_BACKOFF_MS`            | `900000`                            | Wait after a transient enrichment failure        |
-| `PROFILE_REQUESTS_PER_SECOND`         | `20`                                | Token bucket                                     |
-| `SEASON_REFRESH_ENABLED`              | `true`                              | Off switch for the daily season re-check         |
-| `SEASON_REFRESH_INTERVAL_MS`          | `86400000`                          |                                                  |
-| `SEASON_TRANSITION_ENABLED`           | `true`                              | Retiring finished seasons                        |
-| `SEASON_TRANSITION_CHECK_INTERVAL_MS` | `3600000`                           | A rollover also ticks immediately                |
-| `SEASON_PURGE_REQUIRE_ARCHIVE`        | `true`                              | Only purge what the archive holds in full        |
-| `SEASON_PURGE_DRY_RUN`                | `true`                              | Log the plan, delete nothing; set `false` to arm |
-| `REPRESENTATION_ENABLED`              | `true`                              |                                                  |
-| `REPRESENTATION_CHECK_INTERVAL_MS`    | `3600000`                           |                                                  |
-| `REPRESENTATION_MIN_RATINGS`          | `1500,1800,2100,2300,2700`          | Cutoffs to track                                 |
-| `ARCHIVE_ENABLED`                     | `true`                              |                                                  |
-| `ARCHIVE_CHECK_INTERVAL_MS`           | `3600000`                           |                                                  |
-| `ARCHIVE_SEASON_PAUSE_MS`             | `5000`                              | Breather between seasons                         |
-| `ARCHIVE_CONCURRENCY`                 | `4`                                 |                                                  |
-| `ARCHIVE_REQUESTS_PER_SECOND`         | `10`                                |                                                  |
-| `ARCHIVE_MIN_SEASON` / `_MAX_SEASON`  | `0` / `0`                           | 0 = unbounded; the real size lever               |
-| `ARCHIVE_MAX_ENTRIES_PER_BRACKET`     | `5000`                              | Top N by rating; saves only ~1%                  |
-| `NODE_ENV` / `PORT` / `LOG_LEVEL`     | `development` / `3000` / `log`      |                                                  |
-| `QUOTA_HOURLY_LIMIT`                  | `36000`                             | Blizzard's cap on the whole client               |
-| `QUOTA_UTILISATION`                   | `0.9`                               | Fraction ever planned against                    |
-| `QUOTA_ENRICHMENT_HEADROOM`           | `3`                                 | Enrichment plans at most cap / this              |
-| `QUOTA_SWEEP_RESERVE`                 | `1000`                              | Held back for the sweep each hour                |
+| Variable                              | Default                             | Notes                                                      |
+| ------------------------------------- | ----------------------------------- | ---------------------------------------------------------- |
+| `BLIZZARD_CLIENT_ID` / `_SECRET`      | —                                   | **Required**                                               |
+| `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)                  |
+| `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above                |
+| `BLIZZARD_LOCALE`                     | `en_US`                             |                                                            |
+| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam                  |
+| `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                            |
+| `BLIZZARD_RETRY_LIMIT`                | `3`                                 | Ladder and season endpoints                                |
+| `PROFILE_RETRY_LIMIT`                 | `1`                                 | Per-character endpoints; lower on purpose                  |
+| `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep                         |
+| `MONGODB_URI`                         | —                                   | **Required**                                               |
+| `MONGODB_DB`                          | `rankwarden`                        |                                                            |
+| `INGEST_INTERVAL_MS`                  | `3600000`                           |                                                            |
+| `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                            |
+| `PROFILE_ENRICHMENT_ENABLED`          | `true`                              | `false` releases the archive warm-up gate                  |
+| `PROFILE_INTERVAL_MS`                 | `300000`                            |                                                            |
+| `PROFILE_BATCH_SIZE`                  | `2000`                              | Per-run ceiling; the batch itself is computed              |
+| `PROFILE_SUMMARY_TTL_MS`              | `604800000`                         | 7 days                                                     |
+| `PROFILE_SPECS_TTL_MS`                | `86400000`                          | 1 day                                                      |
+| `PROFILE_CONCURRENCY`                 | `8`                                 |                                                            |
+| `PROFILE_RETRY_BACKOFF_MS`            | `900000`                            | Wait after a transient enrichment failure                  |
+| `PROFILE_REQUESTS_PER_SECOND`         | `20`                                | Token bucket                                               |
+| `SEASON_REFRESH_ENABLED`              | `true`                              | Off switch for the daily season re-check                   |
+| `SEASON_REFRESH_INTERVAL_MS`          | `86400000`                          |                                                            |
+| `SEASON_TRANSITION_ENABLED`           | `true`                              | Retiring finished seasons                                  |
+| `SEASON_TRANSITION_CHECK_INTERVAL_MS` | `3600000`                           | A rollover also ticks immediately                          |
+| `SEASON_PURGE_REQUIRE_ARCHIVE`        | `true`                              | Only purge what the archive holds in full                  |
+| `SEASON_PURGE_DRY_RUN`                | `true`                              | Log the plan, delete nothing; set `false` to arm           |
+| `REPRESENTATION_ENABLED`              | `true`                              |                                                            |
+| `REPRESENTATION_CHECK_INTERVAL_MS`    | `3600000`                           |                                                            |
+| `REPRESENTATION_MIN_RATINGS`          | `1500,1800,2100,2300,2700`          | Cutoffs to track                                           |
+| `ARCHIVE_ENABLED`                     | `true`                              |                                                            |
+| `ARCHIVE_CHECK_INTERVAL_MS`           | `3600000`                           |                                                            |
+| `ARCHIVE_SEASON_PAUSE_MS`             | `5000`                              | Breather between seasons                                   |
+| `ARCHIVE_CONCURRENCY`                 | `4`                                 |                                                            |
+| `ARCHIVE_REQUESTS_PER_SECOND`         | `10`                                |                                                            |
+| `ARCHIVE_MIN_SEASON` / `_MAX_SEASON`  | `0` / `0`                           | 0 = unbounded; the real size lever                         |
+| `ARCHIVE_MAX_ENTRIES_PER_BRACKET`     | `5000`                              | Top N by rating; saves only ~1%                            |
+| `NODE_ENV` / `PORT` / `LOG_LEVEL`     | `development` / `3000` / `log`      |                                                            |
+| `QUOTA_HOURLY_LIMIT`                  | `36000`                             | Blizzard's cap on the whole client                         |
+| `QUOTA_UTILISATION`                   | `0.9`                               | Fraction ever planned against                              |
+| `QUOTA_ENRICHMENT_HEADROOM`           | `3`                                 | Enrichment plans at most cap / this                        |
+| `QUOTA_SWEEP_RESERVE`                 | `1000`                              | Held back for the sweep each hour                          |
+| `RAIDER_IO_API_KEY`                   | —                                   | **Required when `MPLUS_ENABLED=true`**                     |
+| `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | The test seam for the second upstream                      |
+| `RAIDERIO_REGIONS`                    | `us,eu,kr,tw,cn`                    | Includes `cn`; `world` is rejected                         |
+| `RAIDERIO_SEASON`                     | _(empty)_                           | Empty = ask Raider.io. Pin only for a rehearsal            |
+| `RAIDERIO_SEASON_TTL_MS`              | `86400000`                          | How long a resolved season is reused                       |
+| `RAIDERIO_REQUEST_TIMEOUT_MS`         | `30000`                             | Also caps `Retry-After`                                    |
+| `RAIDERIO_RETRY_LIMIT`                | `2`                                 | 408/429/5xx only — never 400                               |
+| `RAIDERIO_CONCURRENCY`                | `12`                                | Pages in flight; ~0.65s a page measured                    |
+| `RAIDERIO_PAGE_BATCH`                 | `50`                                | Memory bound, and how often budget/priority are re-checked |
+| `RAIDERIO_MAX_PAGES`                  | `1001`                              | The whole leaderboard; the `mythicScore` lever             |
+| `RAIDERIO_MINUTE_LIMIT`               | `1000`                              | Raider.io's cap on the whole client                        |
+| `RAIDERIO_UTILISATION`                | `0.9`                               | Fraction ever planned against                              |
+| `RAIDERIO_REQUESTS_PER_SECOND`        | `14`                                | Token bucket; must fit inside the minute                   |
+| `MPLUS_ENABLED`                       | **`false`**                         | Opt-in — it needs a credential older deploys lack          |
+| `MPLUS_INTERVAL_MS`                   | `21600000`                          | 6h; ~5,005 requests a pass at five regions                 |
 
 ---
 
@@ -844,8 +1146,55 @@ Both `removeRetiredBrackets` implementations **refuse to act on an empty bracket
 that means the sweep failed for the region, not that every ladder retired. Without the
 guard a single failed region is wiped.
 
-A sixth path, the season purge (§4.6), is separate: it retires a whole finished season and
+A sixth path, the season purge (§4.8), is separate: it retires a whole finished season and
 is gated on the _next_ season starting, not on a sweep.
+
+### 9.9 Raider.io's character id is not Blizzard's
+
+Cross-checked against the Blizzard profile API on 2026-09-14 (§5.1 has the four pairs).
+Both are nine-digit integers in the same range, so writing one where the other is expected
+produces a collision that nothing reports. `realm.wowRealmId` **is** Blizzard's realm id,
+which makes the mismatch easier to miss — one id in the payload maps across and the other
+does not.
+
+**Consequence:** a character cannot be joined between `characters` and `mplus_characters`
+by id. Join on `region + realmSlug + lowercased name`, which is what
+`mplusCharacterKey()` builds and what `mplus_characters` is keyed on.
+
+### 9.10 One roster entry in 200 is anonymised, and they all share `id: 0`
+
+Players who opt out of public Raider.io profiles arrive as:
+
+```js
+{ id: 0, name: 'Anon12627389', anonymized: true,
+  realm: { id: 0, slug: 'anonymous', anonymized: true } }   // no wowRealmId
+```
+
+Measured 10 of 2,000 roster rows (0.5%) across a spread of pages and regions. Two things
+follow. **The realm omits `wowRealmId`** — along with `altName`, `locale` and `realmType` —
+so a schema requiring any of them fails the _whole page_, and at that rate nearly every page
+carries one. And **`id: 0` is shared by all of them**, so keying anything on it folds every
+anonymous player in a region into one document.
+
+They are kept in `mplus_runs.roster` and excluded from `mplus_characters` (§5.5). Invariant
+I14 asserts the exclusion; a unit case asserts `isAnonymised` still works with both
+`anonymized` flags removed, so the fallback signals are not merely present but tested.
+
+### 9.11 The M+ leaderboard only publishes timed runs
+
+Every run in a 2,000-run sample was `status: "finished"` with `num_chests >= 1` and
+`time_remaining_ms > 0`. `timeRemainingMs` is stored because "timed by 14 seconds" and
+"timed by 8 minutes" are very different runs — but it does **not** distinguish a timed run
+from a depleted one, because a depleted one never appears. A UI must not present it as
+a pass/fail flag.
+
+### 9.12 `is_main_season` excludes side events
+
+`season-mn-1-break-the-meta` ran for a week _inside_ season 1, with its own slug and its own
+leaderboard. Picking the newest season by start date alone would have swapped the whole
+ladder out for a week and swapped it back. `pickCurrent` filters on `is_main_season !== false`
+first, then takes the newest _already-started_ one — "started somewhere", not "started
+everywhere", because regions stagger by up to 32 hours exactly as PvP seasons do (§4.8).
 
 ---
 
@@ -853,11 +1202,11 @@ is gated on the _next_ season starting, not on a sweep.
 
 Two Vitest projects, because the layers have different prerequisites.
 
-| Command            | Project       | Covers                                          | Needs   |
-| ------------------ | ------------- | ----------------------------------------------- | ------- |
-| `npm test`         | `unit`        | `src/**/*.spec.ts` — pure functions, mocked DI  | nothing |
-| `npm run test:int` | `integration` | `test/**/*.spec.ts` — real Mongo, fake Blizzard | Docker  |
-| `npm run test:all` | both          |                                                 | Docker  |
+| Command            | Project       | Covers                                                      | Needs   |
+| ------------------ | ------------- | ----------------------------------------------------------- | ------- |
+| `npm test`         | `unit`        | `src/**/*.spec.ts` — pure functions, mocked DI              | nothing |
+| `npm run test:int` | `integration` | `test/**/*.spec.ts` — real Mongo, fake Blizzard + Raider.io | Docker  |
+| `npm run test:all` | both          |                                                             | Docker  |
 
 The integration project is deliberately out of `npm test`, so a push does not demand a
 running container. Vitest runs through SWC in both, so Nest DI works.
@@ -884,8 +1233,10 @@ Everything lives in `test/support/`:
 | `world.ts`         | Mutable model of Blizzard. Scenarios are mutations to it between sweeps. |
 | `specs.ts`         | The 40 real specialisations, so a world publishes the same 85 brackets.  |
 | `fake-blizzard.ts` | Replaces `BlizzardHttpService`, serving the World as raw JSON.           |
-| `app.ts`           | `bootTestApp` — real `AppModule`, real Mongo, fake Blizzard.             |
-| `invariants.ts`    | `expectInvariants` and the individual I1–I11 checks.                     |
+| `mplus-world.ts`   | Mutable model of Raider.io: seasons, runs, rosters.                      |
+| `fake-raiderio.ts` | Replaces `RaiderIoHttpService`, serving the M+ world as raw JSON.        |
+| `app.ts`           | `bootTestApp` — real `AppModule`, real Mongo, both fakes.                |
+| `invariants.ts`    | `expectInvariants` and the individual I1–I16 checks.                     |
 | `database.ts`      | Test database naming and the guard below.                                |
 | `http.ts`          | `fetch` against a real listener; no supertest dependency.                |
 | `seams.ts`         | Every scheduler whose bootstrap work can be awaited.                     |
@@ -894,6 +1245,23 @@ Everything lives in `test/support/`:
 every zod schema inside the test, which is where the payload traps of §9.5 live. The fake
 reproduces them deliberately: `leaderboards[].id` on the first entry only, and
 `season_end_timestamp` absent rather than null while a season runs.
+
+`FakeRaiderIo` is built the same way and reproduces its own upstream's quirks: an anonymised
+realm with `wowRealmId`, `altName`, `locale` and `realmType` **absent** (§9.10), a `null`
+`loadout`, a `400` rather than an empty page past `page` 1000, and an empty `rankings` array
+for a region shallower than the page ceiling. Like `FakeBlizzard` it is handed the real
+`DependencyHealth` **and** the real `RaiderIoBudget` by `bootTestApp` — without both, every
+test would run against a budget that never fills and readiness would report `unknown` for
+Raider.io forever.
+
+`test/setup/integration-env.ts` points `RAIDERIO_API_BASE_URL` at a dead port and sets a
+placeholder key, for the same reason it does so for Blizzard: a missed seam must fail
+locally rather than spend the owner's real Raider.io allowance.
+
+Three M+ files, split by the one-configuration-per-file rule: `mplus-ingestion.spec.ts`
+(the pass, the score fold, pruning, idempotence), `mplus-failures.spec.ts` (budget
+exhaustion, failed pages, empty bodies, the prune guard) and `mplus-coordination.spec.ts`
+(job priority, readiness, key redaction, season rollover).
 
 ### 10.3 Two rules the harness enforces
 
@@ -955,6 +1323,17 @@ pick the field up before the TTL expires.
 **Adding an index.** `characters` is near no cap, but remember the 64-index limit and prefer
 extending the wildcard-covered maps over adding per-key indexes.
 
+**Adding a third upstream.** The pattern is now established rather than improvised, and
+Raider.io is the worked example: a module under `src/<upstream>/` with `http/`, `schemas/`
+and a typed `*.api.ts`; its **own** budget built on `RollingWindow` (never a share of
+another upstream's); a `RunKind` in `run-context.ts` plus a `consumerFor` mapping; a
+provider key in `DependencyHealth` so it reports **soft**; a readiness block read from
+memory; a fake at the HTTP seam wired into `bootTestApp` with both the health instance and
+the budget; the scheduler added to `test/support/seams.ts`; and a slot in
+`IngestionCoordinator` decided deliberately rather than by omission. Check
+`quotaConsumerFor` too: a new `RunKind` falls into Blizzard's never-throttled `other`
+bucket by default, which is only correct if the job makes no Blizzard requests.
+
 ---
 
 ## 12. Known limitations
@@ -976,7 +1355,23 @@ extending the wildcard-covered maps over adding per-key indexes.
 - **Enrichment backlog.** At default batch size a full pass over ~138k characters takes
   roughly two days, and the archive yields to enrichment, so a backfill running alongside it
   progresses only in the gaps.
-- **The season purge is irreversible and fires at boot on a first deploy** (§4.6). Ship
+- **The season purge is irreversible and fires at boot on a first deploy** (§4.8). Ship
   behind `SEASON_PURGE_DRY_RUN=true` and read the logged plan before flipping it.
 - **Cross-region boards need four queries merged**, or a `seasonId + rating` index; the
   current index is prefixed by region.
+- **`mplus_characters.mythicScore` is not Raider.io's mythic+ score** (§5.5). It sums only
+  the runs on the ingested leaderboard, so it ranks leaderboard presence and is comparable
+  only between characters with the same `dungeonsCovered`. Per-dungeon fetching would fix
+  it at 8x the requests (32,032 a pass at five regions instead of 5,005).
+- **M+ and PvP records for the same player are not joined.** They live in separate
+  collections with no shared id (§9.9); join on `region + realmSlug + lowercased name`.
+- **Anonymised M+ players are reachable only through a run's roster**, never as characters
+  (§9.10). There is no way to give them a board entry, and nothing is lost by it.
+- **The Raider.io rate limit is configuration, not a negotiated value.** No rate-limit
+  header is exposed on a success, so `RAIDERIO_MINUTE_LIMIT` is a stated figure with a
+  measured floor (300 requests, no 429). If Raider.io tightens it, the first sign will be
+  429s in the logs rather than anything readiness could have predicted.
+- **A full M+ pass is ~5,005 requests and ~100,000 runs written**, roughly 150MB a pass at
+  five regions. The whole ladder is rewritten each time rather than diffed, which is what
+  makes `mythicScore` recomputable but means the write volume does not fall as the season
+  settles.

@@ -99,9 +99,13 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
       await withRunId('archive', async () => {
         for (;;) {
           // Re-checked between seasons: a sweep or enrichment pass starting mid
-          // backlog takes the quota back immediately.
-          if (this.coordinator.isLiveIngestionActive) {
-            this.logger.log('Live ingestion in progress, pausing the archive');
+          // backlog takes the quota back immediately. A Mythic+ pass takes no
+          // Blizzard quota at all, but the archive still yields to it — it is
+          // the lowest-priority job in the service, and a backfill writing
+          // millions of rows next to a pass writing hundreds of thousands is
+          // contention neither of them needs.
+          if (this.coordinator.isLiveIngestionActive || this.coordinator.isMplusActive) {
+            this.logger.log('Higher-priority ingestion in progress, pausing the archive');
             return;
           }
 

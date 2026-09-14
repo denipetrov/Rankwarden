@@ -12,6 +12,12 @@ import { CHARACTERS_COLLECTION } from '../../src/leaderboard/entities/character.
 import { RATING_COLLECTIONS } from '../../src/leaderboard/entities/rating.entity.js';
 import { SPEC_REPRESENTATION_COLLECTION } from '../../src/representation/entities/spec-representation.entity.js';
 import { ARCHIVE_ENTRIES_COLLECTION } from '../../src/archive/entities/archive.entity.js';
+import {
+  MPLUS_CHARACTERS_COLLECTION,
+  mplusCharacterKey,
+} from '../../src/mplus/entities/mplus-character.entity.js';
+import { MPLUS_RUNS_COLLECTION } from '../../src/mplus/entities/mplus-run.entity.js';
+import { MPLUS_AFFIXES_COLLECTION } from '../../src/mplus/entities/mplus-affix.entity.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
@@ -39,6 +45,9 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectIndexInventory(db);
   await expectRepresentationCoherent(db);
   await expectEveryCharacterTyped(db);
+  await expectMplusScoreMatchesRuns(db);
+  await expectMplusRunsReferenceKnownAffixes(db);
+  await expectNoAnonymisedMplusCharacters(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -334,4 +343,119 @@ export async function expectArchiveSelfContained(db: Db): Promise<void> {
   if (characters.length > 0) await db.collection(CHARACTERS_COLLECTION).insertMany(characters);
 
   expect(after, 'I10: archive must not depend on characters').toEqual(before);
+}
+
+/**
+ * I12 — a Mythic+ character's score is the sum of the runs stored on it.
+ *
+ * The stat the front end sorts on, recomputed from the document's own
+ * `dungeonRuns`. It also catches the subtler error: two entries for the same
+ * dungeon, which would double-count that dungeon's score and put a character
+ * above people who actually out-performed them.
+ */
+export async function expectMplusScoreMatchesRuns(db: Db): Promise<void> {
+  const characters = await db.collection(MPLUS_CHARACTERS_COLLECTION).find({}).toArray();
+
+  for (const character of characters) {
+    const runs = (character.dungeonRuns ?? []) as { dungeon: { id: number }; score: number }[];
+    const label = `I12: ${character.region}/${character.realmSlug}/${character.nameKey}`;
+
+    const dungeonIds = runs.map((run) => run.dungeon.id);
+    expect(new Set(dungeonIds).size, `${label} one entry per dungeon`).toBe(dungeonIds.length);
+
+    expect(character.dungeonsCovered, `${label} dungeonsCovered counts the runs`).toBe(runs.length);
+
+    const summed = Math.round(runs.reduce((sum, run) => sum + run.score, 0) * 10) / 10;
+    expect(character.mythicScore, `${label} mythicScore sums the stored runs`).toBe(summed);
+  }
+}
+
+/**
+ * I13 — every affix a run references is stored.
+ *
+ * The whole point of keeping affix names out of the run documents is that the
+ * id resolves. An id with no row is a run whose affixes cannot be rendered, and
+ * nothing else in the system would notice.
+ */
+export async function expectMplusRunsReferenceKnownAffixes(db: Db): Promise<void> {
+  const referenced = (await db.collection(MPLUS_RUNS_COLLECTION).distinct('affixIds')) as number[];
+
+  if (referenced.length === 0) return;
+
+  const known = new Set((await db.collection(MPLUS_AFFIXES_COLLECTION).distinct('id')) as number[]);
+  const missing = referenced.filter((id) => !known.has(id));
+
+  expect(missing, 'I13: every affix a run references must be stored').toEqual([]);
+}
+
+/**
+ * I14 — no anonymised character reaches `mplus_characters`.
+ *
+ * Every anonymised character upstream carries `id: 0` and the placeholder realm
+ * `anonymous`, so one that got through would not be one character but all of
+ * them folded together, holding one player's runs under another's name. The run
+ * roster is where they belong, and this asserts they are still there.
+ */
+export async function expectNoAnonymisedMplusCharacters(db: Db): Promise<void> {
+  const leaked = await db
+    .collection(MPLUS_CHARACTERS_COLLECTION)
+    .find(
+      { $or: [{ realmSlug: 'anonymous' }, { rioCharacterId: 0 }] },
+      { projection: { nameKey: 1 } },
+    )
+    .limit(5)
+    .toArray();
+
+  expect(
+    leaked.map((doc) => doc.nameKey),
+    'I14: anonymised characters must stay out of mplus_characters',
+  ).toEqual([]);
+}
+
+/**
+ * I15 — `mplus_runs` rows read correctly with `mplus_characters` gone.
+ *
+ * Self-contained for the same reason `archive_entries` is: a run is a
+ * historical fact and must keep reading after the character is renamed,
+ * transferred, or pruned off the board.
+ */
+export async function expectMplusRunsSelfContained(db: Db): Promise<void> {
+  const before = await db.collection(MPLUS_RUNS_COLLECTION).find({}).sort({ _id: 1 }).toArray();
+  const characters = await db.collection(MPLUS_CHARACTERS_COLLECTION).find({}).toArray();
+
+  await db.collection(MPLUS_CHARACTERS_COLLECTION).deleteMany({});
+  const after = await db.collection(MPLUS_RUNS_COLLECTION).find({}).sort({ _id: 1 }).toArray();
+
+  if (characters.length > 0) {
+    await db.collection(MPLUS_CHARACTERS_COLLECTION).insertMany(characters);
+  }
+
+  expect(after, 'I15: mplus_runs must not depend on mplus_characters').toEqual(before);
+}
+
+/**
+ * I16 — a run's `rosterKeys` mirror its named roster members exactly.
+ *
+ * The flat mirror is what the `run_roster` index serves, so drift between it
+ * and the roster it mirrors means a character lookup silently misses runs they
+ * are in, or claims runs they are not.
+ */
+export async function expectMplusRosterKeysMirrorRoster(db: Db): Promise<void> {
+  const runs = await db.collection(MPLUS_RUNS_COLLECTION).find({}).toArray();
+
+  for (const run of runs) {
+    const roster = (run.roster ?? []) as {
+      region: string;
+      realmSlug: string;
+      characterName: string;
+      anonymized: boolean;
+    }[];
+    const expected = roster
+      .filter((member) => !member.anonymized)
+      .map((member) => mplusCharacterKey(member.region, member.realmSlug, member.characterName));
+
+    expect(run.rosterKeys, `I16: run ${run.keystoneRunId} rosterKeys mirror its roster`).toEqual(
+      expected,
+    );
+  }
 }
