@@ -163,12 +163,40 @@ export class FakeBlizzard {
       });
     }
 
+    const rewards = /^data\/wow\/pvp-season\/(\d+)\/pvp-reward\/index$/.exec(path);
+    if (rewards) {
+      // `rewards:<season>` fails one season's rewards alone, as with brackets.
+      const narrow = `rewards:${rewards[1]}`;
+      const key = this.hasFault(region, narrow) ? narrow : 'rewards';
+
+      return this.serve(region, key, path, () => {
+        const payload = this.world.rewardsPayload(region, Number(rewards[1]));
+        if (!payload) throw this.error(404, path, `no season ${rewards[1]}`);
+
+        return payload;
+      });
+    }
+
+    const specialization = /^data\/wow\/playable-specialization\/(\d+)$/.exec(path);
+    if (specialization) {
+      return this.serve(region, `specialization:${specialization[1]}`, path, () => {
+        const payload = this.world.specializationPayload(Number(specialization[1]));
+        if (!payload) throw this.error(404, path, `no specialization ${specialization[1]}`);
+
+        return payload;
+      });
+    }
+
     const ladder = /^data\/wow\/pvp-season\/(\d+)\/pvp-leaderboard\/(.+)$/.exec(path);
     if (ladder) {
       const seasonId = Number(ladder[1]);
       const bracket = decodeURIComponent(ladder[2]);
+      // `ladder:<season>/<bracket>` fails one season's copy of a ladder, so the
+      // live sweep and the other archived seasons keep being served.
+      const narrow = `ladder:${seasonId}/${bracket}`;
+      const key = this.hasFault(region, narrow) ? narrow : bracket;
 
-      return this.serve(region, bracket, path, () => {
+      return this.serve(region, key, path, () => {
         if (!this.world.brackets(region).includes(bracket)) {
           throw this.error(404, path, `bracket ${bracket} is not published`);
         }

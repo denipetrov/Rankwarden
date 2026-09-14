@@ -116,17 +116,31 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
           }
 
           const pending = await this.archive.nextPending(failedThisTick);
-          if (!pending) return;
+          if (!pending) break;
+
+          const key = `${pending.seasonId}:${pending.region}`;
 
           try {
-            await this.archive.archiveSeason(pending.seasonId, pending.region);
+            const result = await this.archive.archiveSeason(pending.seasonId, pending.region);
+
+            // Came back incomplete: a bracket could not be fetched. It stays
+            // pending, but for the next tick rather than this one.
+            // `nextPending` would hand the same season straight back, and a
+            // failure that persists would be retried every pause until the
+            // archive's share of the quota was gone.
+            if (result.failedBrackets.length > 0) failedThisTick.add(key);
           } catch (error) {
             await this.recordFailure(pending.seasonId, pending.region, error);
-            failedThisTick.add(`${pending.seasonId}:${pending.region}`);
+            failedThisTick.add(key);
           }
 
           await new Promise((resolve) => setTimeout(resolve, this.pauseMs));
         }
+
+        // Rewards come after the backlog, and only for what it archived: a
+        // season finished in this tick gets its rewards in this tick too, and
+        // one Blizzard will not serve never gets a marker to be asked about.
+        await this.archive.archivePendingRewards();
       });
     } catch (error) {
       this.logger.error('Archiving failed', errorStack(error));

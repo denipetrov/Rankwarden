@@ -9,6 +9,11 @@ import {
 } from './schemas/pvp-season.schema.js';
 import { pvpLeaderboardSchema, type PvpLeaderboard } from './schemas/pvp-leaderboard.schema.js';
 import { pvpLeaderboardIndexSchema } from './schemas/pvp-leaderboard-index.schema.js';
+import {
+  playableSpecializationSchema,
+  pvpRewardIndexSchema,
+  type PvpReward,
+} from './schemas/pvp-reward.schema.js';
 
 /** Typed access to the PvP slice of the Game Data API. */
 @Injectable()
@@ -68,5 +73,33 @@ export class PvpApi {
       `${region}/${bracket} season ${seasonId}: ${leaderboard.entries.length} entries`,
     );
     return leaderboard;
+  }
+
+  /**
+   * The titles a season awarded and the rating each one took. Served for the
+   * running season too, but the cutoffs only settle once it has ended.
+   */
+  async getSeasonRewards(region: Region, seasonId: number): Promise<PvpReward[]> {
+    const payload = await this.http.get(region, `data/wow/pvp-season/${seasonId}/pvp-reward/index`);
+
+    return pvpRewardIndexSchema.parse(payload).rewards;
+  }
+
+  /**
+   * A specialisation and the class it belongs to. Rewards name a spec only by
+   * id and name, and the name alone is ambiguous — Holy, Frost, Protection and
+   * Restoration each exist on two classes — so the class is what turns a reward
+   * into the ladder it was earned on.
+   */
+  async getSpecialization(
+    region: Region,
+    specId: number,
+  ): Promise<{ id: number; name: string; className: string }> {
+    const payload = await this.http.get(region, `data/wow/playable-specialization/${specId}`, {
+      namespace: 'static',
+    });
+    const spec = playableSpecializationSchema.parse(payload);
+
+    return { id: spec.id, name: spec.name, className: spec.playable_class.name };
   }
 }

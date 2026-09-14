@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget } from '../common/quota/quota-budget.service.js';
@@ -22,11 +23,33 @@ const env: Record<string, unknown> = {
   QUOTA_SWEEP_RESERVE: 1_000,
 };
 
+/** The live classes of the real spec ids used below. */
+const SPECS: Record<number, { name: string; className: string }> = {
+  72: { name: 'Fury', className: 'Warrior' },
+  65: { name: 'Holy', className: 'Paladin' },
+  257: { name: 'Holy', className: 'Priest' },
+};
+
+const GLADIATOR = {
+  bracket: { id: 1, type: 'ARENA_3v3' },
+  achievement: { id: 61180, name: 'Galactic Gladiator: Midnight Season 1' },
+  rating_cutoff: 3134,
+};
+
+const legend = (specId: number, specName: string, cutoff: number) => ({
+  bracket: { id: 6, type: 'SHUFFLE' },
+  achievement: { id: 61179, name: 'Galactic Legend: Midnight Season 1' },
+  rating_cutoff: cutoff,
+  specialization: { id: specId, name: specName },
+});
+
 describe('ArchiveService', () => {
   const getSeasonIndex = vi.fn();
   const getBrackets = vi.fn();
   const getLeaderboard = vi.fn();
   const getSeason = vi.fn();
+  const getSeasonRewards = vi.fn();
+  const getSpecialization = vi.fn();
   const settledSeasons = vi.fn();
   const markedSeasons = vi.fn();
   const insertEntries = vi.fn();
@@ -36,6 +59,9 @@ describe('ArchiveService', () => {
   const markUnarchivable = vi.fn();
   const recordBracketFetch = vi.fn();
   const fetchedBrackets = vi.fn();
+  const seasonsAwaitingRewards = vi.fn();
+  const recordRewards = vi.fn();
+  const recordRewardsFailure = vi.fn();
   const hasEnded = vi.fn();
   let coordinator: IngestionCoordinator;
   let budget: QuotaBudget;
@@ -68,6 +94,13 @@ describe('ArchiveService', () => {
       startsAt: new Date('2026-03-17T15:00:00.000Z'),
       endsAt: new Date('2026-08-11T05:00:00.000Z'),
     });
+    getSeasonRewards.mockResolvedValue([GLADIATOR, legend(72, 'Fury', 3184)]);
+    getSpecialization.mockImplementation(async (_region: string, specId: number) => {
+      const spec = SPECS[specId];
+      if (!spec) throw new BlizzardApiError(404, 'spec', 'Blizzard API 404: not found');
+
+      return { id: specId, ...spec };
+    });
     settledSeasons.mockResolvedValue(new Set<string>());
     // No markers at all by default, so the recovery probe is allowed to run.
     markedSeasons.mockResolvedValue(new Set<string>());
@@ -85,7 +118,17 @@ describe('ArchiveService', () => {
         ArchiveService,
         { provide: IngestionCoordinator, useValue: coordinator },
         { provide: QuotaBudget, useValue: budget },
-        { provide: PvpApi, useValue: { getSeasonIndex, getBrackets, getLeaderboard, getSeason } },
+        {
+          provide: PvpApi,
+          useValue: {
+            getSeasonIndex,
+            getBrackets,
+            getLeaderboard,
+            getSeason,
+            getSeasonRewards,
+            getSpecialization,
+          },
+        },
         { provide: SeasonService, useValue: { hasEnded } },
         {
           provide: ArchiveRepository,
@@ -99,6 +142,9 @@ describe('ArchiveService', () => {
             markUnarchivable,
             recordBracketFetch,
             fetchedBrackets,
+            seasonsAwaitingRewards,
+            recordRewards,
+            recordRewardsFailure,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },
@@ -134,7 +180,17 @@ describe('ArchiveService', () => {
         ArchiveService,
         { provide: IngestionCoordinator, useValue: coordinator },
         { provide: QuotaBudget, useValue: budget },
-        { provide: PvpApi, useValue: { getSeasonIndex, getBrackets, getLeaderboard, getSeason } },
+        {
+          provide: PvpApi,
+          useValue: {
+            getSeasonIndex,
+            getBrackets,
+            getLeaderboard,
+            getSeason,
+            getSeasonRewards,
+            getSpecialization,
+          },
+        },
         { provide: SeasonService, useValue: { hasEnded } },
         {
           provide: ArchiveRepository,
@@ -148,6 +204,9 @@ describe('ArchiveService', () => {
             markUnarchivable,
             recordBracketFetch,
             fetchedBrackets,
+            seasonsAwaitingRewards,
+            recordRewards,
+            recordRewardsFailure,
           },
         },
         { provide: ConfigService, useValue: { get: (key: string) => env[key] } },
@@ -318,6 +377,169 @@ describe('ArchiveService', () => {
 
       expect(getLeaderboard).not.toHaveBeenCalled();
       expect(result.failedBrackets).toEqual(['3v3']);
+    });
+  });
+
+  describe('season rewards', () => {
+    const refused = (status: number) =>
+      new BlizzardApiError(status, 'rewards', `Blizzard API ${status} for rewards`);
+
+    beforeEach(() => {
+      seasonsAwaitingRewards.mockResolvedValue([{ seasonId: 41, region: 'us' }]);
+      // The archive's own view of the season's ladders, which rewards are
+      // placed against — no bracket list is fetched for them.
+      summariseStored.mockResolvedValue({ brackets: ['3v3', 'shuffle-warrior-fury'], entries: 9 });
+    });
+
+    it('are never fetched while archiving a season', async () => {
+      // Only once the standings are in `archive_seasons` in full does a season
+      // qualify, so a season Blizzard will not serve never costs a request.
+      await service.archiveSeason(41, 'us');
+
+      expect(getSeasonRewards).not.toHaveBeenCalled();
+      expect(recordSeason.mock.calls[0][0]).not.toHaveProperty('rewards');
+    });
+
+    it('are asked for only the seasons the archive holds, in the configured regions', async () => {
+      await service.archivePendingRewards();
+
+      expect(seasonsAwaitingRewards).toHaveBeenCalledWith(['us', 'eu']);
+      expect(getSeasonRewards.mock.calls).toEqual([['us', 41]]);
+      // One request per season: no season index, bracket list or season record.
+      expect(getSeasonIndex).not.toHaveBeenCalled();
+      expect(getBrackets).not.toHaveBeenCalled();
+      expect(getSeason).not.toHaveBeenCalled();
+    });
+
+    it('records the cutoffs and titles on the season', async () => {
+      const result = await service.archivePendingRewards();
+
+      expect(result).toEqual({ seasons: 1, fetched: 1, failed: 0, pending: 0 });
+      expect(recordRewards).toHaveBeenCalledWith(
+        41,
+        'us',
+        [
+          expect.objectContaining({
+            bracket: '3v3',
+            ratingCutoff: 3134,
+            title: 'Galactic Gladiator: Midnight Season 1',
+          }),
+          expect.objectContaining({
+            bracket: 'shuffle-warrior-fury',
+            ratingCutoff: 3184,
+            title: 'Galactic Legend: Midnight Season 1',
+          }),
+        ],
+        expect.any(Date),
+      );
+    });
+
+    it('looks each spec up once, not once per season', async () => {
+      seasonsAwaitingRewards.mockResolvedValue([
+        { seasonId: 41, region: 'us' },
+        { seasonId: 40, region: 'eu' },
+      ]);
+
+      await service.archivePendingRewards();
+
+      expect(getSeasonRewards).toHaveBeenCalledTimes(2);
+      expect(getSpecialization).toHaveBeenCalledOnce();
+      expect(getSpecialization).toHaveBeenCalledWith('us', 72);
+    });
+
+    it('tells two specs with the same name apart by their class', async () => {
+      summariseStored.mockResolvedValue({
+        brackets: ['shuffle-paladin-holy', 'shuffle-priest-holy'],
+        entries: 9,
+      });
+      getSeasonRewards.mockResolvedValue([legend(65, 'Holy', 2400), legend(257, 'Holy', 2600)]);
+
+      await service.archivePendingRewards();
+
+      const [, , rewards] = recordRewards.mock.calls[0];
+      expect(
+        rewards.map((reward: { bracket: string; ratingCutoff: number }) => [
+          reward.bracket,
+          reward.ratingCutoff,
+        ]),
+      ).toEqual([
+        ['shuffle-paladin-holy', 2400],
+        ['shuffle-priest-holy', 2600],
+      ]);
+    });
+
+    it.each([403, 404])(
+      'records a %i as failed, so the season is never asked again',
+      async (status) => {
+        getSeasonRewards.mockRejectedValue(refused(status));
+
+        const result = await service.archivePendingRewards();
+
+        expect(result).toEqual({ seasons: 1, fetched: 0, failed: 1, pending: 0 });
+        expect(recordRewardsFailure).toHaveBeenCalledWith(41, 'us', {
+          statusCode: status,
+          reason: expect.stringContaining(String(status)),
+          at: expect.any(Date),
+        });
+        expect(recordRewards).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['a 5xx', refused(503)],
+      ['a timeout', new Error('Timeout awaiting request for 10000ms')],
+    ])('leaves the season pending after %s, to be retried', async (_label, error) => {
+      getSeasonRewards.mockRejectedValue(error);
+
+      const result = await service.archivePendingRewards();
+
+      expect(result).toEqual({ seasons: 1, fetched: 0, failed: 0, pending: 1 });
+      expect(recordRewards).not.toHaveBeenCalled();
+      expect(recordRewardsFailure).not.toHaveBeenCalled();
+    });
+
+    it('asks each season once per pass however it fails', async () => {
+      seasonsAwaitingRewards.mockResolvedValue([
+        { seasonId: 41, region: 'us' },
+        { seasonId: 40, region: 'us' },
+      ]);
+      getSeasonRewards.mockRejectedValue(refused(503));
+
+      await service.archivePendingRewards();
+
+      expect(getSeasonRewards.mock.calls).toEqual([
+        ['us', 41],
+        ['us', 40],
+      ]);
+    });
+
+    it('does not record rewards with their ladders missing when a spec lookup fails', async () => {
+      // Recorded without the class, the Fury reward would be dropped for good.
+      getSpecialization.mockRejectedValue(new Error('socket hang up'));
+
+      const result = await service.archivePendingRewards();
+
+      expect(result.pending).toBe(1);
+      expect(recordRewards).not.toHaveBeenCalled();
+      expect(recordRewardsFailure).not.toHaveBeenCalled();
+    });
+
+    it('keeps the rest when Blizzard does not recognise one spec', async () => {
+      getSeasonRewards.mockResolvedValue([GLADIATOR, legend(9999, 'Mystery', 2000)]);
+
+      await service.archivePendingRewards();
+
+      const [, , rewards] = recordRewards.mock.calls[0];
+      expect(rewards.map((reward: { bracket: string }) => reward.bracket)).toEqual(['3v3']);
+    });
+
+    it('yields to live ingestion, leaving every season pending', async () => {
+      await coordinator.duringSweep(async () => {
+        const result = await service.archivePendingRewards();
+
+        expect(result).toEqual({ seasons: 1, fetched: 0, failed: 0, pending: 1 });
+        expect(getSeasonRewards).not.toHaveBeenCalled();
+      });
     });
   });
 });

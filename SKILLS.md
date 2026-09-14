@@ -294,8 +294,55 @@ outstanding.
 
 The scheduler takes one season per pass and comes straight back while work remains, pausing
 `ARCHIVE_SEASON_PAUSE_MS` between seasons. A season that 404s is marked `unarchivable` and
-skipped permanently, so one dead season cannot block the backlog behind it; any other
-failure is skipped for the rest of that tick only.
+skipped permanently, so one dead season cannot block the backlog behind it. Any other
+failure, and any season that comes back **incomplete** (a failed bracket), is skipped for
+the rest of that tick only. The incomplete case matters because `nextPending` would hand the
+same season straight back: before it was skipped, one bracket that kept failing was retried
+every pause until the archive's share of the quota ran out.
+
+**Season rewards** are a separate pass, `archivePendingRewards()`, run at the end of every
+tick once the backlog is done, and from `POST /admin/archive-rewards`. It is **driven by
+`archive_seasons` alone**. It asks only about seasons whose standings are archived in full:
+`failedBrackets` empty, not `unarchivable`, in a configured region, with no rewards yet. A
+season Blizzard will not serve (22–26 answer 403) never gets a marker, so it never costs a
+rewards request. A season still missing brackets waits until they land. A season finished
+in a tick gets its rewards in the same tick.
+
+Each season costs one request, to `pvp-season/{id}/pvp-reward/index`. Rewards are placed
+against the ladders the archive itself recorded (`archive_brackets` ∪ stored rows), so no
+bracket list or season record is fetched for them. Add one `playable-specialization/{id}`
+lookup the first time a spec is seen. A reward names
+its spec only by id and bare name, and four names exist on two classes (Holy, Frost,
+Protection, Restoration), so the class is what places a reward on its ladder. Class and spec
+names, lowercased with spaces removed, give the bracket key (`Death Knight` + `Unholy` →
+`shuffle-deathknight-unholy`; verified against all 40 live specs). The lookup is cached for
+the life of the process, since a spec never changes class.
+
+| Blizzard bracket type | Ladder                 | Split by       | Title (Midnight S1)                 |
+| --------------------- | ---------------------- | -------------- | ----------------------------------- |
+| `ARENA_3v3`           | `3v3`                  | —              | Galactic Gladiator                  |
+| `BATTLEGROUNDS`       | `rbg`                  | faction        | Hero of the Alliance / of the Horde |
+| `SHUFFLE`             | `shuffle-<class-spec>` | spec           | Galactic Legend                     |
+| `BLITZ`               | `blitz-<class-spec>`   | spec + faction | Galactic Marshal / Warlord          |
+
+2v2 awards no title. A live season carries 123 rewards (1 + 2 + 40 + 80). Faction cutoffs
+normally match, but Shadowlands 3v3 had different ones for each side, so the faction is kept
+wherever Blizzard splits a reward. A reward that cannot be placed (an unknown bracket type, a
+spec Blizzard 404s, or a ladder the archive has no record of) is logged and left out rather
+than guessed at.
+
+| Rewards response                           | Recorded                                    | Asked again |
+| ------------------------------------------ | ------------------------------------------- | ----------- |
+| 200                                        | `rewards`, `rewardsFetchedAt`               | never       |
+| **403 / 404**                              | `rewardsFailed: { statusCode, reason, at }` | **never**   |
+| 5xx, timeout, empty body, spec lookup fail | nothing                                     | next pass   |
+
+The pass reads its list once, so each season is asked at most once per pass whatever
+happens. It yields to live ingestion and to a spent archive budget, leaving the rest pending.
+Seasons archived before rewards existed have no `rewardsFetchedAt`, so the first pass fills
+them in. A lost marker recovered from stored rows comes back without rewards and is picked up
+the same way. To ask Blizzard again about a season recorded as failed, unset its
+`rewardsFailed`.
 
 ### 4.5 Season refresh
 
@@ -442,7 +489,16 @@ Indexes: `snapshot_identity` (unique), `series` (the time-series read, ~1ms).
 
 // archive_seasons — the run-once marker
 { seasonId, region, name, startsAt, endsAt, brackets, entries,
-  failedBrackets: [], archivedAt, unarchivable?, lastError? }
+  failedBrackets: [], archivedAt, unarchivable?, lastError?,
+  rewards: [                                   // one per ladder, per faction where split
+    { bracket: 'shuffle-warrior-fury', faction: null, ratingCutoff: 3184,
+      title: 'Galactic Legend: Midnight Season 1', achievementId: 61179,
+      specialization: { id: 72, name: 'Fury' } },
+    { bracket: 'rbg', faction: 'HORDE', ratingCutoff: 2684,
+      title: 'Hero of the Horde: Galactic', achievementId: 61196, specialization: null },
+  ],
+  rewardsFetchedAt,                            // set with rewards
+  rewardsFailed? }                             // { statusCode, reason, at } on 403/404; never retried
 
 // archive_brackets — what was fetched, whatever it contained
 { seasonId, region, bracket, entries, fetchedAt }
@@ -465,6 +521,12 @@ Coverage is `archive_brackets ∪ rows`. The union matters: the fetch record is 
 the rows, so a crash between the two leaves rows that still count. Seasons archived before
 the collection existed have no records, so their rows stand in — the old inference, with the
 old blind spot, but far better than treating archived history as missing.
+
+A season's standings are **settled** when `failedBrackets` is empty or it is `unarchivable`.
+Rewards are tracked apart from that and never hold the backlog up: a season awaits them
+while it is settled, not `unarchivable`, and has neither `rewardsFetchedAt` nor
+`rewardsFailed`. `rewards[].bracket` uses the same keys as `archive_entries`, and
+`specialization.id` is Blizzard's spec id, the same one `characters.profile.spec` carries.
 
 Indexes: `archive_board`, `archive_identity` (unique), `archive_character`, and
 `bracket_identity` (unique) on `archive_brackets`.
@@ -581,7 +643,8 @@ readiness path because it reads the database.
 
 ### `POST /admin/*` — dev-only job triggers
 
-`sweep`, `enrich`, `snapshot`, `archive`, `season-refresh`, `season-transition`. Each drives
+`sweep`, `enrich`, `snapshot`, `archive`, `archive-rewards`, `season-refresh`,
+`season-transition`. Each drives
 exactly **one** cycle and returns that cycle's own result object. Every route **404s when
 `NODE_ENV=production`**.
 
