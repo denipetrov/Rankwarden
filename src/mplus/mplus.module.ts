@@ -9,6 +9,6 @@ import { MplusService } from './mplus.service.js';
 @Module({
   imports: [RaiderIoModule],
   providers: [MplusRepository, MplusSeasonService, MplusService, MplusScheduler],
-  exports: [MplusService, MplusSeasonService],
+  exports: [MplusService, MplusSeasonService, MplusRepository],
 })
 export class MplusModule {}

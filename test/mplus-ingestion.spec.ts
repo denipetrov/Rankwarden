@@ -12,6 +12,7 @@ import {
   expectInvariants,
   expectMplusRosterKeysMirrorRoster,
   expectMplusRunsSelfContained,
+  expectNoOrphanMplusCharacters,
 } from './support/invariants.js';
 import { World } from './support/world.js';
 
@@ -167,48 +168,170 @@ describe('Mythic+ ingestion', () => {
     );
   });
 
-  it('prunes runs that fall off the leaderboard', async () => {
+  it('prunes runs that fall off the leaderboard, and the characters left in none', async () => {
+    // `Tank0`..`Tank9` appear in exactly one run each, so dropping those runs
+    // leaves them in nothing. `Regular` is in every run and must survive.
     const doomed = mplusWorld.runs.filter((run) => run.region === 'us').slice(0, 10);
     const doomedIds = doomed.map((run) => run.keystoneRunId);
-    mplusWorld.runs = mplusWorld.runs.filter((run) => !doomedIds.includes(run.keystoneRunId));
+    const strandedKeys = doomed.map((run) => `us/stormrage/${run.roster[0].name.toLowerCase()}`);
 
+    expect(
+      await db
+        .collection(MPLUS_CHARACTERS_COLLECTION)
+        .countDocuments({ key: { $in: strandedKeys } }),
+      'they are stored before the runs go',
+    ).toBe(strandedKeys.length);
+
+    mplusWorld.runs = mplusWorld.runs.filter((run) => !doomedIds.includes(run.keystoneRunId));
     await mplus.sweep();
 
-    const survivors = await db
-      .collection(MPLUS_RUNS_COLLECTION)
-      .countDocuments({ keystoneRunId: { $in: doomedIds } });
+    expect(
+      await db
+        .collection(MPLUS_RUNS_COLLECTION)
+        .countDocuments({ keystoneRunId: { $in: doomedIds } }),
+      'runs no longer on the board are removed',
+    ).toBe(0);
 
-    expect(survivors, 'runs no longer on the board are removed').toBe(0);
+    expect(
+      await db
+        .collection(MPLUS_CHARACTERS_COLLECTION)
+        .countDocuments({ key: { $in: strandedKeys } }),
+      'and so are the characters no surviving run lists',
+    ).toBe(0);
+
+    expect(
+      await db
+        .collection(MPLUS_CHARACTERS_COLLECTION)
+        .countDocuments({ key: 'us/illidan/regular' }),
+      'but a character still in other runs stays',
+    ).toBe(1);
   });
 
-  it('recomputes a character rather than merging onto a stale dungeon list', async () => {
-    // The reason upserts are a whole-document $set: a dungeon a character no
-    // longer ranks in must stop counting towards their score, and a merge would
-    // leave it on the document forever.
+  it('holds a score when a dungeon drops out of the ingested window', async () => {
+    // The monotonicity rule. `Regular` keeps their Den of Nalorakk entry even
+    // though every run of that dungeon has left the board — they did not lose
+    // the run, our window stopped showing it.
     const before = await db
       .collection(MPLUS_CHARACTERS_COLLECTION)
-      .findOne({ region: 'us', nameKey: 'regular' });
+      .findOne({ key: 'us/illidan/regular' });
+    expect(before!.dungeonsCovered).toBe(3);
 
     mplusWorld.runs = mplusWorld.runs.filter(
       (run) => !(run.region === 'us' && run.dungeonId === 16368),
     );
 
+    const result = await mplus.sweep();
+    const after = await db
+      .collection(MPLUS_CHARACTERS_COLLECTION)
+      .findOne({ key: 'us/illidan/regular' });
+
+    expect(after!.mythicScore, 'the score does not fall').toBe(before!.mythicScore);
+    expect(after!.dungeonsCovered).toBe(3);
+    expect(
+      (after!.dungeonRuns as { dungeon: { id: number } }[]).map((run) => run.dungeon.id),
+      'the dropped dungeon is still credited',
+    ).toContain(16368);
+
+    // And the pass says so, rather than leaving it to be inferred.
+    expect(
+      result!.regions.find((region) => region.region === 'us')!.mergedCharacters,
+    ).toBeGreaterThan(0);
+  });
+
+  it('leaves the kept dungeon pointing at a run that is no longer stored', async () => {
+    // The documented consequence of the two rules together: `mplus_runs` mirrors
+    // the current board, `dungeonRuns` remembers a best run once earned, so the
+    // join is optional by design. Asserted so it cannot be "fixed" by accident.
+    const character = await db
+      .collection(MPLUS_CHARACTERS_COLLECTION)
+      .findOne({ key: 'us/illidan/regular' });
+    const dropped = (
+      character!.dungeonRuns as { dungeon: { id: number }; keystoneRunId: number }[]
+    ).find((run) => run.dungeon.id === 16368)!;
+
+    expect(
+      await db
+        .collection(MPLUS_RUNS_COLLECTION)
+        .countDocuments({ keystoneRunId: dropped.keystoneRunId }),
+    ).toBe(0);
+  });
+
+  it('still raises a score when a better run arrives', async () => {
+    // Monotonic must not mean frozen.
+    const before = await db
+      .collection(MPLUS_CHARACTERS_COLLECTION)
+      .findOne({ key: 'us/illidan/regular' });
+
+    mplusWorld.runs.push({
+      keystoneRunId: 999_001,
+      dungeonId: 9527,
+      dungeonName: 'Temple of Sethraliss',
+      dungeonSlug: 'temple-of-sethraliss',
+      score: 9_000,
+      mythicLevel: 30,
+      region: 'us',
+      roster: [
+        {
+          id: 3_001,
+          name: 'Regular',
+          realmSlug: 'illidan',
+          wowRealmId: 57,
+          classId: 8,
+          specId: 62,
+          role: 'dps',
+        },
+        {
+          id: 7_001,
+          name: 'Newtank',
+          realmSlug: 'stormrage',
+          wowRealmId: 60,
+          classId: 6,
+          specId: 250,
+          role: 'tank',
+        },
+        {
+          id: 7_002,
+          name: 'Newheal',
+          realmSlug: 'stormrage',
+          wowRealmId: 60,
+          classId: 2,
+          specId: 65,
+          role: 'healer',
+        },
+        {
+          id: 7_003,
+          name: 'Newdps',
+          realmSlug: 'stormrage',
+          wowRealmId: 60,
+          classId: 5,
+          specId: 258,
+          role: 'dps',
+        },
+        {
+          id: 7_004,
+          name: 'Newdpstwo',
+          realmSlug: 'stormrage',
+          wowRealmId: 60,
+          classId: 1,
+          specId: 71,
+          role: 'dps',
+        },
+      ],
+    });
+
     await mplus.sweep();
 
     const after = await db
       .collection(MPLUS_CHARACTERS_COLLECTION)
-      .findOne({ region: 'us', nameKey: 'regular' });
+      .findOne({ key: 'us/illidan/regular' });
 
-    expect(after!.dungeonsCovered).toBeLessThan(before!.dungeonsCovered as number);
-    expect(after!.mythicScore).toBeLessThan(before!.mythicScore as number);
-    expect(
-      (after!.dungeonRuns as { dungeon: { id: number } }[]).map((run) => run.dungeon.id),
-    ).not.toContain(16368);
+    expect(after!.mythicScore).toBeGreaterThan(before!.mythicScore as number);
   });
 
   it('holds every invariant, including the Mythic+ ones', async () => {
     await expectInvariants(db);
     await expectMplusRunsSelfContained(db);
     await expectMplusRosterKeysMirrorRoster(db);
+    await expectNoOrphanMplusCharacters(db);
   });
 });

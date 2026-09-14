@@ -62,8 +62,10 @@ export interface MplusCharacterProfile {
  * has a document in each collection, joinable only on `region + realmSlug +
  * nameKey`. `characterType` is carried here anyway so the two read alike.
  *
- * Identity is `season + region + realmSlug + nameKey`, which is Blizzard's own
- * notion of a character and needs no id from either upstream.
+ * Identity is `season + key`, where `key` is `region/realmSlug/lowercased-name` —
+ * Blizzard's own notion of a character, needing no id from either upstream. The
+ * same key is mirrored onto every run's `rosterKeys`, so "which characters are
+ * still on the board" is one comparison rather than a tuple join.
  */
 export interface MplusCharacterDocument {
   /** Raider.io's season slug, e.g. `season-mn-2`. */
@@ -71,8 +73,17 @@ export interface MplusCharacterDocument {
   /** Blizzard's M+ season id, for reference. Nothing keys off it. */
   seasonId: number | null;
   region: RaiderIoRegion;
+  /**
+   * `region/realmSlug/lowercased-name`, e.g. `us/stormrage/exxibae`.
+   *
+   * The one canonical identity for a Mythic+ character, built by
+   * `mplusCharacterKey`. It is what `mplus_runs.rosterKeys` stores, so the
+   * orphan cleanup is a set difference rather than a join, and it is what a
+   * chunked read can `$in` on — a four-field tuple could do neither.
+   */
+  key: string;
   realmSlug: string;
-  /** Lowercased character name — the identity component, since names vary in case. */
+  /** Lowercased character name, kept separate so a name lookup needs no parsing. */
   nameKey: string;
   characterName: string;
   /** Always `M+` here, so a reader of either collection can tell them apart. */
@@ -88,6 +99,16 @@ export interface MplusCharacterDocument {
    * Sum of `score` over this character's best run in each dungeon, which is the
    * stat the front end sorts on.
    *
+   * **Monotonic: it never decreases while the character is stored.** A real
+   * Mythic+ score cannot fall — it is your best run in each dungeon, ever — but
+   * a score recomputed from a *window* of the leaderboard can, because a run
+   * that was in the top 20,020 last pass can be pushed out of it by newer runs
+   * without the player having done anything. Rather than clamp the total, each
+   * dungeon keeps the better of its stored and freshly computed run
+   * (`mergeDungeonRuns`), so the sum is monotonic by construction and still
+   * equals the sum of `dungeonRuns` — a clamped total would not, and the
+   * document would describe a set of runs it did not add up to.
+   *
    * **Bounded by what was ingested, not by what the character played.** The feed
    * is the top ~20,020 runs per region across all dungeons, so a dungeon the
    * character has no top-20k run in contributes nothing. Measured over the top
@@ -98,7 +119,14 @@ export interface MplusCharacterDocument {
   mythicScore: number;
   /** How many of the season's dungeons `mythicScore` is summed over, 1-8. */
   dungeonsCovered: number;
-  /** Best run per dungeon, newest score first. */
+  /**
+   * Best run per dungeon, highest score first.
+   *
+   * Because a dungeon's entry is kept once earned, `keystoneRunId` may point at
+   * a run that has since fallen off the leaderboard and been pruned from
+   * `mplus_runs`. That is deliberate — the run was real when it was recorded —
+   * so a reader must treat the join as optional rather than assume it resolves.
+   */
   dungeonRuns: MplusDungeonRun[];
   updatedAt: Date;
 }

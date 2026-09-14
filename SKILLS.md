@@ -244,8 +244,8 @@ if 429s appear. `Retry-After` _is_ honoured, by got's own delay calculation, cap
    `RAIDERIO_PAGE_BATCH`, at `RAIDERIO_CONCURRENCY` in flight.
 4. Write each batch's runs and affixes as it arrives; fold characters across the whole
    region; write the characters at the end.
-5. Prune runs and characters the pass did not refresh — **only if the pass finished
-   cleanly**.
+5. Clean up in two stages — **only if the pass finished cleanly**: runs this pass did not
+   refresh, then characters no surviving run lists (§5.6).
 6. Purge any season that is no longer current.
 
 Observed live (2026-09-14): 6 pages across us+eu in 987ms; a full pass is **1,001 requests
@@ -264,7 +264,14 @@ characters rather than by rows.
 yielded coordinator, failed pages — looks exactly like a leaderboard that lost most of its
 runs. Pruning on that basis deletes the region and refills it next pass, with a hole in the
 board each time. Same reasoning as `removeRetiredBrackets` refusing an empty bracket list
-(§9.8).
+(§9.8). There are two guards, not one: the service skips the whole cleanup after a
+shortfall, and `removeCharactersWithoutRuns` independently refuses to act on a region with
+no runs at all, so a future caller that forgets the first still cannot empty a region.
+
+The per-region result carries **`mergedCharacters`** — how many characters kept a stored
+dungeon the freshly computed set no longer had (§5.6). It is worth watching rather than
+ignoring: a number that climbs pass after pass says the ingested window is falling behind
+the ladder, and the fix is `RAIDERIO_MAX_PAGES`, not more merging.
 
 Where the data ends is signalled two ways, and both are handled: a region with fewer runs
 than the page ceiling answers `200` with `rankings: []`, and `page` above 1000 answers
@@ -713,9 +720,13 @@ Indexes: `archive_board`, `archive_identity` (unique), `archive_character`, and
 { id: 9, name: 'Tyrannical', slug: 'tyrannical', description: '…', icon, updatedAt }
 ```
 
-Identity is **`season + region + realmSlug + nameKey`** — Blizzard's own notion of a
-character, needing no id from either upstream. `nameKey` is the lowercased name, because
-the payload varies in case for the same character.
+Identity is **`season + key`**, where `key` is `region/realmSlug/lowercased-name` —
+Blizzard's own notion of a character, needing no id from either upstream. One canonical
+string rather than a four-field tuple, because the same key is what `mplus_runs.rosterKeys`
+stores: the orphan cleanup becomes a set difference instead of a join, and the merge read
+can `$in` on it. Invariant I17 asserts it never drifts from the fields beside it — a
+drifted key is unreachable by lookup _and_ invisible to the cleanup, so it would survive
+every pass forever.
 
 > **`mythicScore` is bounded by what was ingested, not by what the character played.** It is
 > the sum of `score` over the best run in each dungeon **among the runs on the ingested
@@ -747,21 +758,85 @@ the same approach `season-rewards.ts` takes to specialisations (§7 "things that
 improvements"). The saving is real: three affixes with a ~120-character description each,
 across ~100,000 runs a pass, is about **36MB of duplicated prose** not written.
 
-**Upserts are whole-document `$set`, not merges.** For runs it makes no difference (a
-finished run is immutable). For characters it is essential: `dungeonRuns` and `mythicScore`
-are recomputed from the whole pass, so a merge would leave a dungeon they no longer rank in
-on the document and keep counting its score forever.
+**Runs are upserted with a whole-document `$set`**, which makes no difference to their
+content (a finished run is immutable) but does refresh `fetchedAt`, which is what the prune
+distinguishes a still-ranked run by.
+
+**Characters are read-merge-write**, because `mythicScore` must never fall — see §5.6.
+Everything _except_ `dungeonRuns` is still overwritten wholesale: name, realm, faction and
+profile are facts about the character now, and a rename or a respec should follow along
+rather than be merged into the past.
 
 Indexes — `mplus_runs`: `run_identity` (unique `season+region+keystoneRunId`), `run_board`
 (`season+region+score` desc), `run_dungeon_board`, `run_roster` (`rosterKeys`),
-`run_freshness` (drives the prune). `mplus_characters`: `mplus_character_identity` (unique),
-`mplus_score_board` (`season+region+mythicScore` desc — the front end's sort),
-`mplus_character_lookup`, `mplus_character_freshness`.
+`run_freshness` (drives stage 1 of the cleanup). `mplus_characters`:
+`mplus_character_identity` (unique `season+key`, and what the merge read `$in`s on),
+`mplus_score_board` (`season+region+mythicScore` desc — the front end's sort) and
+`mplus_character_lookup`. There is deliberately **no** freshness index on characters: since
+§5.7 stage 2 replaced the timestamp check with a referential one, nothing queries
+`updatedAt`, and an index nothing reads only costs write throughput.
 
 **Season rollover is a purge, not an archive.** M+ data here is a snapshot of a live
 leaderboard, rebuilt in full on every pass, so a superseded season is simply stale and is
 deleted at the end of the next pass. There is nothing to preserve and nothing gating it —
 the opposite of §4.8.
+
+### 5.6 Why `mythicScore` only ever goes up
+
+A real Mythic+ score cannot fall: it is your best run in each dungeon, ever. A score
+recomputed from a **window** of the leaderboard can, because a run that sat inside the top
+20,020 last pass can be pushed out of it by other people's newer runs while the player does
+nothing at all. Recomputing blindly would render that as the player losing points, hourly.
+
+So each dungeon keeps the better of its stored and its freshly computed run
+(`mergeDungeonRuns`), and the score is re-derived from the result.
+
+**Merging per dungeon rather than clamping the total is the part worth keeping.** Clamping
+(`mythicScore = max(stored, computed)`) would leave the document describing a set of runs
+that does not add up to the score printed on it, with `dungeonsCovered` counting a third
+set again — invariant I12 could never hold, and nothing downstream could recompute or audit
+the number. Merging per term makes the sum monotonic _because_ each term is, and the
+document stays self-consistent. A tie keeps the stored run, so `dungeonRuns` does not churn
+for a reader diffing one pass against the next.
+
+Monotonic does not mean frozen: a better run for a dungeon replaces it immediately, and a
+dungeon never seen before is simply added.
+
+> **The consequence to know.** A dungeon's entry is kept once earned, so
+> `dungeonRuns[].keystoneRunId` may point at a run that has since fallen off the board and
+> been pruned from `mplus_runs`. That is deliberate — `mplus_runs` mirrors the _current_
+> leaderboard, `dungeonRuns` remembers a best run — so **a reader must treat that join as
+> optional.** An integration case asserts the dangling reference exists, so it cannot be
+> "fixed" by accident; invariant I18 deliberately checks only the other direction.
+
+The rule lives in one place and every write path goes through it: the pass, and
+`POST /mplus/characters/sync` (§7). There is no payload and no pass that lowers a score.
+
+### 5.7 Mythic+ cleanup — two stages, in this order
+
+Run once per region at the end of every clean pass, mirroring §9.8 on the PvP side:
+
+| #   | Stage                                              | Removes                           | Case                               |
+| --- | -------------------------------------------------- | --------------------------------- | ---------------------------------- |
+| 1   | `pruneStaleRuns` (`fetchedAt` older than the pass) | a run this pass did not refresh   | pushed out of the top 20,020       |
+| 2   | `removeCharactersWithoutRuns`                      | characters no surviving run lists | every run of theirs has fallen off |
+
+**The order is load-bearing**, exactly as steps 3–5 of the PvP cleanup are: stage 2 asks
+which characters no surviving run names, so it has to run _after_ the runs are gone or every
+character still looks current.
+
+**Stage 2 is a referential check, not a timestamp check**, and that is the point. Once a
+character keeps each dungeon's best run (§5.6), "not seen this pass" no longer means "gone"
+— a character can be absent from a pass and still hold a legitimate score. Only being named
+by no run at all means gone. It is the Mythic+ counterpart to
+`RatingRepository.removeOrphans` and is computed the same way: read both key sets, difference
+them, delete in chunks, rather than a `$nin` of thirty thousand keys or a `$lookup` per
+document. The live set is aggregated rather than read with `distinct`, which caps its reply
+at 16MB — a region is up to 20,020 runs × 5 members, and the deduplicated set fits today but
+not with room to spare.
+
+Both stages refuse to act on a region with no runs, for the reason `removeRetiredBrackets`
+refuses an empty bracket list: that state means the pass failed, not that the ladder emptied.
 
 ---
 
@@ -975,6 +1050,55 @@ Semantics that will bite a caller:
 
 **No authentication.** It mutates data and is open on the configured port. Put a shared
 secret or network policy in front of it before it runs anywhere but localhost.
+
+### `POST /mplus/characters/sync`
+
+The Mythic+ counterpart, for the same reason: a search API keeping `mplus_characters`
+current without waiting for the next pass.
+
+```http
+{ "season": "season-mn-2", "region": "us",
+  "realmSlug": "area-52", "characterName": "Skollcat",
+  "dungeonRuns": [ { "dungeon": { "id": 9527, "name": "…", "slug": "…", "shortName": "TOS" },
+                     "keystoneRunId": 11626563, "mythicLevel": 22, "score": 515.3,
+                     "clearTimeMs": 1906389, "timeRemainingMs": 14610, "numChests": 1,
+                     "completedAt": "2026-09-13T08:00:10.000Z", "specId": 62, "role": "dps" } ],
+  "profile": { "specId": 63, "specName": "Fire" } }
+→ 200 { "key": "us/area-52/skollcat", "dungeonRuns": 1, "addedDungeons": 1,
+        "mythicScore": 4227.6, "dungeonsCovered": 9 }
+```
+
+| Response | Meaning                                                |
+| -------- | ------------------------------------------------------ |
+| 200      | Merged; the body reports what the merge settled on     |
+| 400      | Invalid payload (every offending field listed)         |
+| 404      | No such character — **the endpoint never creates one** |
+| 409      | A Mythic+ pass is running; retry when it finishes      |
+
+It follows the PvP endpoint's three rules — never creates a character, refuses to interleave
+with the job that owns the same documents, recomputes every derived field — and differs in
+exactly one, which a caller has to know:
+
+- **`dungeonRuns` is merged, not authoritative.** On the PvP side an omitted bracket means
+  "left that ladder" and its rating row is deleted. Here omission means "nothing new to
+  say": the stored entry is kept. That is not a convenience, it is §5.6 — monotonicity is a
+  property of the data rather than of one code path, so there is no payload that lowers a
+  score. A worse run for a dungeon already held is accepted and changes nothing; a better
+  one replaces it. **An empty `dungeonRuns` is therefore a valid profile-only update**,
+  where the PvP endpoint rejects an empty `brackets` outright.
+- `profile` is merged field by field — absent leaves the stored value, explicit `null`
+  clears it — as on the PvP side.
+- `mythicScore`, `dungeonsCovered` and `key` are **not accepted**; they are derived from
+  `dungeonRuns` and the identity fields, which is the only way they cannot drift. Unknown
+  keys are stripped, so a document read from Mongo can be posted back unchanged.
+- The 409 is a real interlock rather than a courtesy: the pass's own write is a
+  read-merge-write, so a push landing between its two halves would lose whichever arrived
+  first.
+
+> **To lower a score there is no endpoint.** Delete the character and let the next pass
+> rebuild it from the board. That is deliberate — see §5.6.
+
+**No authentication**, exactly as above.
 
 ---
 
@@ -1258,10 +1382,11 @@ Raider.io forever.
 placeholder key, for the same reason it does so for Blizzard: a missed seam must fail
 locally rather than spend the owner's real Raider.io allowance.
 
-Three M+ files, split by the one-configuration-per-file rule: `mplus-ingestion.spec.ts`
-(the pass, the score fold, pruning, idempotence), `mplus-failures.spec.ts` (budget
-exhaustion, failed pages, empty bodies, the prune guard) and `mplus-coordination.spec.ts`
-(job priority, readiness, key redaction, season rollover).
+Four M+ files, split by the one-configuration-per-file rule: `mplus-ingestion.spec.ts`
+(the pass, the score fold, both cleanup stages, monotonicity, idempotence),
+`mplus-failures.spec.ts` (budget exhaustion, failed pages, empty bodies, the prune guard and
+the cleanup's own guard), `mplus-coordination.spec.ts` (job priority, readiness, key
+redaction, season rollover) and `mplus-sync.spec.ts` (the endpoint).
 
 ### 10.3 Two rules the harness enforces
 
@@ -1375,3 +1500,15 @@ bucket by default, which is only correct if the job makes no Blizzard requests.
   five regions. The whole ladder is rewritten each time rather than diffed, which is what
   makes `mythicScore` recomputable but means the write volume does not fall as the season
   settles.
+- **`mythicScore` only rises, so a correction needs a delete.** There is no pass and no
+  payload that lowers one (§5.6). If bad data inflates a score — a payload bug, a bad
+  manual sync — the character has to be deleted and rebuilt by the next pass. Watch
+  `mergedCharacters` in the pass result: it climbing steadily means the ingested window is
+  falling behind the ladder rather than that anything is wrong.
+- **A kept dungeon can outlive the run it names.** `dungeonRuns[].keystoneRunId` may point
+  at a pruned run, so the join into `mplus_runs` is optional by design (§5.6). A UI that
+  assumes it resolves will show gaps.
+- **A character with no runs left loses their peak score entirely.** Stage 2 of the cleanup
+  deletes them (§5.7), so a player who drops off the board and returns later starts from
+  what the board then shows rather than from what they had. Keeping them would mean an
+  ever-growing collection of players no board ranks.

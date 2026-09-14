@@ -5,6 +5,7 @@ import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
 import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
+import { MplusRepository } from '../src/mplus/mplus.repository.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { MplusWorld } from './support/mplus-world.js';
@@ -156,6 +157,26 @@ describe('Mythic+ failure modes', () => {
     // Stale but real beats nothing, the same trade profile enrichment makes.
     expect(after).not.toBeNull();
     expect(after!.mythicScore).toBe(before!.mythicScore);
+  });
+
+  it('refuses to remove characters for a region whose runs are all gone', async () => {
+    // The guard that stops one failed region from being wiped, asserted at the
+    // repository rather than through the service: the service-level check is
+    // the first line, this is the one that holds if a future caller skips it.
+    // Same reasoning as `removeRetiredBrackets` refusing an empty bracket list.
+    const repository = app.app.get(MplusRepository);
+    const stored = await db.collection(MPLUS_CHARACTERS_COLLECTION).countDocuments();
+    expect(stored, 'there are characters to lose').toBeGreaterThan(0);
+
+    await db.collection(MPLUS_RUNS_COLLECTION).deleteMany({ season: 'season-mn-2', region: 'us' });
+
+    const removed = await repository.removeCharactersWithoutRuns('season-mn-2', 'us');
+
+    expect(removed, 'no runs means the pass failed, not that the ladder emptied').toBe(0);
+    expect(await db.collection(MPLUS_CHARACTERS_COLLECTION).countDocuments()).toBe(stored);
+
+    // Put the board back for the cases after this one.
+    await mplus.sweep();
   });
 
   it('treats an empty 2xx body as a transient failure, not as payload drift', async () => {

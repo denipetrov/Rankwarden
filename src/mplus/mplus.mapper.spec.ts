@@ -4,7 +4,14 @@ import {
   mythicPlusRankingSchema,
   type MythicPlusRanking,
 } from '../raiderio/schemas/mythic-plus-runs.schema.js';
-import { MplusCharacterAccumulator, isAnonymised, toRunDocument } from './mplus.mapper.js';
+import {
+  MplusCharacterAccumulator,
+  isAnonymised,
+  mergeDungeonRuns,
+  scoreOf,
+  toRunDocument,
+} from './mplus.mapper.js';
+import type { MplusDungeonRun } from './entities/mplus-character.entity.js';
 
 /**
  * Shaped after a real `/mythic-plus/runs` entry, trimmed to the fields that
@@ -338,5 +345,108 @@ describe('MplusCharacterAccumulator', () => {
 
     expect(accumulator.drain()).toHaveLength(1);
     expect(accumulator.drain()).toHaveLength(0);
+  });
+});
+
+/** A stored best run, trimmed to the fields the merge actually reasons about. */
+function best(dungeonId: number, score: number, keystoneRunId = dungeonId * 10): MplusDungeonRun {
+  return {
+    dungeon: {
+      id: dungeonId,
+      name: `Dungeon ${dungeonId}`,
+      slug: `d-${dungeonId}`,
+      shortName: null,
+    },
+    keystoneRunId,
+    mythicLevel: 22,
+    score,
+    clearTimeMs: 1_000_000,
+    timeRemainingMs: 1_000,
+    numChests: 1,
+    completedAt: new Date('2026-09-13T08:00:10.000Z'),
+    specId: 62,
+    role: 'dps',
+  };
+}
+
+describe('scoreOf', () => {
+  it('rounds away the float noise eight summed scores produce', () => {
+    expect(scoreOf([best(1, 515.3), best(2, 502.6), best(3, 498.1), best(4, 471.2)])).toBe(1987.2);
+  });
+
+  it('is zero for no runs', () => {
+    expect(scoreOf([])).toBe(0);
+  });
+});
+
+describe('mergeDungeonRuns', () => {
+  it('takes the better run for each dungeon', () => {
+    const merged = mergeDungeonRuns([best(1, 400), best(2, 300)], [best(1, 450), best(3, 200)]);
+
+    expect(merged.map((run) => [run.dungeon.id, run.score])).toEqual([
+      [1, 450],
+      [2, 300],
+      [3, 200],
+    ]);
+  });
+
+  /**
+   * The whole point of the merge. A run that sat inside the ingested window last
+   * pass can be pushed out of it by other people's newer runs, so the freshly
+   * computed set is missing a dungeon the player never lost.
+   */
+  it('keeps a dungeon that has dropped out of the freshly computed set', () => {
+    const stored = [best(1, 400), best(2, 300), best(3, 200)];
+    const incoming = [best(1, 400)];
+
+    const merged = mergeDungeonRuns(stored, incoming);
+
+    expect(merged).toHaveLength(3);
+    expect(scoreOf(merged)).toBe(900);
+    expect(scoreOf(merged)).toBeGreaterThan(scoreOf(incoming));
+  });
+
+  it('never lets the summed score fall, over any sequence of passes', () => {
+    // The property stated directly, rather than one example of it.
+    const passes = [
+      [best(1, 100), best(2, 100)],
+      [best(1, 120)],
+      [best(2, 90), best(3, 50)],
+      [],
+      [best(1, 80), best(2, 80), best(3, 80)],
+    ];
+
+    let stored: MplusDungeonRun[] = [];
+    let previous = 0;
+
+    for (const pass of passes) {
+      stored = mergeDungeonRuns(stored, pass);
+      const score = scoreOf(stored);
+
+      expect(score, 'the score never decreases').toBeGreaterThanOrEqual(previous);
+      previous = score;
+    }
+
+    expect(previous).toBe(120 + 100 + 80);
+  });
+
+  it('keeps the stored run when the scores tie', () => {
+    // Equal makes the newcomer no better, and holding still keeps dungeonRuns
+    // stable for a reader diffing one pass against the next.
+    const merged = mergeDungeonRuns([best(1, 400, 111)], [best(1, 400, 222)]);
+
+    expect(merged[0].keystoneRunId).toBe(111);
+  });
+
+  it('leaves the score equal to the sum of the runs it kept', () => {
+    // Invariant I12, asserted at the source: a clamped total would break this.
+    const merged = mergeDungeonRuns([best(1, 515.3), best(2, 502.6)], [best(2, 100), best(3, 10)]);
+
+    expect(scoreOf(merged)).toBe(1027.9);
+    expect(merged).toHaveLength(3);
+  });
+
+  it('is a plain copy when nothing is stored yet', () => {
+    expect(mergeDungeonRuns([], [best(1, 400)]).map((run) => run.score)).toEqual([400]);
   });
 });

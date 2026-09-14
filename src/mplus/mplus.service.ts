@@ -24,6 +24,15 @@ export interface MplusRegionResult {
   pagesFailed: number;
   runs: number;
   characters: number;
+  /**
+   * Characters whose stored score survived a lower freshly computed one,
+   * because a dungeon's best run has dropped out of the ingested window.
+   *
+   * Worth reporting rather than silently correct: a number that climbs pass
+   * after pass says the leaderboard window is outrunning the ladder, and the
+   * fix is more pages, not more merging.
+   */
+  mergedCharacters: number;
   prunedRuns: number;
   prunedCharacters: number;
   /** Null when the region finished cleanly; otherwise why it stopped early. */
@@ -192,6 +201,7 @@ export class MplusService {
       pagesFailed: 0,
       runs: 0,
       characters: 0,
+      mergedCharacters: 0,
       prunedRuns: 0,
       prunedCharacters: 0,
       stoppedEarly: null,
@@ -273,8 +283,9 @@ export class MplusService {
     }
 
     const characters = accumulator.drain();
-    await this.repository.upsertCharacters(characters);
+    const { merged } = await this.repository.upsertCharacters(characters);
     result.characters = characters.length;
+    result.mergedCharacters = merged;
 
     // Pruning only after a clean pass. A pass that stopped early — a spent
     // budget, a yielded coordinator, a run of failed pages — looks exactly like
@@ -295,6 +306,9 @@ export class MplusService {
     this.logger.log(
       `Mythic+ ${region}: ${result.runs} runs over ${result.pagesFetched} page(s), ` +
         `${result.characters} characters` +
+        (result.mergedCharacters > 0
+          ? `, ${result.mergedCharacters} kept a dungeon that left the window`
+          : '') +
         (result.prunedRuns || result.prunedCharacters
           ? `, pruned ${result.prunedRuns} run(s) and ${result.prunedCharacters} character(s)`
           : ''),

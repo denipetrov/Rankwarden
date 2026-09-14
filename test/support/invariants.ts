@@ -48,6 +48,7 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectMplusScoreMatchesRuns(db);
   await expectMplusRunsReferenceKnownAffixes(db);
   await expectNoAnonymisedMplusCharacters(db);
+  await expectMplusCharacterKeysWellFormed(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -358,7 +359,7 @@ export async function expectMplusScoreMatchesRuns(db: Db): Promise<void> {
 
   for (const character of characters) {
     const runs = (character.dungeonRuns ?? []) as { dungeon: { id: number }; score: number }[];
-    const label = `I12: ${character.region}/${character.realmSlug}/${character.nameKey}`;
+    const label = `I12: ${character.key}`;
 
     const dungeonIds = runs.map((run) => run.dungeon.id);
     expect(new Set(dungeonIds).size, `${label} one entry per dungeon`).toBe(dungeonIds.length);
@@ -399,17 +400,62 @@ export async function expectMplusRunsReferenceKnownAffixes(db: Db): Promise<void
 export async function expectNoAnonymisedMplusCharacters(db: Db): Promise<void> {
   const leaked = await db
     .collection(MPLUS_CHARACTERS_COLLECTION)
-    .find(
-      { $or: [{ realmSlug: 'anonymous' }, { rioCharacterId: 0 }] },
-      { projection: { nameKey: 1 } },
-    )
+    .find({ $or: [{ realmSlug: 'anonymous' }, { rioCharacterId: 0 }] }, { projection: { key: 1 } })
     .limit(5)
     .toArray();
 
   expect(
-    leaked.map((doc) => doc.nameKey),
+    leaked.map((doc) => doc.key),
     'I14: anonymised characters must stay out of mplus_characters',
   ).toEqual([]);
+}
+
+/**
+ * I17 - a character's `key` is the one its own identity fields build.
+ *
+ * The key is the collection's identity, the join to `mplus_runs.rosterKeys`, and
+ * what the orphan cleanup deletes by. A key that has drifted from the fields
+ * beside it makes a character unreachable by lookup and, worse, invisible to the
+ * cleanup - it would survive every pass forever.
+ */
+export async function expectMplusCharacterKeysWellFormed(db: Db): Promise<void> {
+  const characters = await db.collection(MPLUS_CHARACTERS_COLLECTION).find({}).toArray();
+
+  for (const character of characters) {
+    expect(character.key, `I17: ${character.key} must match its identity fields`).toBe(
+      mplusCharacterKey(character.region, character.realmSlug, character.characterName),
+    );
+    expect(character.nameKey, `I17: ${character.key} nameKey is the lowercased name`).toBe(
+      character.characterName.toLowerCase(),
+    );
+  }
+}
+
+/**
+ * I18 - every stored Mythic+ character is still named by a surviving run.
+ *
+ * The cleanup's postcondition. A character no run lists is one that has fallen
+ * off the leaderboard entirely; left behind it would sit on the score board
+ * forever, never refreshed and never removed, because nothing else would ever
+ * look at it again.
+ *
+ * Deliberately NOT the converse: a character's `dungeonRuns` may reference a run
+ * that has since been pruned, because a dungeon's best run is kept once earned
+ * even after it drops out of the ingested window. That dangling reference is by
+ * design - see `MplusCharacterDocument`.
+ */
+export async function expectNoOrphanMplusCharacters(db: Db): Promise<void> {
+  const live = new Set(
+    (await db.collection(MPLUS_RUNS_COLLECTION).distinct('rosterKeys')) as string[],
+  );
+
+  if (live.size === 0) return;
+
+  const orphans = (await db.collection(MPLUS_CHARACTERS_COLLECTION).find({}).toArray())
+    .filter((character) => !live.has(character.key as string))
+    .map((character) => character.key);
+
+  expect(orphans, 'I18: every mplus character must be named by a surviving run').toEqual([]);
 }
 
 /**
