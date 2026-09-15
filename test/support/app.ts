@@ -7,14 +7,20 @@ import {
   type BlizzardTokenProvider,
 } from '../../src/blizzard/auth/token-provider.js';
 import { BlizzardHttpService } from '../../src/blizzard/http/blizzard-http.service.js';
+import { RaiderIoHttpService } from '../../src/raiderio/http/raiderio-http.service.js';
 import { assertTestDatabase, testDbName, testMongoUri } from './database.js';
 import { FakeBlizzard } from './fake-blizzard.js';
+import { FakeRaiderIo } from './fake-raiderio.js';
+import { MplusWorld } from './mplus-world.js';
 import type { World } from './world.js';
 
 export interface TestApp {
   app: INestApplication;
   world: World;
   blizzard: FakeBlizzard;
+  /** The Raider.io side of the world, and the fake serving it. */
+  mplusWorld: MplusWorld;
+  raiderIo: FakeRaiderIo;
   dbName: string;
   /** Resolves anything a scheduler started at bootstrap, and anything it went on to start. */
   settle: () => Promise<void>;
@@ -48,6 +54,14 @@ const BASE_ENV: Record<string, string> = {
   ARCHIVE_ENABLED: 'false',
   SEASON_REFRESH_ENABLED: 'false',
   SEASON_TRANSITION_ENABLED: 'false',
+  MPLUS_ENABLED: 'false',
+  MPLUS_INTERVAL_MS: '3600000',
+  // A test world is a handful of runs, so a full 1,001-page pass would be a
+  // thousand requests to serve twenty. Tests that want the pagination boundary
+  // raise this deliberately.
+  RAIDERIO_MAX_PAGES: '5',
+  RAIDERIO_PAGE_BATCH: '5',
+  RAIDER_IO_API_KEY: 'test-raiderio-key',
 };
 
 /** The configuration the first boot in this file locked in. */
@@ -106,6 +120,7 @@ export async function bootTestApp(
   env: Record<string, string> = {},
   tokens: BlizzardTokenProvider = { getAccessToken: async () => 'test-token' },
   logger?: LoggerService,
+  mplusWorld: MplusWorld = new MplusWorld(),
 ): Promise<TestApp> {
   const dbName = assertTestDatabase(env.MONGODB_DB ?? testDbName(expect.getState().testPath));
   const resolved = {
@@ -126,6 +141,7 @@ export async function bootTestApp(
   const { AppModule } = await import('../../src/app.module.js');
 
   const blizzard = new FakeBlizzard(world);
+  const raiderIo = new FakeRaiderIo(mplusWorld);
   const builder = Test.createTestingModule({ imports: [AppModule] });
   // `compile()` silences Nest's logger unless one is set here, and everything a
   // bootstrap-ordering case wants to read happens inside `app.init()` — which
@@ -137,6 +153,8 @@ export async function bootTestApp(
     .useValue(blizzard)
     .overrideProvider(BLIZZARD_TOKEN_PROVIDER)
     .useValue(tokens)
+    .overrideProvider(RaiderIoHttpService)
+    .useValue(raiderIo)
     .compile();
 
   // The fake stands in for the service that mints the bearer token, so it has
@@ -152,6 +170,13 @@ export async function bootTestApp(
   // And the shared quota, which the real client charges on every attempt.
   const { QuotaBudget } = await import('../../src/common/quota/quota-budget.service.js');
   blizzard.budget = moduleRef.get(QuotaBudget);
+
+  // The Raider.io fake needs the same two, for the same two reasons: without
+  // the health instance readiness reports `unknown` for Raider.io forever, and
+  // without the budget every test runs against a ceiling that never fills.
+  raiderIo.health = moduleRef.get(DependencyHealth);
+  const { RaiderIoBudget } = await import('../../src/common/quota/raiderio-budget.service.js');
+  raiderIo.budget = moduleRef.get(RaiderIoBudget);
 
   const app = moduleRef.createNestApplication();
   // Runs onModuleInit (indexes) and onApplicationBootstrap (schedulers).
@@ -175,6 +200,8 @@ export async function bootTestApp(
     app,
     world,
     blizzard,
+    mplusWorld,
+    raiderIo,
     dbName,
     settle,
     url: () => {

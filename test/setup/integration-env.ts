@@ -23,3 +23,9 @@ process.env.BLIZZARD_CLIENT_SECRET = 'test-client-secret';
 // override the HTTP seam, this makes the attempt fail fast and locally instead
 // of quietly consuming real quota.
 process.env.BLIZZARD_API_HOST_TEMPLATE = 'http://127.0.0.1:9/{region}';
+
+// The same guard for the second upstream: a missed Raider.io seam must fail
+// locally rather than spend the owner's real Raider.io allowance. The key is a
+// placeholder for the same reason the Blizzard credentials are.
+process.env.RAIDERIO_API_BASE_URL = 'http://127.0.0.1:9/raiderio';
+process.env.RAIDER_IO_API_KEY = 'test-raiderio-key';

@@ -2,20 +2,29 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ReplaySubject, type Observable } from 'rxjs';
 
 /**
- * Orders the three things that compete for the Blizzard quota and for the same
- * documents.
+ * Orders the jobs that compete for an upstream quota, for MongoDB, or for the
+ * same documents.
  *
  * The leaderboard sweep is the live data and never waits. Profile enrichment
- * keeps out of its way. The season archive is the lowest priority of all: it is
- * historical data that has already waited months, so it does not start until the
- * first sweep and the first enrichment pass have both been through, and it steps
- * aside whenever either of them picks up again.
+ * keeps out of its way. The Mythic+ pass yields to both, and the season archive
+ * is the lowest priority of all: it is historical data that has already waited
+ * months, so it does not start until the first sweep and the first enrichment
+ * pass have both been through, and it steps aside whenever anything above it
+ * picks up again.
+ *
+ * Mythic+ is here for a different reason from the rest. It talks to Raider.io,
+ * which meters separately from Blizzard, so no *request* of its competes with
+ * the PvP jobs — it yields because it shares MongoDB and the process, and a
+ * minutes-long pass writing hundreds of thousands of documents alongside a
+ * sweep would slow the boards that serve live traffic. Making that an explicit
+ * ordering rather than an accident is the whole point of putting it here.
  */
 @Injectable()
 export class IngestionCoordinator {
   private readonly logger = new Logger(IngestionCoordinator.name);
   private sweepDepth = 0;
   private enrichmentDepth = 0;
+  private mplusDepth = 0;
   private sweepDone = false;
   private enrichmentDone = false;
   private readonly warmedUpSubject = new ReplaySubject<void>(1);
@@ -29,6 +38,10 @@ export class IngestionCoordinator {
 
   get isEnrichmentActive(): boolean {
     return this.enrichmentDepth > 0;
+  }
+
+  get isMplusActive(): boolean {
+    return this.mplusDepth > 0;
   }
 
   /** True while anything that serves live data is fetching. */
@@ -54,6 +67,25 @@ export class IngestionCoordinator {
         this.sweepDone = true;
         this.signalWarmedUp();
       }
+    }
+  }
+
+  /**
+   * Marks a Mythic+ pass as active for the duration of `work`.
+   *
+   * Deliberately not folded into `isLiveIngestionActive`: the archive must wait
+   * for it, but enrichment must not. Enrichment spends Blizzard quota and M+
+   * spends none, so making enrichment yield here would cost the PvP profiles
+   * freshness to protect a job that is not competing with them for anything
+   * they need.
+   */
+  async duringMplus<T>(work: () => Promise<T>): Promise<T> {
+    this.mplusDepth += 1;
+
+    try {
+      return await work();
+    } finally {
+      this.mplusDepth -= 1;
     }
   }
 
