@@ -9,6 +9,12 @@ export interface MplusWorldRun {
   mythicLevel: number;
   /** Region the run belongs to, which is the region it is served for. */
   region: string;
+  /**
+   * The season the run is served for. Absent means every season, which is what
+   * the live-pass files rely on; archive files set it, so one archived season's
+   * board does not leak into another's.
+   */
+  season?: string;
   roster: MplusWorldMember[];
 }
 
@@ -32,7 +38,13 @@ export interface MplusWorldSeason {
   isMainSeason: boolean;
   /** ISO start per region; absent regions are treated as already open. */
   starts: Record<string, string>;
+  /** ISO end per region. A running season carries Raider.io's 2030 placeholder. */
+  ends?: Record<string, string>;
+  /** Which `static-data?expansion_id` lists it. Midnight (11) when absent. */
+  expansionId?: number;
   dungeons: number;
+  /** First dungeon id this season lists, so seasons can share dungeons or not. */
+  firstDungeonId?: number;
 }
 
 /**
@@ -50,6 +62,7 @@ export class MplusWorld {
       name: 'MN Season 2',
       blizzardSeasonId: 18,
       isMainSeason: true,
+      ends: { us: '2030-01-01T00:00:00Z', eu: '2030-01-01T00:00:00Z' },
       starts: {
         us: '2026-08-18T15:00:00Z',
         eu: '2026-08-19T04:00:00Z',
@@ -64,6 +77,7 @@ export class MplusWorld {
       name: 'MN Season 1',
       blizzardSeasonId: 17,
       isMainSeason: true,
+      ends: { us: '2026-08-18T15:00:00Z', eu: '2026-08-19T04:00:00Z' },
       starts: { us: '2026-03-24T15:00:00Z' },
       dungeons: 8,
     },
@@ -73,6 +87,7 @@ export class MplusWorld {
       name: 'Break the Meta',
       blizzardSeasonId: 17,
       isMainSeason: false,
+      ends: { us: '2026-07-21T15:00:00Z' },
       starts: { us: '2026-07-14T15:00:00Z' },
       dungeons: 8,
     },
@@ -83,8 +98,14 @@ export class MplusWorld {
   /** Regions the fake will serve at all; anything else 404s. */
   regions = ['us', 'eu', 'kr', 'tw', 'cn'];
 
-  /** Adds `count` runs to a region, scored descending from `topScore`. */
-  seed(region: string, count: number, topScore = 500): this {
+  /** Seasons Raider.io answers 404 for, for the unarchivable path. */
+  readonly unservedSeasons = new Set<string>();
+
+  /**
+   * Adds `count` runs to a region, scored descending from `topScore`, served for
+   * `season` only when one is given.
+   */
+  seed(region: string, count: number, topScore = 500, season?: string): this {
     const dungeons = [
       [9527, 'Temple of Sethraliss', 'temple-of-sethraliss'],
       [9526, "Kings' Rest", 'kings-rest'],
@@ -103,6 +124,7 @@ export class MplusWorld {
         score: topScore - index,
         mythicLevel: 22,
         region,
+        ...(season ? { season } : {}),
         roster: [
           {
             id: 1_000 + index,
@@ -174,35 +196,45 @@ export class MplusWorld {
     return this;
   }
 
-  /** The `/mythic-plus/static-data` payload. */
-  staticData(): unknown {
+  /**
+   * The `/mythic-plus/static-data` payload for one expansion.
+   *
+   * Per expansion, as the real endpoint is: `expansion_id=6` lists Legion and
+   * nothing else. An expansion with no seasons answers with an empty list, which
+   * is how the catalogue walk knows where to stop.
+   */
+  staticData(expansionId = 11): unknown {
     return {
-      seasons: this.seasons.map((season) => ({
-        slug: season.slug,
-        name: season.name,
-        short_name: season.slug.toUpperCase(),
-        blizzard_season_id: season.blizzardSeasonId,
-        is_main_season: season.isMainSeason,
-        seasonal_affix: null,
-        starts: season.starts,
-        ends: {},
-        dungeons: Array.from({ length: season.dungeons }, (_unused, index) => ({
-          id: 9_500 + index,
-          challenge_mode_id: 200 + index,
-          slug: `dungeon-${index}`,
-          name: `Dungeon ${index}`,
-          short_name: `D${index}`,
-          keystone_timer_seconds: 1_800,
+      seasons: this.seasons
+        .filter((season) => (season.expansionId ?? 11) === expansionId)
+        .map((season) => ({
+          slug: season.slug,
+          name: season.name,
+          short_name: season.slug.toUpperCase(),
+          blizzard_season_id: season.blizzardSeasonId,
+          is_main_season: season.isMainSeason,
+          seasonal_affix: null,
+          starts: season.starts,
+          ends: season.ends ?? {},
+          dungeons: Array.from({ length: season.dungeons }, (_unused, index) => ({
+            id: (season.firstDungeonId ?? 9_500) + index,
+            challenge_mode_id: 200 + index,
+            slug: `dungeon-${index}`,
+            name: `Dungeon ${index}`,
+            short_name: `D${index}`,
+            keystone_timer_seconds: 1_800,
+          })),
         })),
-      })),
       dungeons: [],
     };
   }
 
   /** One page of `/mythic-plus/runs`, in the API's own shape. */
   runsPage(season: string, region: string, page: number): unknown {
+    // `world` is the union of every region, as upstream.
     const ranked = this.runs
-      .filter((run) => run.region === region)
+      .filter((run) => region === 'world' || run.region === region)
+      .filter((run) => run.season === undefined || run.season === season)
       .sort((left, right) => right.score - left.score);
     const start = page * RUNS_PER_PAGE;
 

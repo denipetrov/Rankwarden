@@ -28,6 +28,7 @@ export function quotaConsumerFor(kind: RunKind | undefined): QuotaConsumer {
     case 'archive':
       return 'archive';
     case 'mplus':
+    case 'mplus-archive':
       // Unreachable in practice, and deliberately listed rather than left to
       // the default: the M+ job talks only to Raider.io, which has its own
       // budget, so nothing of its should ever be charged against Blizzard's

@@ -8,6 +8,8 @@ import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from '../archive/archive.service.js';
 import { LeaderboardService } from '../leaderboard/leaderboard.service.js';
 import { MplusSeasonService } from '../mplus/mplus-season.service.js';
+import { MplusArchiveService } from '../mplus-archive/mplus-archive.service.js';
+import { MplusCatalogueService } from '../mplus-archive/mplus-catalogue.service.js';
 import { MplusService } from '../mplus/mplus.service.js';
 import { ProfileEnrichmentService } from '../profile/profile-enrichment.service.js';
 import { SpecRepresentationService } from '../representation/spec-representation.service.js';
@@ -42,6 +44,8 @@ export class AdminController implements OnModuleInit {
     private readonly transitions: SeasonTransitionService,
     private readonly mplus: MplusService,
     private readonly mplusSeasons: MplusSeasonService,
+    private readonly mplusArchive: MplusArchiveService,
+    private readonly mplusCatalogue: MplusCatalogueService,
   ) {
     this.enabled = config.get('NODE_ENV', { infer: true }) !== 'production';
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
@@ -122,6 +126,30 @@ export class AdminController implements OnModuleInit {
     this.mplusSeasons.invalidate();
 
     return withRunId('mplus', () => this.mplusSeasons.current());
+  }
+
+  /**
+   * One Mythic+ archive tick: catalogue if due, then the backlog. Driven
+   * directly, so it runs whatever else is active — a rehearsal is the point.
+   * It still yields between batches if a higher-priority job starts.
+   */
+  @Post('mplus-archive')
+  async mplusArchiveTick() {
+    this.guard();
+
+    return (
+      (await this.mplusArchive.archiveBacklog()) ?? {
+        skipped: 'a Mythic+ archive tick is already in progress',
+      }
+    );
+  }
+
+  /** Re-reads the season and dungeon catalogue now, ignoring its TTL. */
+  @Post('mplus-catalogue')
+  async mplusCatalogueRefresh() {
+    this.guard();
+
+    return withRunId('mplus-archive', () => this.mplusCatalogue.refresh());
   }
 
   @Post('season-refresh')

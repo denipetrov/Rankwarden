@@ -1,12 +1,22 @@
 import { z } from 'zod';
 
+/**
+ * A dungeon as a season lists it.
+ *
+ * The id is stable across expansions — Black Rook Hold is 7805 in Legion,
+ * Shadowlands, Dragonflight and The War Within alike; 31 of the 74 dungeons
+ * Raider.io lists recur in more than one expansion — which is what lets the
+ * catalogue hold one document per dungeon rather than one per appearance.
+ */
 const seasonDungeonSchema = z.object({
   id: z.number().int(),
-  challenge_mode_id: z.number().int().optional(),
+  challenge_mode_id: z.number().int().nullish(),
   slug: z.string(),
   name: z.string(),
-  short_name: z.string().optional(),
-  keystone_timer_seconds: z.number().int().optional(),
+  short_name: z.string().nullish(),
+  keystone_timer_seconds: z.number().int().nullish(),
+  icon_url: z.string().nullish(),
+  background_image_url: z.string().nullish(),
 });
 
 /**
@@ -45,4 +55,5 @@ export const staticDataSchema = z.object({
 });
 
 export type StaticSeason = z.infer<typeof staticSeasonSchema>;
+export type StaticDungeon = z.infer<typeof seasonDungeonSchema>;
 export type StaticData = z.infer<typeof staticDataSchema>;

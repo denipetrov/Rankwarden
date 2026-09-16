@@ -124,4 +124,83 @@ describe('IngestionCoordinator', () => {
       expect(coordinator.isWarmedUp).toBe(true);
     });
   });
+
+  describe('the Mythic+ archive', () => {
+    it('counts every other job as above it, and nothing else', async () => {
+      const coordinator = new IngestionCoordinator();
+      const seen: Record<string, boolean> = {};
+
+      await coordinator.duringSweep(async () => {
+        seen.sweep = coordinator.isAboveMplusArchiveActive;
+      });
+      await coordinator.duringEnrichment(async () => {
+        seen.enrichment = coordinator.isAboveMplusArchiveActive;
+      });
+      await coordinator.duringMplus(async () => {
+        seen.mplus = coordinator.isAboveMplusArchiveActive;
+      });
+      await coordinator.duringArchive(async () => {
+        seen.archive = coordinator.isAboveMplusArchiveActive;
+      });
+      await coordinator.duringMplusArchive(async () => {
+        seen.itself = coordinator.isAboveMplusArchiveActive;
+      });
+
+      expect(seen).toEqual({
+        sweep: true,
+        enrichment: true,
+        mplus: true,
+        archive: true,
+        itself: false,
+      });
+      expect(coordinator.isAboveMplusArchiveActive).toBe(false);
+    });
+
+    it('does not make the PvP archive or enrichment wait on either Mythic+ job', async () => {
+      const coordinator = new IngestionCoordinator();
+
+      await coordinator.duringMplusArchive(async () => {
+        expect(coordinator.isLiveIngestionActive).toBe(false);
+        expect(coordinator.isMplusActive).toBe(false);
+      });
+    });
+
+    it('opens the Mythic+ gate once the first live pass finishes', async () => {
+      const coordinator = new IngestionCoordinator();
+      const opened = vi.fn();
+      coordinator.mplusWarmedUp$.subscribe(opened);
+
+      await coordinator.duringMplus(async () => {
+        expect(coordinator.isMplusWarmedUp, 'not while it runs').toBe(false);
+      });
+
+      expect(coordinator.isMplusWarmedUp).toBe(true);
+      expect(opened).toHaveBeenCalledTimes(1);
+
+      await coordinator.duringMplus(async () => {});
+      expect(opened, 'and only once').toHaveBeenCalledTimes(1);
+    });
+
+    it('opens the Mythic+ gate at once when Mythic+ is switched off', () => {
+      // Otherwise the archive would wait forever for a pass that never comes.
+      const coordinator = new IngestionCoordinator();
+      const opened = vi.fn();
+      coordinator.mplusWarmedUp$.subscribe(opened);
+
+      coordinator.markMplusDisabled();
+
+      expect(coordinator.isMplusWarmedUp).toBe(true);
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the Mythic+ gate out of the PvP warm-up', async () => {
+      // The PvP archive has nothing to do with Mythic+ and must not wait on it.
+      const coordinator = new IngestionCoordinator();
+      coordinator.markEnrichmentDisabled();
+      await coordinator.duringSweep(async () => {});
+
+      expect(coordinator.isWarmedUp).toBe(true);
+      expect(coordinator.isMplusWarmedUp).toBe(false);
+    });
+  });
 });

@@ -7,6 +7,7 @@ import { RaiderIoBudget, raiderIoConsumerFor } from './raiderio-budget.service.j
 const env: Record<string, unknown> = {
   RAIDERIO_MINUTE_LIMIT: 1_000,
   RAIDERIO_UTILISATION: 0.9,
+  RAIDERIO_ARCHIVE_SHARE: 0.5,
 };
 
 function budgetAt(start = 0) {
@@ -119,5 +120,84 @@ describe('RaiderIoBudget', () => {
     });
 
     expect(budget.snapshot().mplus?.runs).toBe(100_100);
+  });
+});
+
+describe('RaiderIoBudget archive share', () => {
+  it('maps the archive run to its own consumer', () => {
+    expect(raiderIoConsumerFor('mplus-archive')).toBe('mplusArchive');
+  });
+
+  it('caps the archive at its share of the minute', () => {
+    const { budget } = budgetAt();
+
+    expect(budget.archiveShare).toBe(450);
+    budget.record('mplusArchive', 450);
+
+    expect(budget.allowanceFor('mplusArchive'), 'the archive has spent its share').toBe(0);
+    expect(budget.allowanceFor('mplus'), 'the live pass keeps the rest').toBe(450);
+  });
+
+  /**
+   * The reason for the cap. Whatever the archive spent just before a live pass
+   * starts, the pass begins with at least half the minute.
+   */
+  it('always leaves the live pass at least the other half', () => {
+    const { budget } = budgetAt();
+
+    // An archive that spends everything it is allowed, as it will in a gap
+    // just before a live pass begins.
+    budget.record('mplusArchive', budget.allowanceFor('mplusArchive'));
+
+    expect(budget.allowanceFor('mplusArchive')).toBe(0);
+    expect(budget.allowanceFor('mplus')).toBe(budget.usable - budget.archiveShare);
+  });
+
+  it('lets the live pass squeeze the archive out, not the other way round', () => {
+    const { budget } = budgetAt();
+
+    budget.record('mplus', 800);
+
+    expect(budget.allowanceFor('mplusArchive'), 'room, not share, binds').toBe(100);
+  });
+});
+
+describe('RaiderIoBudget.waitForAllowance', () => {
+  it('resolves at once when there is room', async () => {
+    const { budget } = budgetAt();
+
+    await expect(budget.waitForAllowance('mplus', 10, 0)).resolves.toBe(true);
+  });
+
+  it('gives up immediately with no wait allowed, as the tests configure', async () => {
+    const { budget } = budgetAt();
+    budget.record('mplus', 900);
+
+    await expect(budget.waitForAllowance('mplus', 1, 0)).resolves.toBe(false);
+  });
+
+  it('waits the window out rather than giving up', async () => {
+    // The injected clock rolls the minute on the first poll, which is exactly
+    // what real time does over sixty seconds.
+    const { budget, advance } = budgetAt();
+    budget.record('mplus', 900);
+    let polls = 0;
+    const original = budget.now;
+    budget.now = () => {
+      polls += 1;
+      if (polls === 2) advance(61_000);
+      return original();
+    };
+
+    await expect(budget.waitForAllowance('mplus', 1, 5_000)).resolves.toBe(true);
+  });
+
+  it('abandons the wait the moment it is told to', async () => {
+    const { budget } = budgetAt();
+    budget.record('mplusArchive', 450);
+
+    await expect(budget.waitForAllowance('mplusArchive', 1, 60_000, () => true)).resolves.toBe(
+      false,
+    );
   });
 });

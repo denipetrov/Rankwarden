@@ -73,6 +73,7 @@ export class MplusService {
   private readonly pageBatch: number;
   private readonly maxPages: number;
   private readonly intervalMs: number;
+  private readonly budgetWaitMs: number;
   private running = false;
 
   constructor(
@@ -88,6 +89,7 @@ export class MplusService {
     this.pageBatch = config.get('RAIDERIO_PAGE_BATCH', { infer: true });
     this.maxPages = config.get('RAIDERIO_MAX_PAGES', { infer: true });
     this.intervalMs = config.get('MPLUS_INTERVAL_MS', { infer: true });
+    this.budgetWaitMs = config.get('RAIDERIO_BUDGET_WAIT_MS', { infer: true });
   }
 
   get isRunning(): boolean {
@@ -211,9 +213,12 @@ export class MplusService {
     for (let first = 0; first <= lastPage && !exhausted; first += this.pageBatch) {
       // The budget is a per-minute ceiling, so this is checked per batch rather
       // than per pass: a pass runs for minutes and the window rolls underneath
-      // it. The limiter paces within the minute; this is what stops the pass
-      // from planning a batch the minute cannot pay for.
-      if (this.budget.allowance() <= 0) {
+      // it. A short window is waited out rather than treated as the end: the
+      // archive shares this window and may have spent in the seconds before the
+      // pass began, and stopping on that would skip the prune and report the
+      // pass degraded for a whole interval. Only a window that stays spent past
+      // `RAIDERIO_BUDGET_WAIT_MS` — something genuinely over-spending — stops it.
+      if (!(await this.budget.waitForAllowance('mplus', 1, this.budgetWaitMs))) {
         result.stoppedEarly = 'Raider.io budget spent';
         this.logger.warn(
           `Raider.io budget for the current minute is spent; stopping ${region} at page ${first}`,

@@ -3,6 +3,7 @@ import type { INestApplication } from '@nestjs/common';
 import { ArchiveScheduler } from '../../src/archive/archive.scheduler.js';
 import { LeaderboardScheduler } from '../../src/leaderboard/leaderboard.scheduler.js';
 import { MplusScheduler } from '../../src/mplus/mplus.scheduler.js';
+import { MplusArchiveScheduler } from '../../src/mplus-archive/mplus-archive.scheduler.js';
 import { ProfileScheduler } from '../../src/profile/profile.scheduler.js';
 import { SpecRepresentationScheduler } from '../../src/representation/spec-representation.scheduler.js';
 import { SeasonScheduler } from '../../src/season/season.scheduler.js';
@@ -26,6 +27,7 @@ export function schedulerSeams(app: INestApplication): Settleable[] {
     SpecRepresentationScheduler,
     ArchiveScheduler,
     MplusScheduler,
+    MplusArchiveScheduler,
     SeasonScheduler,
     SeasonTransitionScheduler,
   ].map((type) => app.get<Settleable>(type));

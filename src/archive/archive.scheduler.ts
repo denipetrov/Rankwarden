@@ -96,56 +96,60 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
 
     try {
       // Every request below is charged to the archive's share of the quota.
-      await withRunId('archive', async () => {
-        for (;;) {
-          // Re-checked between seasons: a sweep or enrichment pass starting mid
-          // backlog takes the quota back immediately. A Mythic+ pass takes no
-          // Blizzard quota at all, but the archive still yields to it — it is
-          // the lowest-priority job in the service, and a backfill writing
-          // millions of rows next to a pass writing hundreds of thousands is
-          // contention neither of them needs.
-          if (this.coordinator.isLiveIngestionActive || this.coordinator.isMplusActive) {
-            this.logger.log('Higher-priority ingestion in progress, pausing the archive');
-            return;
+      // Registered with the coordinator only so the Mythic+ archive, the one job
+      // below this one, can yield to it; nothing above waits on it.
+      await this.coordinator.duringArchive(() =>
+        withRunId('archive', async () => {
+          for (;;) {
+            // Re-checked between seasons: a sweep or enrichment pass starting mid
+            // backlog takes the quota back immediately. A Mythic+ pass takes no
+            // Blizzard quota at all, but the archive still yields to it — it is
+            // the lowest-priority job in the service, and a backfill writing
+            // millions of rows next to a pass writing hundreds of thousands is
+            // contention neither of them needs.
+            if (this.coordinator.isLiveIngestionActive || this.coordinator.isMplusActive) {
+              this.logger.log('Higher-priority ingestion in progress, pausing the archive');
+              return;
+            }
+
+            // The archive gets only what the sweep and enrichment leave, so it
+            // is the job that waits when the hour runs short. The interval
+            // brings it back once the window has rolled.
+            if (this.budget.allowance('archive') <= 0) {
+              this.logger.log(
+                'Archive share of the hourly quota is spent; pausing until the window rolls',
+              );
+              return;
+            }
+
+            const pending = await this.archive.nextPending(failedThisTick);
+            if (!pending) break;
+
+            const key = `${pending.seasonId}:${pending.region}`;
+
+            try {
+              const result = await this.archive.archiveSeason(pending.seasonId, pending.region);
+
+              // Came back incomplete: a bracket could not be fetched. It stays
+              // pending, but for the next tick rather than this one.
+              // `nextPending` would hand the same season straight back, and a
+              // failure that persists would be retried every pause until the
+              // archive's share of the quota was gone.
+              if (result.failedBrackets.length > 0) failedThisTick.add(key);
+            } catch (error) {
+              await this.recordFailure(pending.seasonId, pending.region, error);
+              failedThisTick.add(key);
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, this.pauseMs));
           }
 
-          // The archive gets only what the sweep and enrichment leave, so it
-          // is the job that waits when the hour runs short. The interval
-          // brings it back once the window has rolled.
-          if (this.budget.allowance('archive') <= 0) {
-            this.logger.log(
-              'Archive share of the hourly quota is spent; pausing until the window rolls',
-            );
-            return;
-          }
-
-          const pending = await this.archive.nextPending(failedThisTick);
-          if (!pending) break;
-
-          const key = `${pending.seasonId}:${pending.region}`;
-
-          try {
-            const result = await this.archive.archiveSeason(pending.seasonId, pending.region);
-
-            // Came back incomplete: a bracket could not be fetched. It stays
-            // pending, but for the next tick rather than this one.
-            // `nextPending` would hand the same season straight back, and a
-            // failure that persists would be retried every pause until the
-            // archive's share of the quota was gone.
-            if (result.failedBrackets.length > 0) failedThisTick.add(key);
-          } catch (error) {
-            await this.recordFailure(pending.seasonId, pending.region, error);
-            failedThisTick.add(key);
-          }
-
-          await new Promise((resolve) => setTimeout(resolve, this.pauseMs));
-        }
-
-        // Rewards come after the backlog, and only for what it archived: a
-        // season finished in this tick gets its rewards in this tick too, and
-        // one Blizzard will not serve never gets a marker to be asked about.
-        await this.archive.archivePendingRewards();
-      });
+          // Rewards come after the backlog, and only for what it archived: a
+          // season finished in this tick gets its rewards in this tick too, and
+          // one Blizzard will not serve never gets a marker to be asked about.
+          await this.archive.archivePendingRewards();
+        }),
+      );
     } catch (error) {
       this.logger.error('Archiving failed', errorStack(error));
     } finally {

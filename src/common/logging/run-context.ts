@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '@nestjs/common';
 
 /** The kinds of run that get their own correlation id. */
-export type RunKind = 'sweep' | 'enrich' | 'archive' | 'mplus' | 'snapshot' | 'transition';
+export type RunKind =
+  'sweep' | 'enrich' | 'archive' | 'mplus' | 'mplus-archive' | 'snapshot' | 'transition';
 
 interface RunContext {
   kind: RunKind;

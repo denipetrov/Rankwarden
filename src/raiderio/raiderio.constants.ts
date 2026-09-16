@@ -17,6 +17,14 @@ export type RaiderIoRegion = (typeof RAIDERIO_REGIONS)[number];
  */
 export const AGGREGATE_REGION = 'world';
 
+/** A region the runs endpoint accepts: a real one, or the aggregate. */
+export type RunsRegion = RaiderIoRegion | typeof AGGREGATE_REGION;
+
+/** Narrows a region slug from a payload to one this service knows. */
+export function isRaiderIoRegion(value: string): value is RaiderIoRegion {
+  return (RAIDERIO_REGIONS as readonly string[]).includes(value);
+}
+
 /** Runs per page, fixed by the API — the endpoint takes no page-size parameter. */
 export const RUNS_PER_PAGE = 20;
 
@@ -33,3 +41,9 @@ export const MAX_RUNS_PAGE = 1000;
  * always listed under the current one.
  */
 export const CURRENT_EXPANSION_ID = 11;
+
+/**
+ * The first expansion with Mythic+ seasons. Legion introduced Mythic+, and
+ * `static-data?expansion_id=5` answers with dungeons but no seasons at all.
+ */
+export const FIRST_MPLUS_EXPANSION_ID = 6;

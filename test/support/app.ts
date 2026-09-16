@@ -61,6 +61,12 @@ const BASE_ENV: Record<string, string> = {
   // raise this deliberately.
   RAIDERIO_MAX_PAGES: '5',
   RAIDERIO_PAGE_BATCH: '5',
+  // A spent minute is waited out in production. Here it has to be observable
+  // without a sixty-second sleep, so a spent budget stops at once.
+  RAIDERIO_BUDGET_WAIT_MS: '0',
+  MPLUS_ARCHIVE_ENABLED: 'false',
+  MPLUS_ARCHIVE_CHECK_INTERVAL_MS: '3600000',
+  MPLUS_ARCHIVE_PAGES: '3',
   RAIDER_IO_API_KEY: 'test-raiderio-key',
 };
 

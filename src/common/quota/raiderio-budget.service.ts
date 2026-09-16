@@ -5,10 +5,10 @@ import type { Env } from '../../config/env.schema.js';
 import type { RunKind } from '../logging/run-context.js';
 import { RollingWindow } from './rolling-window.js';
 
-/** Who spent a Raider.io request. Anything outside the M+ job is `other`. */
-export type RaiderIoConsumer = 'mplus' | 'other';
+/** Who spent a Raider.io request. Anything outside a known job is `other`. */
+export type RaiderIoConsumer = 'mplus' | 'mplusArchive' | 'other';
 
-const CONSUMERS: readonly RaiderIoConsumer[] = ['mplus', 'other'];
+const CONSUMERS: readonly RaiderIoConsumer[] = ['mplus', 'mplusArchive', 'other'];
 
 export const MINUTE_MS = 60_000;
 /**
@@ -25,7 +25,14 @@ const WINDOW_SECONDS = 60;
 
 /** Maps a run to the consumer its Raider.io requests are charged to. */
 export function raiderIoConsumerFor(kind: RunKind | undefined): RaiderIoConsumer {
-  return kind === 'mplus' ? 'mplus' : 'other';
+  switch (kind) {
+    case 'mplus':
+      return 'mplus';
+    case 'mplus-archive':
+      return 'mplusArchive';
+    default:
+      return 'other';
+  }
 }
 
 /**
@@ -61,8 +68,10 @@ export interface MplusOutlook {
 export interface RaiderIoQuotaSnapshot {
   minuteLimit: number;
   usable: number;
+  /** The most the archive may spend in any one minute. */
+  archiveShare: number;
   spent: Record<RaiderIoConsumer | 'total', number>;
-  allowance: number;
+  allowance: Record<'mplus' | 'mplusArchive', number>;
   mplus: MplusOutlook | null;
 }
 
@@ -94,6 +103,8 @@ export interface RaiderIoQuotaSnapshot {
 export class RaiderIoBudget {
   readonly minuteLimit: number;
   readonly usable: number;
+  /** Requests a minute the archive may spend at most. See `allowanceFor`. */
+  readonly archiveShare: number;
 
   private readonly window = new RollingWindow<RaiderIoConsumer>(
     CONSUMERS,
@@ -116,6 +127,9 @@ export class RaiderIoBudget {
     this.usable = Math.floor(
       this.minuteLimit * config.get('RAIDERIO_UTILISATION', { infer: true }),
     );
+    this.archiveShare = Math.floor(
+      this.usable * config.get('RAIDERIO_ARCHIVE_SHARE', { infer: true }),
+    );
   }
 
   /** Charges `count` requests to a consumer. Called once per real attempt. */
@@ -128,15 +142,60 @@ export class RaiderIoBudget {
     return this.window.spent(consumer);
   }
 
-  /**
-   * Requests that may still be spent right now.
-   *
-   * One number rather than a share per consumer: only the M+ job spends here,
-   * and `other` exists to keep anything outside a run visible in the total
-   * rather than to be budgeted against separately.
-   */
+  /** Requests that may still be spent right now by the live pass. */
   allowance(): number {
-    return Math.max(0, this.usable - this.spent());
+    return this.allowanceFor('mplus');
+  }
+
+  /**
+   * Requests a consumer may still spend right now.
+   *
+   * The live pass may use the whole window. The archive is capped at
+   * `archiveShare` of it, and the cap is what protects the live pass rather
+   * than politeness: both spend from one per-minute window, the archive runs in
+   * the gaps before a live pass starts, and a window the archive had just
+   * filled would leave the live pass nothing for up to a minute. Capped, the
+   * live pass always inherits at least `usable - archiveShare` the moment it
+   * begins, and the rest within one window.
+   */
+  allowanceFor(consumer: 'mplus' | 'mplusArchive'): number {
+    const room = Math.max(0, this.usable - this.spent());
+
+    if (consumer === 'mplus') return room;
+
+    return Math.max(0, Math.min(room, this.archiveShare - this.spent('mplusArchive')));
+  }
+
+  /**
+   * Waits for a consumer's allowance to reach `needed`, for at most `maxWaitMs`.
+   *
+   * A per-minute ceiling is a **rate**, so a job that meets it should slow down
+   * rather than give up: the window frees itself within sixty seconds. Giving
+   * up is what the live pass used to do, and once the archive shared the window
+   * that turned "someone else spent this minute" into a pass that stopped early,
+   * skipped its prune and reported degraded for a whole interval.
+   *
+   * Resolves `true` once there is room, `false` when the wait runs out or
+   * `abandon` says to stop — a higher-priority job starting, for the archive.
+   * Polls rather than computing the exact moment, because the window rolls in
+   * one-second buckets and something else may spend in the meantime.
+   */
+  async waitForAllowance(
+    consumer: 'mplus' | 'mplusArchive',
+    needed: number,
+    maxWaitMs: number,
+    abandon: () => boolean = () => false,
+  ): Promise<boolean> {
+    const deadline = Date.now() + maxWaitMs;
+
+    for (;;) {
+      if (this.allowanceFor(consumer) >= Math.max(1, needed)) return true;
+      if (abandon() || Date.now() >= deadline) return false;
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(BUCKET_MS, Math.max(0, deadline - Date.now()))),
+      );
+    }
   }
 
   publishMplusOutlook(outlook: MplusOutlook): void {
@@ -156,8 +215,12 @@ export class RaiderIoBudget {
     return {
       minuteLimit: this.minuteLimit,
       usable: this.usable,
+      archiveShare: this.archiveShare,
       spent: { ...spent, total: this.spent() },
-      allowance: this.allowance(),
+      allowance: {
+        mplus: this.allowanceFor('mplus'),
+        mplusArchive: this.allowanceFor('mplusArchive'),
+      },
       mplus: this.outlook,
     };
   }

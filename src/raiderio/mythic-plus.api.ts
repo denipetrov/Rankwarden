@@ -1,12 +1,16 @@
 import { Injectable } from '@nestjs/common';
 
 import { RaiderIoHttpService } from './http/raiderio-http.service.js';
-import type { RaiderIoRegion } from './raiderio.constants.js';
+import type { RunsRegion } from './raiderio.constants.js';
 import {
   mythicPlusRunsSchema,
   type MythicPlusRunsPage,
 } from './schemas/mythic-plus-runs.schema.js';
-import { staticDataSchema, type StaticSeason } from './schemas/static-data.schema.js';
+import {
+  staticDataSchema,
+  type StaticData,
+  type StaticSeason,
+} from './schemas/static-data.schema.js';
 
 /** Typed access to the Mythic+ slice of the Raider.io API. */
 @Injectable()
@@ -24,7 +28,7 @@ export class MythicPlusApi {
    */
   async getRunsPage(
     season: string,
-    region: RaiderIoRegion,
+    region: RunsRegion,
     page: number,
     dungeon = 'all',
   ): Promise<MythicPlusRunsPage> {
@@ -44,10 +48,20 @@ export class MythicPlusApi {
    * collections with a frozen ladder while the new season went uningested.
    */
   async getSeasons(expansionId: number): Promise<StaticSeason[]> {
+    return (await this.getStaticData(expansionId)).seasons;
+  }
+
+  /**
+   * One expansion's seasons, each with its own dungeon list.
+   *
+   * Per expansion, not global: `expansion_id=6` answers with Legion's six
+   * seasons and nothing else, so the full history is one call per expansion.
+   */
+  async getStaticData(expansionId: number): Promise<StaticData> {
     const payload = await this.http.get('mythic-plus/static-data', {
       searchParams: { expansion_id: expansionId },
     });
 
-    return staticDataSchema.parse(payload).seasons;
+    return staticDataSchema.parse(payload);
   }
 }
