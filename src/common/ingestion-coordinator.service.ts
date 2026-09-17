@@ -35,6 +35,7 @@ export class IngestionCoordinator {
   private sweepDone = false;
   private enrichmentDone = false;
   private mplusDone = false;
+  private mplusIdleWaiters: Array<() => void> = [];
   private readonly warmedUpSubject = new ReplaySubject<void>(1);
   private readonly mplusWarmedUpSubject = new ReplaySubject<void>(1);
 
@@ -128,8 +129,28 @@ export class IngestionCoordinator {
     } finally {
       this.mplusDepth -= 1;
 
-      if (this.mplusDepth === 0) this.markMplusWarmedUp();
+      if (this.mplusDepth === 0) {
+        this.markMplusWarmedUp();
+
+        const waiters = this.mplusIdleWaiters;
+        this.mplusIdleWaiters = [];
+        for (const resolve of waiters) resolve();
+      }
     }
+  }
+
+  /**
+   * Resolves once no Mythic+ pass is running — at once, when none is.
+   *
+   * For the Mythic+ season transition, which must not retire a season a pass
+   * is still writing, and which is usually triggered by that very pass noticing
+   * the rollover. Waiting beats abstaining there: abstaining would leave the
+   * old season in place until the next hourly check for no reason.
+   */
+  whenMplusIdle(): Promise<void> {
+    if (!this.isMplusActive) return Promise.resolve();
+
+    return new Promise((resolve) => this.mplusIdleWaiters.push(resolve));
   }
 
   /**

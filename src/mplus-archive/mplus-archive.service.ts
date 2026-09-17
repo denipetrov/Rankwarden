@@ -19,11 +19,15 @@ import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import { AGGREGATE_REGION, RUNS_PER_PAGE } from '../raiderio/raiderio.constants.js';
 import type {
-  MplusArchiveRunDocument,
   MplusSeasonArchiveMarker,
   MplusSeasonDocument,
-} from './entities/mplus-archive.entity.js';
-import { MplusCatalogueService, type CatalogueRefresh } from './mplus-catalogue.service.js';
+} from '../mplus-season/entities/mplus-season.entity.js';
+import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
+import {
+  MplusCatalogueService,
+  type CatalogueRefresh,
+} from '../mplus-season/mplus-catalogue.service.js';
+import type { MplusArchiveRunDocument } from './entities/mplus-archive.entity.js';
 import { pendingSeasons } from './mplus-archive.mapper.js';
 import { MplusArchiveRepository } from './mplus-archive.repository.js';
 
@@ -91,6 +95,7 @@ export class MplusArchiveService {
     config: ConfigService<Env, true>,
     private readonly api: MythicPlusApi,
     private readonly catalogue: MplusCatalogueService,
+    private readonly seasons: MplusCatalogueRepository,
     private readonly repository: MplusArchiveRepository,
     private readonly affixes: MplusRepository,
     private readonly coordinator: IngestionCoordinator,
@@ -146,7 +151,7 @@ export class MplusArchiveService {
         break;
       }
 
-      const [next] = pendingSeasons(await this.repository.allSeasons(), {
+      const [next] = pendingSeasons(await this.seasons.allSeasons(), {
         now: new Date(),
         skip,
       });
@@ -163,7 +168,7 @@ export class MplusArchiveService {
       if (result.outcome === 'incomplete') skip.add(next.slug);
     }
 
-    const pending = pendingSeasons(await this.repository.allSeasons(), {
+    const pending = pendingSeasons(await this.seasons.allSeasons(), {
       now: new Date(),
     }).length;
 
@@ -219,7 +224,7 @@ export class MplusArchiveService {
     const stored = await this.repository.summariseStored(season.slug);
     if (stored.runs !== this.pages * RUNS_PER_PAGE || stored.characters === 0) return false;
 
-    await this.repository.recordArchive(season.slug, {
+    await this.seasons.recordArchive(season.slug, {
       status: 'complete',
       pagesPlanned: this.pages,
       pagesFetched: this.pages,
@@ -356,7 +361,7 @@ export class MplusArchiveService {
     // After the rows, never before: a crash between the two leaves rows with no
     // marker, which the next tick recovers or refetches. The other order would
     // leave a `complete` marker over rows that were never written.
-    await this.repository.recordArchive(season.slug, this.markerOf(result, archivedAt));
+    await this.seasons.recordArchive(season.slug, this.markerOf(result, archivedAt));
 
     this.logger.log(
       `Archived Mythic+ ${season.slug}: ${result.runs} runs and ${result.characters} ` +
@@ -394,7 +399,7 @@ export class MplusArchiveService {
     );
 
     const marked = { ...result, outcome: 'unarchivable' as const, reason };
-    await this.repository.recordArchive(season.slug, {
+    await this.seasons.recordArchive(season.slug, {
       ...this.markerOf(marked, new Date()),
       lastError: reason,
     });

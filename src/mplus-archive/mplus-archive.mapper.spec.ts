@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { staticDataSchema } from '../raiderio/schemas/static-data.schema.js';
-import type { MplusSeasonDocument } from './entities/mplus-archive.entity.js';
-import {
-  dungeonsOf,
-  isFinished,
-  mainSeasonsOf,
-  pendingSeasons,
-  toDungeonDocument,
-  toSeasonDocument,
-} from './mplus-archive.mapper.js';
+import type { MplusSeasonDocument } from '../mplus-season/entities/mplus-season.entity.js';
+import { isFinished, pendingSeasons } from './mplus-archive.mapper.js';
 
 const now = new Date('2026-09-16T00:00:00Z');
 
@@ -27,111 +19,6 @@ function season(slug: string, overrides: Partial<MplusSeasonDocument> = {}): Mpl
     ...overrides,
   };
 }
-
-/** Trimmed from the live `static-data?expansion_id=6` payload of 2026-09-16. */
-const legion = staticDataSchema.parse({
-  seasons: [
-    {
-      slug: 'season-7.2.0',
-      name: 'Legion Season 2',
-      blizzard_season_id: 0,
-      is_main_season: true,
-      short_name: 'L2',
-      seasonal_affix: null,
-      starts: { us: '2017-03-28T15:00:00Z', eu: '2017-03-29T07:00:00Z' },
-      ends: { us: '2017-06-13T15:00:00Z', eu: '2017-06-14T07:00:00Z' },
-      dungeons: [
-        {
-          id: 7805,
-          challenge_mode_id: 199,
-          slug: 'black-rook-hold',
-          name: 'Black Rook Hold',
-          short_name: 'BRH',
-          keystone_timer_seconds: 2340,
-          icon_url: 'https://cdn.raiderio.net/brh.jpg',
-          background_image_url: 'https://cdn.raiderio.net/brh-bg.jpg',
-        },
-        { id: 8079, slug: 'court-of-stars', name: 'Court of Stars', short_name: 'COS' },
-      ],
-    },
-    {
-      slug: 'season-post-legion',
-      name: 'Post-Legion',
-      blizzard_season_id: 0,
-      is_main_season: false,
-      starts: { us: '2018-06-26T15:00:00Z' },
-      ends: { us: '2018-07-17T15:00:00Z' },
-      dungeons: [{ id: 7805, slug: 'black-rook-hold', name: 'Black Rook Hold' }],
-    },
-  ],
-});
-
-describe('toSeasonDocument', () => {
-  it('parses per-region dates and references dungeons by id', () => {
-    const document = toSeasonDocument(legion.seasons[0], 6, now);
-
-    expect(document.expansionId).toBe(6);
-    expect(document.ends.eu).toEqual(new Date('2017-06-14T07:00:00Z'));
-    expect(document.dungeonIds).toEqual([7805, 8079]);
-    // Legion predates Blizzard numbering its M+ seasons: every one reads 0.
-    expect(document.blizzardSeasonId).toBe(0);
-  });
-
-  it('never carries an archive marker, so a refresh cannot overwrite one', () => {
-    expect(toSeasonDocument(legion.seasons[0], 6, now)).not.toHaveProperty('archive');
-  });
-
-  it('drops a timestamp it cannot parse rather than storing an invalid date', () => {
-    const document = toSeasonDocument(
-      { ...legion.seasons[0], ends: { us: 'not a date', eu: '2017-06-14T07:00:00Z' } },
-      6,
-      now,
-    );
-
-    expect(Object.keys(document.ends)).toEqual(['eu']);
-  });
-});
-
-describe('mainSeasonsOf', () => {
-  it('keeps main seasons and drops side events', () => {
-    expect(mainSeasonsOf(legion.seasons).map((item) => item.slug)).toEqual(['season-7.2.0']);
-  });
-
-  it('reads a season with no flag as main rather than dropping it', () => {
-    // Every season observed carries the flag. Guessing "side event" for one that
-    // did not would drop a real season from the catalogue and the archive.
-    const unflagged = { ...legion.seasons[0], is_main_season: undefined };
-
-    expect(mainSeasonsOf([unflagged])).toHaveLength(1);
-  });
-
-  it('loses no dungeon when only main seasons are kept', () => {
-    // Post-Legion lists only Black Rook Hold, which season 7.2.0 lists too — the
-    // shape of the real catalogue, where the 21 main seasons cover all 74.
-    const fromAll = dungeonsOf(legion.seasons).map((dungeon) => dungeon.id);
-    const fromMain = dungeonsOf(mainSeasonsOf(legion.seasons)).map((dungeon) => dungeon.id);
-
-    expect([...fromMain].sort()).toEqual([...fromAll].sort());
-  });
-});
-
-describe('dungeonsOf / toDungeonDocument', () => {
-  it('lists each dungeon once however many seasons ran it', () => {
-    expect(dungeonsOf(legion.seasons).map((dungeon) => dungeon.id)).toEqual([7805, 8079]);
-  });
-
-  it('keeps the art and timer fields, and nulls the ones a payload omits', () => {
-    const [blackRook, court] = dungeonsOf(legion.seasons).map((dungeon) =>
-      toDungeonDocument(dungeon, now),
-    );
-
-    // The later, sparser listing of Black Rook Hold wins the dedupe; the full
-    // one is asserted through the season that carries it instead.
-    expect(blackRook.id).toBe(7805);
-    expect(court.iconUrl).toBeNull();
-    expect(toDungeonDocument(legion.seasons[0].dungeons![0], now).keystoneTimerSeconds).toBe(2340);
-  });
-});
 
 describe('isFinished', () => {
   it('is finished only once every region has ended', () => {

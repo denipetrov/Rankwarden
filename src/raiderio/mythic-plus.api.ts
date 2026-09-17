@@ -6,11 +6,7 @@ import {
   mythicPlusRunsSchema,
   type MythicPlusRunsPage,
 } from './schemas/mythic-plus-runs.schema.js';
-import {
-  staticDataSchema,
-  type StaticData,
-  type StaticSeason,
-} from './schemas/static-data.schema.js';
+import { staticDataSchema, type StaticData } from './schemas/static-data.schema.js';
 
 /** Typed access to the Mythic+ slice of the Raider.io API. */
 @Injectable()
@@ -38,17 +34,6 @@ export class MythicPlusApi {
     });
 
     return mythicPlusRunsSchema.parse(payload);
-  }
-
-  /**
-   * The seasons and dungeons Raider.io publishes for an expansion.
-   *
-   * This is what keeps the season slug out of the configuration. A hardcoded
-   * `season-mn-2` would go on being fetched after the season ends, filling the
-   * collections with a frozen ladder while the new season went uningested.
-   */
-  async getSeasons(expansionId: number): Promise<StaticSeason[]> {
-    return (await this.getStaticData(expansionId)).seasons;
   }
 
   /**

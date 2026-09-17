@@ -67,6 +67,13 @@ const BASE_ENV: Record<string, string> = {
   MPLUS_ARCHIVE_ENABLED: 'false',
   MPLUS_ARCHIVE_CHECK_INTERVAL_MS: '3600000',
   MPLUS_ARCHIVE_PAGES: '3',
+  // The fake world lists its seasons under Midnight, and the catalogue walk
+  // stops at the first expansion with none, so it starts there.
+  MPLUS_CATALOGUE_FIRST_EXPANSION: '11',
+  MPLUS_SEASON_REFRESH_ENABLED: 'false',
+  MPLUS_SEASON_CHECK_INTERVAL_MS: '3600000',
+  MPLUS_TRANSITION_ENABLED: 'false',
+  MPLUS_TRANSITION_CHECK_INTERVAL_MS: '3600000',
   RAIDER_IO_API_KEY: 'test-raiderio-key',
 };
 

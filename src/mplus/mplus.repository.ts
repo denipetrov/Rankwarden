@@ -343,25 +343,6 @@ export class MplusRepository implements OnModuleInit {
     return new Set(rows.map((row) => row._id));
   }
 
-  /**
-   * Removes every trace of a season that is no longer current.
-   *
-   * The M+ counterpart to the PvP season purge, but far simpler: M+ data is a
-   * leaderboard snapshot rather than standings anyone archives, and it is
-   * rebuilt in full on every pass, so a superseded season is just stale.
-   */
-  async purgeSeason(season: string): Promise<{ runs: number; characters: number }> {
-    const runs = await this.runs.deleteMany({ season });
-    const characters = await this.characters.deleteMany({ season });
-
-    return { runs: runs.deletedCount, characters: characters.deletedCount };
-  }
-
-  /** Season slugs with any data stored, so a rollover can clear the old one. */
-  storedSeasons(): Promise<string[]> {
-    return this.runs.distinct('season');
-  }
-
   countRuns(season: string, region?: RaiderIoRegion): Promise<number> {
     return this.runs.countDocuments(region ? { season, region } : { season });
   }

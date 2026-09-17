@@ -21,9 +21,11 @@ import { MPLUS_AFFIXES_COLLECTION } from '../../src/mplus/entities/mplus-affix.e
 import {
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
+} from '../../src/mplus-archive/entities/mplus-archive.entity.js';
+import {
   MPLUS_DUNGEONS_COLLECTION,
   MPLUS_SEASONS_COLLECTION,
-} from '../../src/mplus-archive/entities/mplus-archive.entity.js';
+} from '../../src/mplus-season/entities/mplus-season.entity.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [

@@ -36,13 +36,6 @@ export const RUNS_PER_PAGE = 20;
 export const MAX_RUNS_PAGE = 1000;
 
 /**
- * WoW expansion the M+ seasons are read from. Raider.io keys its static data
- * by expansion, and a season that has not rolled into the next expansion is
- * always listed under the current one.
- */
-export const CURRENT_EXPANSION_ID = 11;
-
-/**
  * The first expansion with Mythic+ seasons. Legion introduced Mythic+, and
  * `static-data?expansion_id=5` answers with dungeons but no seasons at all.
  */

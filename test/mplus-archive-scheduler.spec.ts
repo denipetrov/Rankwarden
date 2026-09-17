@@ -4,10 +4,8 @@ import type { Db } from 'mongodb';
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
-import {
-  MPLUS_ARCHIVE_RUNS_COLLECTION,
-  MPLUS_SEASONS_COLLECTION,
-} from '../src/mplus-archive/entities/mplus-archive.entity.js';
+import { MPLUS_ARCHIVE_RUNS_COLLECTION } from '../src/mplus-archive/entities/mplus-archive.entity.js';
+import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';

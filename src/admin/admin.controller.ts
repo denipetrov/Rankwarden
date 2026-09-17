@@ -7,9 +7,10 @@ import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from '../archive/archive.service.js';
 import { LeaderboardService } from '../leaderboard/leaderboard.service.js';
-import { MplusSeasonService } from '../mplus/mplus-season.service.js';
 import { MplusArchiveService } from '../mplus-archive/mplus-archive.service.js';
-import { MplusCatalogueService } from '../mplus-archive/mplus-catalogue.service.js';
+import { MplusCatalogueService } from '../mplus-season/mplus-catalogue.service.js';
+import { MplusSeasonTransitionService } from '../mplus-season/mplus-season-transition.service.js';
+import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import { MplusService } from '../mplus/mplus.service.js';
 import { ProfileEnrichmentService } from '../profile/profile-enrichment.service.js';
 import { SpecRepresentationService } from '../representation/spec-representation.service.js';
@@ -46,6 +47,7 @@ export class AdminController implements OnModuleInit {
     private readonly mplusSeasons: MplusSeasonService,
     private readonly mplusArchive: MplusArchiveService,
     private readonly mplusCatalogue: MplusCatalogueService,
+    private readonly mplusTransitions: MplusSeasonTransitionService,
   ) {
     this.enabled = config.get('NODE_ENV', { infer: true }) !== 'production';
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
@@ -119,13 +121,29 @@ export class AdminController implements OnModuleInit {
     return (await this.mplus.sweep()) ?? { skipped: 'a Mythic+ pass is already in progress' };
   }
 
-  /** Re-reads which Mythic+ season is current, bypassing the cached answer. */
+  /**
+   * Re-reads the season catalogue now, ignoring its TTL, then observes which
+   * season is current in each region — announcing an end or a rollover exactly
+   * as the scheduled check would.
+   */
   @Post('mplus-season')
   async mplusSeason() {
     this.guard();
-    this.mplusSeasons.invalidate();
 
-    return withRunId('mplus', () => this.mplusSeasons.current());
+    return withRunId('mplus-season', async () => {
+      const catalogue = await this.mplusCatalogue.refresh();
+      await this.mplusSeasons.observe();
+
+      return { catalogue, seasons: this.mplusSeasons.describe() };
+    });
+  }
+
+  /** Plans and runs the Mythic+ season transition, honouring its dry-run flag. */
+  @Post('mplus-season-transition')
+  async mplusSeasonTransition() {
+    this.guard();
+
+    return withRunId('transition', () => this.mplusTransitions.run());
   }
 
   /**
@@ -149,7 +167,7 @@ export class AdminController implements OnModuleInit {
   async mplusCatalogueRefresh() {
     this.guard();
 
-    return withRunId('mplus-archive', () => this.mplusCatalogue.refresh());
+    return withRunId('mplus-season', () => this.mplusCatalogue.refresh());
   }
 
   @Post('season-refresh')

@@ -16,6 +16,8 @@ import { MongoService } from '../database/mongo.service.js';
 import { LeaderboardService } from '../leaderboard/leaderboard.service.js';
 import { MplusService } from '../mplus/mplus.service.js';
 import { MplusArchiveService } from '../mplus-archive/mplus-archive.service.js';
+import { MplusSeasonTransitionService } from '../mplus-season/mplus-season-transition.service.js';
+import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { SeasonTransitionService } from '../season/season-transition.service.js';
 
@@ -48,6 +50,8 @@ export class HealthController {
     private readonly raiderIo: RaiderIoBudget,
     private readonly mplus: MplusService,
     private readonly mplusArchive: MplusArchiveService,
+    private readonly mplusSeasons: MplusSeasonService,
+    private readonly mplusTransitions: MplusSeasonTransitionService,
   ) {
     // The host, never the URI: a connection string carries its password in
     // userinfo and this endpoint is unauthenticated.
@@ -66,6 +70,7 @@ export class HealthController {
       uptimeSeconds: Math.round(process.uptime()),
       sweepRunning: this.leaderboards.isRunning,
       seasons: this.seasons.describe(),
+      mplusSeasons: this.mplusSeasons.describe(),
       jobs: this.jobs(),
     };
   }
@@ -153,6 +158,10 @@ export class HealthController {
     return {
       seasons: this.seasons.describe(),
       transition: await this.transitions.plan(),
+      mplus: {
+        seasons: this.mplusSeasons.describe(),
+        transition: await this.mplusTransitions.plan(),
+      },
     };
   }
 

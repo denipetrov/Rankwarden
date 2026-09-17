@@ -11,11 +11,13 @@ import { MplusService } from '../src/mplus/mplus.service.js';
 import {
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
-  MPLUS_DUNGEONS_COLLECTION,
-  MPLUS_SEASONS_COLLECTION,
 } from '../src/mplus-archive/entities/mplus-archive.entity.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MplusCatalogueService } from '../src/mplus-archive/mplus-catalogue.service.js';
+import {
+  MPLUS_DUNGEONS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+} from '../src/mplus-season/entities/mplus-season.entity.js';
+import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';

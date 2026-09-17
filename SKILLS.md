@@ -93,20 +93,28 @@ src/
     pvp.api.ts                  season index/detail, bracket index, leaderboards
     profile.api.ts              character summary + specializations
   raiderio/
-    raiderio.constants.ts       regions (cn included), page cap, expansion id
+    raiderio.constants.ts       regions (cn included), page cap, first M+ expansion
     http/                       shared got instance, key injection, typed errors
     schemas/                    zod schemas for every Raider.io payload consumed
     mythic-plus.api.ts          runs pages + season static data
+  mplus-season/
+    mplus-catalogue.service.ts  every main season + dungeon, walked across expansions
+    mplus-catalogue.mapper.ts   catalogue mapping; which season is current per region
+    mplus-catalogue.repository.ts  mplus_seasons + mplus_dungeons (+ archive markers)
+    mplus-season.service.ts     current season per region, observed + announced
+    mplus-season.scheduler.ts   catalogue at boot, season check hourly
+    mplus-season-events.service.ts   rxjs Subject for "ended" / "rollover"
+    mplus-season-state.repository.ts mplus_season_state + mplus_season_transitions
+    mplus-season-transition.service.ts   retires a superseded season per region
+    mplus-season-transition.scheduler.ts interval + on every rollover
   mplus/
-    mplus-season.service.ts     which M+ season is current, resolved not configured
     mplus.mapper.ts             payload -> documents; the per-character score fold
     mplus.repository.ts         mplus_runs + mplus_characters + mplus_affixes
     mplus.service.ts            the pass
     mplus.scheduler.ts          interval + warm-up gate
   mplus-archive/
-    mplus-catalogue.service.ts  every season + dungeon, walked across expansions
-    mplus-archive.mapper.ts     catalogue mapping; which seasons are still owed
-    mplus-archive.repository.ts mplus_seasons, mplus_dungeons, mplus_archive_*
+    mplus-archive.mapper.ts     which seasons are still owed
+    mplus-archive.repository.ts mplus_archive_runs + mplus_archive_characters
     mplus-archive.service.ts    archives each finished season once
     mplus-archive.scheduler.ts  interval + two warm-up gates
   season/                       active season per region, daily refresh
@@ -138,6 +146,8 @@ ranks them:
 | 5        | **Mythic+ archive**     | `MPLUS_ARCHIVE_CHECK_INTERVAL_MS` (1h), after both warm-ups      | **every** job above          | Raider.io |
 | —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)         | Blizzard  |
 | —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)       | none      |
+| —        | **M+ season check**     | `MPLUS_SEASON_CHECK_INTERVAL_MS` (1h) + at boot                  | nothing (catalogue only)     | Raider.io |
+| —        | **M+ season transition** | `MPLUS_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | a running M+ pass (waits)    | none      |
 
 The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
 `isArchiveActive`, `isMplusArchiveActive`, `isLiveIngestionActive`,
@@ -285,15 +295,19 @@ spent budget is still observable without a sixty-second sleep.
 
 `MplusService.sweep()` — the top Mythic+ runs of the current season, per region.
 
-1. Resolve the current season from Raider.io (`MplusSeasonService`, cached a day).
-2. Skip regions the season has not opened in yet — they stagger by up to 32 hours.
+1. Make sure the season catalogue is loaded (`ensureCatalogue`) — **before any runs
+   request**. Usually already fresh from the boot-time season check; otherwise read now.
+2. Resolve and observe the season current in **each region** (§4.6.2). A region no
+   catalogued season has opened in is skipped; on the day a season rolls, regions ingest
+   different seasons side by side.
 3. Per region, page through `mythic-plus/runs?dungeon=all` in batches of
    `RAIDERIO_PAGE_BATCH`, at `RAIDERIO_CONCURRENCY` in flight.
 4. Write each batch's runs and affixes as it arrives; fold characters across the whole
    region; write the characters at the end.
 5. Clean up in two stages — **only if the pass finished cleanly**: runs this pass did not
    refresh, then characters no surviving run lists (§5.6).
-6. Purge any season that is no longer current.
+6. Nothing else. A superseded season is **not** deleted by the pass; the M+ season
+   transition retires it once the archive holds it (§4.6.2).
 
 Observed live (2026-09-14): 6 pages across us+eu in 987ms; a full pass is **1,001 requests
 per region** — `page` 0–1000 inclusive, 20 runs a page, 20,020 runs. At five regions that
@@ -375,6 +389,72 @@ and counted in `skippedRuns` rather than stored under a type it does not fit.
 
 **No monotonic merge.** Archived characters are written with a plain `$set`: a finished
 season cannot gain a run, and each document comes from one complete read.
+
+### 4.6.2 Mythic+ seasons and transitions
+
+The Mythic+ counterpart of §4.7 and §4.8, following the same rules. There is **no season
+setting**: `RAIDERIO_SEASON` and `CURRENT_EXPANSION_ID` are gone, and the season comes from
+the catalogue (`mplus_seasons`, §5.8), which already holds every main season with per-region
+start and end dates.
+
+**Which season is current** — `currentSeasonIn(seasons, region, now)`: the catalogued season
+that most recently **opened in that region**. Decided on start dates only — never list order,
+never end dates, since a running season carries Raider.io's `2030-01-01` placeholder end. A
+region the season lists no start for takes its earliest start; a season with no start at all
+is never current. Every catalogued season is a main season, so a side event cannot be picked.
+
+**Catalogue before runs.** `MplusSeasonScheduler` ticks at boot: `ensureCatalogue()` (read
+Raider.io if empty or past `MPLUS_CATALOGUE_TTL_MS`) then `observe()`. The live pass does the
+same two things before its first page, so the ordering does not depend on the boot tick
+winning a race. A refresh in flight is shared between callers. With the catalogue still empty
+afterwards, the pass throws rather than guess. The check is idle unless `MPLUS_ENABLED` or
+`MPLUS_ARCHIVE_ENABLED` is on — without one there is no key to read the catalogue with.
+
+**Observing** — `MplusSeasonService.observe()` compares each region with what was last seen,
+persisted in `mplus_season_state` and rehydrated in `onModuleInit`, so a rollover while the
+process was down is still a rollover (`acrossRestart: true`). It publishes on
+`MplusSeasonEvents.transitions$`:
+
+| Event      | When                                                   | Reacts           |
+| ---------- | ------------------------------------------------------ | ---------------- |
+| `ended`    | same season, its end in the region has just passed     | logs only        |
+| `rollover` | a different season is now current in the region        | transition tick  |
+
+A season replaced before an `ended` observation was made emits only `rollover`, as on the
+PvP side.
+
+**A season's life, per region:**
+
+1. **Running.** Ingested by the pass.
+2. **Ended, successor not open.** Still current; the pass keeps ingesting it with no churn
+   (the board does not empty between seasons). Archivable only once it has ended in **every**
+   region (`isFinished`, §4.6.1).
+3. **Successor open in the region.** The pass moves the region onto the new season. The old
+   season's rows stay.
+4. **Old season archived** (`complete`, or `unarchivable`). `MplusSeasonTransitionService`
+   deletes the old season **in that region only** — characters first, then runs, so I18 holds
+   at every moment — and records it in `mplus_season_transitions`.
+
+`plan()` is read-only and on `GET /health/seasons`. It abstains with an empty catalogue
+(every stored season would look like a leftover) and while a pass is running (it may still
+be writing the old season). Candidates are stored seasons in the region that are not current
+and opened before the current one; a slug the catalogue does not list is a leftover and is a
+candidate too. There is **no once-only guard**: candidates come from stored rows, so a
+retired pair only returns if rows did, and retiring it again is right.
+
+**The rollover tick waits for the pass.** A rollover is most often noticed by the pass
+itself, before its first page — so the tick it triggers would find that pass running and
+abstain until the next hourly check. `whenMplusIdle()` on the coordinator lets it wait
+instead and run the moment the pass finishes.
+
+- `MPLUS_PURGE_REQUIRE_ARCHIVE` (default on) holds back a season the archive does not
+  hold. Because the archive waits for the **last** region to end, the first region to roll
+  keeps its old board for hours longer. Harmless: every read is scoped by season. With the
+  archive switched off nothing is ever retired, which the scheduler warns about at boot.
+- `MPLUS_PURGE_DRY_RUN` defaults to **off**, unlike `SEASON_PURGE_DRY_RUN`. The PvP default
+  guards a first deploy deleting archived history at boot; here the pass used to delete a
+  superseded season on the spot with no archive check, so there is no live history to
+  protect, and an on default would leave every rolled season in place indefinitely.
 
 ### 4.1 Leaderboard sweep
 
@@ -874,10 +954,10 @@ Indexes — `mplus_runs`: `run_identity` (unique `season+region+keystoneRunId`),
 §5.7 stage 2 replaced the timestamp check with a referential one, nothing queries
 `updatedAt`, and an index nothing reads only costs write throughput.
 
-**Season rollover is a purge, not an archive.** M+ data here is a snapshot of a live
-leaderboard, rebuilt in full on every pass, so a superseded season is simply stale and is
-deleted at the end of the next pass. There is nothing to preserve and nothing gating it —
-the opposite of §4.8.
+**Season rollover is retired per region, after the archive.** A superseded season is
+not deleted by the pass. It stays until its successor has opened in the region **and** the
+Mythic+ archive holds it, then `MplusSeasonTransitionService` removes it from that region —
+the same gate as §4.8. See §4.6.2.
 
 ### 5.6 Why `mythicScore` only ever goes up
 
@@ -957,6 +1037,10 @@ refuses an empty bracket list: that state means the pass failed, not that the la
   challengeModeId: 199, keystoneTimerSeconds: 2340, iconUrl, backgroundImageUrl,
   expansionIds: [6, 8, 9, 10], updatedAt: Date }
 
+// mplus_season_state       - per region: { region, season, name, startsAt, endsAt,
+//                            ended, observedAt } - what was last observed (§4.6.2)
+// mplus_season_transitions - { season, region, purgedAt, removed, triggeredBy, dryRun }
+
 // mplus_archive_runs       - the shape of mplus_runs (§5.5), region from the roster
 // mplus_archive_characters - the shape of mplus_characters (§5.5), score over the
 //                            season's top world runs only
@@ -975,8 +1059,8 @@ expansion listing only side events would end the walk and hide every expansion a
 unit spec pins this.
 
 **Separate collections from the live ones**, as the PvP archive is (§5.4). The live
-collections are rewritten, pruned, merged and purged every pass — the live pass deletes every
-season but the current one. Sharing documents would put history within reach of every
+collections are rewritten, pruned and merged every pass, and a superseded season is deleted
+from them once archived (§4.6.2). Sharing documents would put history within reach of every
 cleanup written for the live board. An integration case runs a live pass over an archive and
 asserts the archive is untouched.
 
@@ -1176,13 +1260,16 @@ Two further rules this endpoint must keep:
 
 ### `GET /health/seasons`
 
-Per-region season detail plus the read-only season-transition `plan()`. Kept off the
-readiness path because it reads the database.
+Per-region season detail plus the read-only season-transition `plan()`, and under `mplus`
+the same pair for Mythic+: what was last observed per region and the M+ transition `plan()`
+(current season per region, `candidates`, `blockedByArchive`). Kept off the readiness path
+because both read the database. Liveness (`GET /health`) carries `mplusSeasons` from memory.
 
 ### `POST /admin/*` — dev-only job triggers
 
 `sweep`, `enrich`, `snapshot`, `archive`, `archive-rewards`, `mplus`, `mplus-season`,
-`mplus-archive`, `mplus-catalogue`, `season-refresh`, `season-transition`. Each drives
+`mplus-season-transition`, `mplus-archive`, `mplus-catalogue`, `season-refresh`,
+`season-transition`. Each drives
 exactly **one** cycle and returns that cycle's own result object. Every route **404s when
 `NODE_ENV=production`**.
 
@@ -1192,7 +1279,10 @@ observation.
 
 `mplus-archive` runs one archive tick directly, so it runs whatever else is active — a
 rehearsal is the point — though it still yields between batches if a higher-priority job
-starts. `mplus-catalogue` re-reads the catalogue ignoring its TTL.
+starts. `mplus-catalogue` re-reads the catalogue ignoring its TTL. `mplus-season` does that
+and then observes the season per region, announcing an end or rollover exactly as the
+scheduled check would. `mplus-season-transition` plans and runs the M+ transition, honouring
+its dry-run flag.
 
 Liveness also carries `jobs.archiveRunning`, `jobs.mplusArchiveRunning` and
 `jobs.mplusArchive` — the archive's last tick (seasons attempted, still pending, why it
@@ -1339,8 +1429,6 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAIDER_IO_API_KEY`                   | —                                   | **Required when `MPLUS_ENABLED=true`**                     |
 | `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | The test seam for the second upstream                      |
 | `RAIDERIO_REGIONS`                    | `us,eu,kr,tw,cn`                    | Includes `cn`; `world` is rejected                         |
-| `RAIDERIO_SEASON`                     | _(empty)_                           | Empty = ask Raider.io. Pin only for a rehearsal            |
-| `RAIDERIO_SEASON_TTL_MS`              | `86400000`                          | How long a resolved season is reused                       |
 | `RAIDERIO_REQUEST_TIMEOUT_MS`         | `30000`                             | Also caps `Retry-After`                                    |
 | `RAIDERIO_RETRY_LIMIT`                | `2`                                 | 408/429/5xx only — never 400                               |
 | `RAIDERIO_CONCURRENCY`                | `12`                                | Pages in flight; ~0.65s a page measured                    |
@@ -1357,7 +1445,13 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `MPLUS_ARCHIVE_CHECK_INTERVAL_MS`     | `3600000`                           | Cheap once history is in                                   |
 | `MPLUS_ARCHIVE_PAGES`                 | `100`                               | World pages per season: 2,000 runs                         |
 | `MPLUS_CATALOGUE_FIRST_EXPANSION`     | `6`                                 | Legion; the walk continues until an empty expansion        |
-| `MPLUS_CATALOGUE_TTL_MS`              | `86400000`                          | How a finished season is noticed (§5.8)                    |
+| `MPLUS_CATALOGUE_TTL_MS`              | `86400000`                          | How a new or finished season is noticed (§5.8)             |
+| `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
+| `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
+| `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
+| `MPLUS_TRANSITION_CHECK_INTERVAL_MS`  | `3600000`                           | A rollover also ticks, after any running pass              |
+| `MPLUS_PURGE_REQUIRE_ARCHIVE`         | `true`                              | Only once the M+ archive holds the season                  |
+| `MPLUS_PURGE_DRY_RUN`                 | **`false`**                         | Unlike the PvP flag — see §4.6.2                           |
 
 ---
 
@@ -1509,9 +1603,10 @@ a pass/fail flag.
 
 `season-mn-1-break-the-meta` ran for a week _inside_ season 1, with its own slug and its own
 leaderboard. Picking the newest season by start date alone would have swapped the whole
-ladder out for a week and swapped it back. `pickCurrent` filters on `is_main_season !== false`
-first, then takes the newest _already-started_ one — "started somewhere", not "started
-everywhere", because regions stagger by up to 32 hours exactly as PvP seasons do (§4.8).
+ladder out for a week and swapped it back. Side events never reach the catalogue
+(`mainSeasonsOf`), so `currentSeasonIn` only ever chooses among main seasons — the newest
+one already opened **in that region**, because regions stagger by up to 32 hours exactly as
+PvP seasons do (§4.8).
 
 ### 9.13 `static-data` is per expansion
 
@@ -1613,7 +1708,18 @@ Four M+ files, split by the one-configuration-per-file rule: `mplus-ingestion.sp
 (the pass, the score fold, both cleanup stages, monotonicity, idempotence),
 `mplus-failures.spec.ts` (budget exhaustion, failed pages, empty bodies, the prune guard and
 the cleanup's own guard), `mplus-coordination.spec.ts` (job priority, readiness, key
-redaction, season rollover) and `mplus-sync.spec.ts` (the endpoint).
+redaction, moving onto a new season) and `mplus-sync.spec.ts` (the endpoint).
+
+`mplus-season-transition.spec.ts` tells one season's life in order, with the season check
+and the transition switched on: the catalogue read at boot with no runs requested; a pass
+reading a missing catalogue before its first runs request; a season ending in one region and
+staying live without churn, unarchived; the next season opening in the US only, the US
+rolling alone and its old board held by the archive interlock; the archive taking the old
+season and only the US being retired; Europe opening it and being retired by the rollover
+event with nothing calling the transition; and a rollover during downtime recognised at the
+next boot (`acrossRestart`). Dates are relative to the real clock. The rollover-during-a-pass
+wait is pinned by `mplus-season-transition.scheduler.spec.ts`, since the story never meets it
+with an archived season to retire.
 
 Two more for the archive. `mplus-archive.spec.ts` drives it by hand: the catalogue walk,
 main-season selection, world depth, roster regions, fetch-once, markers surviving a catalogue
@@ -1776,6 +1882,15 @@ afterwards.
 - **Side-event seasons are neither catalogued nor archived.** Adding them later means
   storing them in the catalogue again (`mainSeasonsOf` in `MplusCatalogueService.refresh`)
   and archiving them — 35 seasons, about 3,500 more requests.
+- **A new Mythic+ season is noticed up to a catalogue TTL late** if Raider.io lists it only
+  after it has opened. Normally it is listed days ahead and the switch happens within the
+  hour of opening (the season check) or at the next pass. `POST /admin/mplus-season` forces it.
+- **An undated season is never current.** A catalogued season with no parseable start in any
+  region cannot be placed against the others, so it is skipped rather than guessed at. Not
+  observed in the real catalogue.
+- **The live board keeps only the archive's copy of a retired season.** The archive is 100
+  world pages; the live board was up to 20,020 runs a region. Retiring a season trades that
+  depth for storage, by design — disable `MPLUS_TRANSITION_ENABLED` to keep it.
 - **An archived season is never re-read.** If Raider.io corrects a finished season's board
   after it was archived, the archive keeps the version it read. Clear the season's `archive`
   field to fetch it again.

@@ -308,14 +308,6 @@ export const envSchema = z.object({
     .transform(trimTrailingSlashes),
   /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
   RAIDERIO_REGIONS: raiderIoRegionCsv('us,eu,kr,tw,cn'),
-  /**
-   * Season slug to ingest, e.g. `season-mn-2`. Empty means "ask Raider.io",
-   * which is the default on purpose: pinned, the service goes on fetching a
-   * frozen ladder after a rollover while reporting every pass as a success.
-   */
-  RAIDERIO_SEASON: z.string().default(''),
-  /** How long a resolved season is reused before it is looked up again. */
-  RAIDERIO_SEASON_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   RAIDERIO_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(2),
   /** Pages fetched in parallel. At ~0.65s a page, 12 is ~18 pages a second. */
@@ -439,6 +431,54 @@ export const envSchema = z.object({
    * read once and never again would never see a season finish.
    */
   MPLUS_CATALOGUE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+
+  // Mythic+ seasons: which one is current, and retiring the one it replaced.
+  /**
+   * Checks the Mythic+ season on its own schedule: the catalogue at boot and
+   * whenever its TTL is up, and which season is current in each region. Idle
+   * unless `MPLUS_ENABLED` or `MPLUS_ARCHIVE_ENABLED` is on. A live pass checks
+   * for itself too, so switching this off delays noticing a transition rather
+   * than breaking ingestion.
+   */
+  MPLUS_SEASON_REFRESH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /**
+   * How often. Hourly where the PvP check is daily, because a check here costs
+   * no request unless the catalogue is due; this is how late a season opening
+   * or ending is noticed when no pass runs first.
+   */
+  MPLUS_SEASON_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  MPLUS_TRANSITION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /** Fallback cadence; a detected rollover also ticks, once any running pass has finished. */
+  MPLUS_TRANSITION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /**
+   * Only retire a superseded season once the Mythic+ archive holds it
+   * (`complete`, or `unarchivable` when Raider.io refuses it). With the archive
+   * switched off, nothing is ever retired while this is on.
+   */
+  MPLUS_PURGE_REQUIRE_ARCHIVE: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /**
+   * Log the plan and delete nothing.
+   *
+   * Off by default, where `SEASON_PURGE_DRY_RUN` is on. The PvP default guards
+   * a first deploy deleting every archived season at boot. Here the live pass
+   * already deleted a superseded season the moment it rolled, with no archive
+   * check at all, so there is no stored history to protect on a first deploy -
+   * and a dry-run default would leave every rolled season in place until
+   * someone remembered to flip it.
+   */
+  MPLUS_PURGE_DRY_RUN: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

@@ -5,20 +5,22 @@ import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js
 import { RunLogger, withRunId } from '../common/logging/run-context.js';
 import { RaiderIoBudget, type MplusOutlook } from '../common/quota/raiderio-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
-import { describeError, errorStack } from '../common/utils/errors.js';
+import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import { MAX_RUNS_PAGE, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
+import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import type { MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import type { MplusRunDocument } from './entities/mplus-run.entity.js';
-import { MplusSeasonService, openRegions } from './mplus-season.service.js';
 import { MplusCharacterAccumulator, toAffixDocument, toRunDocument } from './mplus.mapper.js';
 import { MplusRepository } from './mplus.repository.js';
 
 /** What one region's pass achieved. */
 export interface MplusRegionResult {
   region: RaiderIoRegion;
+  /** The season ingested for the region: the one current there when the pass began. */
+  season: string;
   pagesPlanned: number;
   pagesFetched: number;
   pagesFailed: number;
@@ -40,7 +42,12 @@ export interface MplusRegionResult {
 }
 
 export interface MplusSweepResult {
-  season: string;
+  /**
+   * The season ingested per region. Usually one slug everywhere; on the day a
+   * season rolls, regions that have opened the new one and regions still on
+   * the old one appear side by side.
+   */
+  seasons: Record<string, string>;
   startedAt: string;
   durationMs: number;
   regions: MplusRegionResult[];
@@ -129,13 +136,22 @@ export class MplusService {
   }
 
   private async runSweep(startedAt: Date, requestsBefore: number): Promise<MplusSweepResult> {
-    const season = await this.seasons.current();
-    const regions = openRegions(season, this.regions, startedAt);
-    const skipped = this.regions.filter((region) => !regions.includes(region));
+    // The catalogue before any runs request: the season each region is on is
+    // read from it, and a pass that could not resolve one has nothing it could
+    // correctly fetch. Usually already fresh — the season check reads it at
+    // boot — in which case this is one indexed read.
+    await this.seasons.ensureCatalogue(startedAt);
+
+    // Observed, not just resolved, so a pass notices a season ending or rolling
+    // over even when the season check is switched off.
+    const resolution = await this.seasons.observe(startedAt);
+    const regions = this.regions.filter((region) => resolution.has(region));
+    const skipped = this.regions.filter((region) => !resolution.has(region));
 
     if (skipped.length > 0) {
       this.logger.log(
-        `Season ${season.slug} has not started in ${skipped.join(', ')}; skipping ${skipped.length} region(s)`,
+        `No catalogued Mythic+ season has opened in ${skipped.join(', ')}; ` +
+          `skipping ${skipped.length} region(s)`,
       );
     }
 
@@ -154,18 +170,22 @@ export class MplusService {
         break;
       }
 
+      const season = resolution.get(region)!;
       const result = await this.sweepRegion(season.slug, season.seasonId, region);
       results.push(result);
 
       if (result.stoppedEarly && !stoppedEarly) stoppedEarly = result.stoppedEarly;
     }
 
-    await this.purgeSupersededSeasons(season.slug);
+    // A superseded season is left where it is. `MplusSeasonTransitionService`
+    // retires it per region once the archive holds it; deleting it the moment a
+    // region rolled would discard a season before the archive had read it.
 
+    const seasons = Object.fromEntries(results.map((result) => [result.region, result.season]));
     const durationMs = Date.now() - startedAt.getTime();
     const requests = this.budget.spent('mplus') - requestsBefore;
     const summary: MplusSweepResult = {
-      season: season.slug,
+      seasons,
       startedAt: startedAt.toISOString(),
       durationMs,
       regions: results,
@@ -177,7 +197,8 @@ export class MplusService {
 
     this.budget.publishMplusOutlook(this.outlookOf(summary));
     this.logger.log(
-      `Mythic+ pass for ${season.slug} finished in ${Math.round(durationMs / 1000)}s: ` +
+      `Mythic+ pass for ${[...new Set(Object.values(seasons))].join(', ') || 'no season'} ` +
+        `finished in ${Math.round(durationMs / 1000)}s: ` +
         `${summary.runs} runs, ${summary.characters} characters across ${results.length} region(s)`,
     );
 
@@ -198,6 +219,7 @@ export class MplusService {
     const lastPage = Math.min(this.maxPages - 1, MAX_RUNS_PAGE);
     const result: MplusRegionResult = {
       region,
+      season,
       pagesPlanned: lastPage + 1,
       pagesFetched: 0,
       pagesFailed: 0,
@@ -320,36 +342,6 @@ export class MplusService {
     );
 
     return result;
-  }
-
-  /**
-   * Drops seasons the service is no longer ingesting.
-   *
-   * Unlike the PvP archive there is nothing to preserve: M+ data here is a
-   * snapshot of a live leaderboard, rebuilt in full on every pass, and a season
-   * that has rolled over would otherwise sit in the collections forever, frozen,
-   * indistinguishable from the current one to anything that forgets to filter.
-   */
-  private async purgeSupersededSeasons(current: string): Promise<void> {
-    try {
-      const stored = await this.repository.storedSeasons();
-      const superseded = stored.filter((season) => season !== current);
-
-      for (const season of superseded) {
-        const removed = await this.repository.purgeSeason(season);
-        this.logger.warn(
-          `Retired Mythic+ season ${season}: removed ${removed.runs} run(s) and ` +
-            `${removed.characters} character(s)`,
-        );
-      }
-    } catch (error) {
-      // Never fails the pass: the data just ingested is correct either way, and
-      // the next pass tries again.
-      this.logger.error(
-        `Could not retire superseded Mythic+ seasons: ${describeError(error)}`,
-        errorStack(error),
-      );
-    }
   }
 
   /** The verdict readiness reports, computed from the pass that just ran. */

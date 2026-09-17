@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import type { StaticData, StaticSeason } from '../raiderio/schemas/static-data.schema.js';
-import type { MplusArchiveRepository } from './mplus-archive.repository.js';
+import type { MplusCatalogueRepository } from './mplus-catalogue.repository.js';
 import { MplusCatalogueService } from './mplus-catalogue.service.js';
 
 function season(slug: string, main: boolean, dungeonId: number): StaticSeason {
@@ -18,14 +18,13 @@ function season(slug: string, main: boolean, dungeonId: number): StaticSeason {
 }
 
 function serviceOver(byExpansion: Record<number, StaticSeason[]>) {
-  const api = {
-    getStaticData: vi.fn(async (expansionId: number): Promise<StaticData> => ({
-      seasons: byExpansion[expansionId] ?? [],
-    })),
-  } as unknown as MythicPlusApi;
+  const getStaticData = vi.fn(async (expansionId: number): Promise<StaticData> => ({
+    seasons: byExpansion[expansionId] ?? [],
+  }));
+  const api = { getStaticData } as unknown as MythicPlusApi;
   const upsertSeasons = vi.fn(async (seasons: unknown[]) => seasons.length);
   const upsertDungeons = vi.fn(async (dungeons: unknown[]) => dungeons.length);
-  const repository = { upsertSeasons, upsertDungeons } as unknown as MplusArchiveRepository;
+  const repository = { upsertSeasons, upsertDungeons } as unknown as MplusCatalogueRepository;
   const env: Record<string, unknown> = {
     MPLUS_CATALOGUE_FIRST_EXPANSION: 6,
     MPLUS_CATALOGUE_TTL_MS: 86_400_000,
@@ -36,6 +35,7 @@ function serviceOver(byExpansion: Record<number, StaticSeason[]>) {
     service: new MplusCatalogueService(config, api, repository),
     upsertSeasons,
     upsertDungeons,
+    getStaticData,
   };
 }
 
@@ -81,5 +81,17 @@ describe('MplusCatalogueService.refresh', () => {
     const result = await service.refresh();
 
     expect(result.expansions).toEqual([6]);
+  });
+
+  it('shares one refresh between callers that ask at the same moment', async () => {
+    const { service, getStaticData } = serviceOver({ 6: [season('season-7.2.0', true, 1)] });
+
+    const [first, second] = await Promise.all([service.refresh(), service.refresh()]);
+
+    expect(first).toBe(second);
+    expect(getStaticData, 'expansion 6 and the empty 7, once each').toHaveBeenCalledTimes(2);
+
+    await service.refresh();
+    expect(getStaticData, 'a later refresh reads again').toHaveBeenCalledTimes(4);
   });
 });

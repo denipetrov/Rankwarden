@@ -3,7 +3,14 @@ import { Logger } from '@nestjs/common';
 
 /** The kinds of run that get their own correlation id. */
 export type RunKind =
-  'sweep' | 'enrich' | 'archive' | 'mplus' | 'mplus-archive' | 'snapshot' | 'transition';
+  | 'sweep'
+  | 'enrich'
+  | 'archive'
+  | 'mplus'
+  | 'mplus-archive'
+  | 'mplus-season'
+  | 'snapshot'
+  | 'transition';
 
 interface RunContext {
   kind: RunKind;

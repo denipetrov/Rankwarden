@@ -5,8 +5,8 @@ import { IngestionCoordinator } from '../src/common/ingestion-coordinator.servic
 import { MongoService } from '../src/database/mongo.service.js';
 import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
 import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
-import { MplusSeasonService } from '../src/mplus/mplus-season.service.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
+import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson } from './support/http.js';
 import { MplusWorld } from './support/mplus-world.js';
@@ -14,7 +14,8 @@ import { World } from './support/world.js';
 
 /**
  * Where the Mythic+ pass sits relative to the PvP jobs, what it reports to
- * readiness, and what it does when the season rolls.
+ * readiness, and what it does when the season rolls. Retiring the season it
+ * rolled away from is the transition's job, in `mplus-season-transition.spec.ts`.
  */
 describe('Mythic+ coordination and observability', () => {
   let app: TestApp;
@@ -135,7 +136,7 @@ describe('Mythic+ coordination and observability', () => {
     expect(JSON.stringify(ready.body)).not.toContain('test-raiderio-key');
   });
 
-  it('retires a superseded season instead of leaving it frozen alongside the new one', async () => {
+  it('moves onto a new season when it opens, and leaves the old one for the transition', async () => {
     await mplus.sweep();
     expect(
       await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: 'season-mn-2' }),
@@ -144,7 +145,7 @@ describe('Mythic+ coordination and observability', () => {
     // Raider.io publishes a new main season, started after the current one.
     // The start date is what decides, not the order of the list: a season with
     // an earlier start is an older season however it is listed.
-    mplusWorld.seasons.unshift({
+    mplusWorld.seasons.push({
       slug: 'season-mn-3',
       name: 'MN Season 3',
       blizzardSeasonId: 19,
@@ -152,21 +153,24 @@ describe('Mythic+ coordination and observability', () => {
       starts: { us: '2026-09-01T00:00:00Z' },
       dungeons: 8,
     });
-    app.app.get(MplusSeasonService).invalidate();
+    // The catalogue is fresh, so the pass would not re-read it for a day; the
+    // season check would, on its TTL. Refreshed by hand to stand in for that.
+    await app.app.get(MplusCatalogueService).refresh();
 
     const result = await mplus.sweep();
-    expect(result!.season).toBe('season-mn-3');
+    expect(result!.seasons).toEqual({ us: 'season-mn-3' });
 
-    // The old season's rows are gone, not sitting frozen next to the new ones
-    // where anything that forgets to filter by season would read both.
-    expect(
-      await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: 'season-mn-2' }),
-    ).toBe(0);
-    expect(
-      await db.collection(MPLUS_CHARACTERS_COLLECTION).countDocuments({ season: 'season-mn-2' }),
-    ).toBe(0);
     expect(
       await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: 'season-mn-3' }),
+    ).toBeGreaterThan(0);
+
+    // The pass no longer deletes the season it rolled away from: that waits for
+    // the archive, and is `MplusSeasonTransitionService`'s to do.
+    expect(
+      await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: 'season-mn-2' }),
+    ).toBeGreaterThan(0);
+    expect(
+      await db.collection(MPLUS_CHARACTERS_COLLECTION).countDocuments({ season: 'season-mn-2' }),
     ).toBeGreaterThan(0);
   });
 });

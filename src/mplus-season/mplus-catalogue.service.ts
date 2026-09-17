@@ -10,8 +10,8 @@ import {
   mainSeasonsOf,
   toDungeonDocument,
   toSeasonDocument,
-} from './mplus-archive.mapper.js';
-import { MplusArchiveRepository } from './mplus-archive.repository.js';
+} from './mplus-catalogue.mapper.js';
+import { MplusCatalogueRepository } from './mplus-catalogue.repository.js';
 
 /**
  * A hard stop for the expansion walk, far above any real expansion id. The walk
@@ -33,22 +33,29 @@ export interface CatalogueRefresh {
  * Keeps the Mythic+ season and dungeon catalogue in step with Raider.io.
  *
  * The catalogue is small and cheap — one request per expansion, seven today —
- * but it is not static the way the archived runs are. A running season is
- * listed with a placeholder end (`2030-01-01`) that Raider.io replaces with the
- * real date once the season is over, and that replacement is the only way the
- * archive ever learns a season has finished. So it is re-read on a TTL rather
- * than once, and only the archived runs are strictly fetch-once.
+ * but it is not static the way the archived runs are. A new season appears in
+ * it before it opens, which is how the live pass learns to roll over; and a
+ * running season is listed with a placeholder end (`2030-01-01`) that Raider.io
+ * replaces with the real date once the season is over, which is the only way
+ * the archive ever learns a season has finished. So it is re-read on a TTL
+ * rather than once, and only the archived runs are strictly fetch-once.
+ *
+ * Three callers can ask for a refresh — the season check at boot, the live
+ * pass before its first page, the archive before its backlog — and they can
+ * ask at the same moment. One refresh is shared between them rather than each
+ * walking every expansion.
  */
 @Injectable()
 export class MplusCatalogueService {
   private readonly logger = new RunLogger(MplusCatalogueService.name);
   private readonly firstExpansion: number;
   private readonly ttlMs: number;
+  private inFlight: Promise<CatalogueRefresh> | null = null;
 
   constructor(
     config: ConfigService<Env, true>,
     private readonly api: MythicPlusApi,
-    private readonly repository: MplusArchiveRepository,
+    private readonly repository: MplusCatalogueRepository,
   ) {
     this.firstExpansion = config.get('MPLUS_CATALOGUE_FIRST_EXPANSION', { infer: true });
     this.ttlMs = config.get('MPLUS_CATALOGUE_TTL_MS', { infer: true });
@@ -85,7 +92,17 @@ export class MplusCatalogueService {
    * list — the later expansions would silently go unrefreshed. What was already
    * written stays, and the next refresh starts from the beginning.
    */
-  async refresh(now = new Date()): Promise<CatalogueRefresh> {
+  refresh(now = new Date()): Promise<CatalogueRefresh> {
+    if (!this.inFlight) {
+      this.inFlight = this.walk(now).finally(() => {
+        this.inFlight = null;
+      });
+    }
+
+    return this.inFlight;
+  }
+
+  private async walk(now: Date): Promise<CatalogueRefresh> {
     const expansions: number[] = [];
     let seasons = 0;
     let dungeons = 0;
