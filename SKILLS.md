@@ -1731,8 +1731,9 @@ live request before every archive one.
 
 `MplusWorld` grew for it: seasons carry `expansionId`, `ends` and `firstDungeonId`; runs carry
 an optional `season` so one archived board does not leak into another (absent means every
-season, which the live-pass files rely on); `unservedSeasons` answers 404; `region=world`
-serves the union. `FakeRaiderIo.beforeServe` runs as each request is served, which is how a
+season, which the live-pass files rely on); runs carry optional `affixes`, so an old
+season's board can rotate weekly sets the way `season-sl-4`'s does (absent means Tyrannical
+and Fortified); `unservedSeasons` answers 404; `region=world` serves the union. `FakeRaiderIo.beforeServe` runs as each request is served, which is how a
 test starts a higher-priority job partway through a season at a moment the archive cannot
 see coming.
 

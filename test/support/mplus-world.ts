@@ -15,7 +15,19 @@ export interface MplusWorldRun {
    * board does not leak into another's.
    */
   season?: string;
+  /**
+   * The run's affixes. Absent means Tyrannical and Fortified, which the
+   * live-pass files rely on; set it for a season whose affixes rotated weekly,
+   * so runs on one board carry different sets, as they do upstream.
+   */
+  affixes?: MplusWorldAffix[];
   roster: MplusWorldMember[];
+}
+
+export interface MplusWorldAffix {
+  id: number;
+  name: string;
+  slug: string;
 }
 
 export interface MplusWorldMember {
@@ -263,7 +275,13 @@ export class MplusWorld {
           completed_at: '2026-09-13T08:00:10.000Z',
           num_chests: 1,
           time_remaining_ms: 14_610,
-          weekly_modifiers: [
+          weekly_modifiers: run.affixes?.map((affix) => ({
+            id: affix.id,
+            icon: `icon-${affix.slug}`,
+            name: affix.name,
+            slug: affix.slug,
+            description: `${affix.name}, as described upstream.`,
+          })) ?? [
             {
               id: 9,
               icon: 'achievement_boss_archaedas',
@@ -273,7 +291,7 @@ export class MplusWorld {
             },
             { id: 10, icon: 'ability_toughness', name: 'Fortified', slug: 'fortified' },
           ],
-          num_modifiers_active: 2,
+          num_modifiers_active: run.affixes?.length ?? 2,
           faction: 'alliance',
           deleted_at: null,
           platoon: null,

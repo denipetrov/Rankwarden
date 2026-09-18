@@ -5,6 +5,7 @@ import { IngestionCoordinator } from '../src/common/ingestion-coordinator.servic
 import { QuotaBudget } from '../src/common/quota/quota-budget.service.js';
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
+import { MPLUS_AFFIXES_COLLECTION } from '../src/mplus/entities/mplus-affix.entity.js';
 import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
 import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
@@ -99,6 +100,32 @@ describe('Mythic+ archive', () => {
       // The running season, for the live pass.
       .seed('us', 20, 400, 'season-mn-2');
 
+    // Affixes rotated weekly in older seasons, so one board carries several
+    // sets — season-sl-4's real world board has ten across its top 2,000 runs.
+    // Mirrored on DF4, with affixes the live season never shows.
+    const rotation = [
+      [
+        { id: 10, name: 'Fortified', slug: 'fortified' },
+        { id: 123, name: 'Spiteful', slug: 'spiteful' },
+        { id: 4, name: 'Necrotic', slug: 'necrotic' },
+      ],
+      [
+        { id: 9, name: 'Tyrannical', slug: 'tyrannical' },
+        { id: 11, name: 'Bursting', slug: 'bursting' },
+        { id: 3, name: 'Volcanic', slug: 'volcanic' },
+      ],
+      [
+        { id: 10, name: 'Fortified', slug: 'fortified' },
+        { id: 7, name: 'Bolstering', slug: 'bolstering' },
+        { id: 14, name: 'Quaking', slug: 'quaking' },
+      ],
+    ];
+    world.runs
+      .filter((run) => run.season === 'season-df-4')
+      .forEach((run, index) => {
+        run.affixes = rotation[index % rotation.length];
+      });
+
     app = await bootTestApp(
       World.seed({ regions: ['us'], players: 20 }),
       {
@@ -190,6 +217,28 @@ describe('Mythic+ archive', () => {
     expect(df4?.status).toBe('complete');
     expect(df4?.runs).toBe(20);
     expect(df4?.failedPages).toEqual([]);
+  });
+
+  it("keeps each run's own affixes and adds every one to the affix collection", async () => {
+    const runs = await db
+      .collection(MPLUS_ARCHIVE_RUNS_COLLECTION)
+      .find({ season: 'season-df-4' })
+      .toArray();
+    const sets = new Set(runs.map((run) => (run.affixIds as number[]).join(',')));
+
+    // Three weekly sets on one board, each stored on the run that carried it
+    // rather than flattened to one season-wide set.
+    expect([...sets].sort()).toEqual(['10,123,4', '10,7,14', '9,11,3']);
+
+    const affixes = await db
+      .collection(MPLUS_AFFIXES_COLLECTION)
+      .find({ id: { $in: [3, 4, 7, 11, 14, 123] } })
+      .toArray();
+    expect(
+      affixes.map((affix) => affix.name).sort(),
+      'every affix only an old season ran is referenceable',
+    ).toEqual(['Bolstering', 'Bursting', 'Necrotic', 'Quaking', 'Spiteful', 'Volcanic']);
+    expect(affixes.every((affix) => affix.description && affix.icon)).toBe(true);
   });
 
   it("files each run and character under the roster's region", async () => {
