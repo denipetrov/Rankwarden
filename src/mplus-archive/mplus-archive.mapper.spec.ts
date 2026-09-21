@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MplusSeasonDocument } from '../mplus-season/entities/mplus-season.entity.js';
-import { isFinished, pendingSeasons } from './mplus-archive.mapper.js';
+import type {
+  MplusSeasonArchiveMarker,
+  MplusSeasonDocument,
+} from '../mplus-season/entities/mplus-season.entity.js';
+import { isFinished, pendingSeasons, regionsOwed } from './mplus-archive.mapper.js';
 
 const now = new Date('2026-09-16T00:00:00Z');
 
@@ -45,19 +48,65 @@ describe('isFinished', () => {
   });
 });
 
-describe('pendingSeasons', () => {
-  const complete = {
-    status: 'complete' as const,
-    pagesPlanned: 100,
-    pagesFetched: 100,
-    failedPages: [],
-    runs: 2000,
-    characters: 900,
-    skippedRuns: 0,
-    archivedAt: now,
-    source: 'fetched' as const,
-  };
+const regionDone = {
+  status: 'complete' as const,
+  pagesFetched: 100,
+  failedPages: [],
+  runs: 2000,
+  characters: 900,
+  archivedAt: now,
+  source: 'fetched' as const,
+};
 
+const complete = {
+  status: 'complete' as const,
+  pagesPlanned: 100,
+  pagesFetched: 200,
+  failedPages: [] as string[],
+  runs: 4000,
+  characters: 1800,
+  regions: { us: regionDone, eu: regionDone },
+  archivedAt: now,
+  source: 'fetched' as const,
+};
+
+const REGIONS = ['us', 'eu'] as const;
+
+describe('regionsOwed', () => {
+  it('owes every region for a season never tried', () => {
+    expect(regionsOwed(season('s'), REGIONS)).toEqual(['us', 'eu']);
+  });
+
+  it('owes only the regions not complete', () => {
+    const halfway = season('s', {
+      archive: {
+        ...complete,
+        status: 'incomplete',
+        regions: { us: regionDone, eu: { ...regionDone, status: 'incomplete', failedPages: [7] } },
+      },
+    });
+
+    expect(regionsOwed(halfway, REGIONS)).toEqual(['eu']);
+  });
+
+  it('owes every region for a season archived from the world board, which has no regions', () => {
+    // Written by the earlier archive. It proves nothing about any one region's
+    // board, so each is read again.
+    const legacy = season('s', {
+      archive: { ...complete, regions: undefined } as unknown as MplusSeasonArchiveMarker,
+    });
+
+    expect(regionsOwed(legacy, REGIONS)).toEqual(['us', 'eu']);
+  });
+
+  it('owes a region added to the configuration after the season was archived', () => {
+    const archived = season('s', { archive: complete });
+
+    expect(regionsOwed(archived, ['us', 'eu', 'kr'])).toEqual(['kr']);
+  });
+});
+
+describe('pendingSeasons', () => {
   it('owes finished main seasons that have no marker, newest first', () => {
     const pending = pendingSeasons(
       [
@@ -65,7 +114,7 @@ describe('pendingSeasons', () => {
         season('season-tww-3', { ends: { us: new Date('2026-03-02') } }),
         season('season-tww-2', { ends: { us: new Date('2025-08-12') } }),
       ],
-      { now },
+      { now, regions: REGIONS },
     );
 
     expect(pending.map((item) => item.slug)).toEqual([
@@ -75,31 +124,40 @@ describe('pendingSeasons', () => {
     ]);
   });
 
-  it('never owes a season already archived or known unarchivable', () => {
+  it('never owes a season archived in every region, or known unarchivable', () => {
     const pending = pendingSeasons(
       [
         season('done', { archive: complete }),
-        season('gone', { archive: { ...complete, status: 'unarchivable' } }),
+        season('gone', { archive: { ...complete, regions: {}, status: 'unarchivable' } }),
         season('owed'),
       ],
-      { now },
+      { now, regions: REGIONS },
     );
 
     expect(pending.map((item) => item.slug)).toEqual(['owed']);
   });
 
-  it('still owes an incomplete season, unless it is set aside for this tick', () => {
+  it('still owes an incomplete or partial season, unless it is set aside for this tick', () => {
     const incomplete = season('flaky', {
-      archive: { ...complete, status: 'incomplete', failedPages: [7] },
+      archive: {
+        ...complete,
+        status: 'incomplete',
+        regions: { us: { ...regionDone, status: 'incomplete', failedPages: [7] } },
+      },
+    });
+    const partial = season('interrupted', {
+      archive: { ...complete, status: 'partial', regions: { us: regionDone } },
     });
 
-    expect(pendingSeasons([incomplete], { now })).toHaveLength(1);
-    expect(pendingSeasons([incomplete], { now, skip: new Set(['flaky']) })).toHaveLength(0);
+    expect(pendingSeasons([incomplete, partial], { now, regions: REGIONS })).toHaveLength(2);
+    expect(
+      pendingSeasons([incomplete], { now, regions: REGIONS, skip: new Set(['flaky']) }),
+    ).toHaveLength(0);
   });
 
   it('never owes the running season', () => {
     const running = season('season-mn-2', { ends: { us: new Date('2030-01-01') } });
 
-    expect(pendingSeasons([running], { now })).toHaveLength(0);
+    expect(pendingSeasons([running], { now, regions: REGIONS })).toHaveLength(0);
   });
 });

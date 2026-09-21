@@ -145,12 +145,24 @@ export function currentSeasonIn<
 }
 
 /**
- * Whether a season's archive is settled: held in full, or refused for good.
+ * Whether a season's archive is settled for one region: that region held in
+ * full, or the whole season refused for good.
+ *
+ * Per region, because the archive reads each region's own board: a region can
+ * be retired from the live collections as soon as its own share is archived,
+ * whatever the others are doing.
  *
  * `unarchivable` counts, as the PvP interlock counts a season Blizzard stopped
  * serving: the archive will never hold it, and waiting for it would keep the
  * live season in place forever rather than protect anything.
  */
-export function isArchiveSettled(season: Pick<MplusSeasonDocument, 'archive'>): boolean {
-  return season.archive?.status === 'complete' || season.archive?.status === 'unarchivable';
+export function isArchiveSettled(
+  season: Pick<MplusSeasonDocument, 'archive'>,
+  region: string,
+): boolean {
+  if (season.archive?.status === 'unarchivable') return true;
+
+  const regions: Partial<Record<string, { status: string }>> = season.archive?.regions ?? {};
+
+  return regions[region]?.status === 'complete';
 }

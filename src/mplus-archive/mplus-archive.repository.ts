@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import type { AnyBulkWriteOperation, IndexDescription } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
+import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import {
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
@@ -114,11 +115,14 @@ export class MplusArchiveRepository implements OnModuleInit {
     return written;
   }
 
-  /** What is stored for a season, for adopting one whose marker was lost. */
-  async summariseStored(season: string): Promise<{ runs: number; characters: number }> {
+  /** What is stored for a season in one region, for adopting a region whose marker was lost. */
+  async summariseStored(
+    season: string,
+    region: RaiderIoRegion,
+  ): Promise<{ runs: number; characters: number }> {
     const [runs, characters] = await Promise.all([
-      this.runs.countDocuments({ season }),
-      this.characters.countDocuments({ season }),
+      this.runs.countDocuments({ season, region }),
+      this.characters.countDocuments({ season, region }),
     ]);
 
     return { runs, characters };

@@ -1,4 +1,4 @@
-import { isRaiderIoRegion, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
+import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type {
   MythicPlusRanking,
   WeeklyModifier,
@@ -47,22 +47,6 @@ function dungeonRefOf(dungeon: MythicPlusRanking['run']['dungeon']): MplusDungeo
     slug: dungeon.slug,
     shortName: dungeon.short_name ?? null,
   };
-}
-
-/**
- * The region a run belongs to, read from its roster.
- *
- * Needed for the `world` leaderboard, where the query names no region. Every
- * roster sampled — 5,200 members across thirteen seasons from Legion to
- * Midnight — was single-region, so the first member's region is the run's. An
- * anonymised member still carries a real region, so it is as good as any.
- * Null for a slug this service does not know, so a new region in a payload is
- * skipped and counted rather than stored under a type it does not fit.
- */
-export function runRegionOf(ranking: MythicPlusRanking): RaiderIoRegion | null {
-  const slug = ranking.run.roster[0]?.character.region.slug;
-
-  return slug && isRaiderIoRegion(slug) ? slug : null;
 }
 
 /** Flattens one leaderboard ranking into the run document stored for it. */
@@ -223,12 +207,8 @@ export class MplusCharacterAccumulator {
   constructor(
     private readonly season: string,
     private readonly seasonId: number | null,
-    /**
-     * The region every character is filed under, or null to file each under
-     * its own roster region — what the `world` leaderboard needs, where one
-     * board holds players from every region.
-     */
-    private readonly region: RaiderIoRegion | null,
+    /** The region every character is filed under: the board being read. */
+    private readonly region: RaiderIoRegion,
   ) {}
 
   get size(): number {
@@ -250,9 +230,6 @@ export class MplusCharacterAccumulator {
     for (const entry of run.roster) {
       if (isAnonymised(entry)) continue;
 
-      const region = this.region ?? regionOf(entry.character.region.slug);
-      if (!region) continue;
-
       const { character } = entry;
       const key = mplusCharacterKey(character.region.slug, character.realm.slug, character.name);
       let existing = this.characters.get(key);
@@ -262,7 +239,7 @@ export class MplusCharacterAccumulator {
           document: {
             season: this.season,
             seasonId: this.seasonId,
-            region,
+            region: this.region,
             key,
             realmSlug: character.realm.slug,
             nameKey: character.name.toLowerCase(),
@@ -328,8 +305,4 @@ export class MplusCharacterAccumulator {
 
     return documents;
   }
-}
-
-function regionOf(slug: string): RaiderIoRegion | null {
-  return isRaiderIoRegion(slug) ? slug : null;
 }

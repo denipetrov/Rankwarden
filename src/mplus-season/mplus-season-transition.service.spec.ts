@@ -30,14 +30,24 @@ function season(slug: string, overrides: Partial<MplusSeasonDocument> = {}): Mpl
   };
 }
 
-const archived = {
+const regionArchived = {
   status: 'complete' as const,
-  pagesPlanned: 100,
   pagesFetched: 100,
   failedPages: [],
   runs: 2000,
   characters: 900,
-  skippedRuns: 0,
+  archivedAt: now,
+  source: 'fetched' as const,
+};
+
+const archived = {
+  status: 'complete' as const,
+  pagesPlanned: 100,
+  pagesFetched: 200,
+  failedPages: [] as string[],
+  runs: 4000,
+  characters: 1800,
+  regions: { us: regionArchived, eu: regionArchived },
   archivedAt: now,
   source: 'fetched' as const,
 };
@@ -170,7 +180,18 @@ describe('MplusSeasonTransitionService.plan', () => {
 
   it('holds back a season whose archive has a page outstanding', async () => {
     const { service } = serviceOver({
-      seasons: [{ ...mn1, archive: { ...archived, status: 'incomplete', failedPages: [4] } }, mn2],
+      seasons: [
+        {
+          ...mn1,
+          archive: {
+            ...archived,
+            status: 'incomplete',
+            failedPages: ['us:4'],
+            regions: { us: { ...regionArchived, status: 'incomplete', failedPages: [4] } },
+          },
+        },
+        mn2,
+      ],
       stored: bothRegionsStored,
     });
 

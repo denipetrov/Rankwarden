@@ -1,4 +1,5 @@
 import type { MplusSeasonDocument } from '../mplus-season/entities/mplus-season.entity.js';
+import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 
 /**
  * Whether a season has ended in every region it lists.
@@ -20,6 +21,21 @@ export function isFinished(season: Pick<MplusSeasonDocument, 'ends'>, now: Date)
 }
 
 /**
+ * The configured regions a season's archive does not yet hold in full.
+ *
+ * Every region, for a season never tried or for one archived by the earlier
+ * `world` reader, whose marker has no `regions`. A region added to
+ * `RAIDERIO_REGIONS` later is owed too, so it is filled in without refetching
+ * the regions already held.
+ */
+export function regionsOwed(
+  season: Pick<MplusSeasonDocument, 'archive'>,
+  regions: readonly RaiderIoRegion[],
+): RaiderIoRegion[] {
+  return regions.filter((region) => season.archive?.regions?.[region]?.status !== 'complete');
+}
+
+/**
  * The seasons the archive still owes, newest first.
  *
  * Newest first as the PvP archive does: recent history is what a reader is
@@ -27,21 +43,21 @@ export function isFinished(season: Pick<MplusSeasonDocument, 'ends'>, now: Date)
  * its effort there. It is also what makes a season that has just ended the
  * next one archived, which the live season transition is waiting on.
  *
- * `complete` and `unarchivable` are settled and never returned. `incomplete`
- * is, so a season with a failed page is retried — except for seasons named in
- * `skip`, which is how one that keeps failing is set aside for the rest of a
- * tick rather than retried in a loop.
+ * A season is owed while any configured region is (`regionsOwed`), so
+ * `incomplete` and `partial` seasons come back and `unarchivable` ones never
+ * do — except for seasons named in `skip`, which is how one that keeps failing
+ * is set aside for the rest of a tick rather than retried in a loop.
  *
  * No main-season filter here: the catalogue holds nothing else.
  */
 export function pendingSeasons(
   seasons: readonly MplusSeasonDocument[],
-  options: { now: Date; skip?: ReadonlySet<string> },
+  options: { now: Date; regions: readonly RaiderIoRegion[]; skip?: ReadonlySet<string> },
 ): MplusSeasonDocument[] {
   return seasons
     .filter((season) => isFinished(season, options.now))
-    .filter((season) => season.archive?.status !== 'complete')
     .filter((season) => season.archive?.status !== 'unarchivable')
+    .filter((season) => regionsOwed(season, options.regions).length > 0)
     .filter((season) => !options.skip?.has(season.slug))
     .sort((left, right) => latestEnd(right) - latestEnd(left));
 }

@@ -243,9 +243,8 @@ export class MplusWorld {
 
   /** One page of `/mythic-plus/runs`, in the API's own shape. */
   runsPage(season: string, region: string, page: number): unknown {
-    // `world` is the union of every region, as upstream.
     const ranked = this.runs
-      .filter((run) => region === 'world' || run.region === region)
+      .filter((run) => run.region === region)
       .filter((run) => run.season === undefined || run.season === season)
       .sort((left, right) => right.score - left.score);
     const start = page * RUNS_PER_PAGE;

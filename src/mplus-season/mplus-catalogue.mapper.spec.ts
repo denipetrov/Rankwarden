@@ -219,30 +219,60 @@ describe('currentSeasonIn', () => {
 });
 
 describe('isArchiveSettled', () => {
-  const marker = {
-    pagesPlanned: 100,
+  const region = {
+    status: 'complete' as const,
     pagesFetched: 100,
     failedPages: [],
     runs: 2000,
     characters: 900,
-    skippedRuns: 0,
+    archivedAt: now,
+    source: 'fetched' as const,
+  };
+  const marker = {
+    status: 'partial' as const,
+    pagesPlanned: 100,
+    pagesFetched: 100,
+    failedPages: [] as string[],
+    runs: 2000,
+    characters: 900,
+    regions: { us: region },
     archivedAt: now,
     source: 'fetched' as const,
   };
 
-  it('is settled once complete, or refused for good', () => {
-    expect(isArchiveSettled(season('s', { archive: { ...marker, status: 'complete' } }))).toBe(
-      true,
-    );
-    expect(isArchiveSettled(season('s', { archive: { ...marker, status: 'unarchivable' } }))).toBe(
-      true,
-    );
+  it('is settled for a region held in full, whatever the other regions are doing', () => {
+    // Europe not read yet: the US share is still archived, and the US live
+    // board can go.
+    expect(isArchiveSettled(season('s', { archive: marker }), 'us')).toBe(true);
+    expect(isArchiveSettled(season('s', { archive: marker }), 'eu')).toBe(false);
   });
 
-  it('is not settled while a page is outstanding, or before the archive has tried', () => {
-    expect(isArchiveSettled(season('s', { archive: { ...marker, status: 'incomplete' } }))).toBe(
-      false,
-    );
-    expect(isArchiveSettled(season('s'))).toBe(false);
+  it('is settled everywhere for a season refused for good', () => {
+    const refused = season('s', { archive: { ...marker, regions: {}, status: 'unarchivable' } });
+
+    expect(isArchiveSettled(refused, 'eu')).toBe(true);
+  });
+
+  it('is not settled for a region with a page outstanding, or before the archive has tried', () => {
+    const failing = season('s', {
+      archive: {
+        ...marker,
+        status: 'incomplete',
+        regions: { us: { ...region, status: 'incomplete', failedPages: [3] } },
+      },
+    });
+
+    expect(isArchiveSettled(failing, 'us')).toBe(false);
+    expect(isArchiveSettled(season('s'), 'us')).toBe(false);
+  });
+
+  it('is not settled by an archive of the world board, which holds no region', () => {
+    const legacy = season('s', {
+      archive: { ...marker, status: 'complete', regions: undefined } as unknown as NonNullable<
+        MplusSeasonDocument['archive']
+      >,
+    });
+
+    expect(isArchiveSettled(legacy, 'us')).toBe(false);
   });
 });

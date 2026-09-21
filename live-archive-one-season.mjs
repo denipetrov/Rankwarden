@@ -27,7 +27,7 @@ const { MplusCatalogueRepository } = await import(
   './dist/mplus-season/mplus-catalogue.repository.js'
 );
 const { MplusArchiveService } = await import('./dist/mplus-archive/mplus-archive.service.js');
-const { isFinished } = await import('./dist/mplus-archive/mplus-archive.mapper.js');
+const { isFinished, regionsOwed } = await import('./dist/mplus-archive/mplus-archive.mapper.js');
 
 const app = await NestFactory.createApplicationContext(AppModule, { logger: ['log', 'error', 'warn'] });
 const db = app.get(MongoService).db;
@@ -50,7 +50,8 @@ try {
   const season = (await app.get(MplusCatalogueRepository).allSeasons()).find((s) => s.slug === SEASON);
   if (!season) throw new Error(`${SEASON} is not in the catalogue`);
   if (!isFinished(season, new Date())) throw new Error(`${SEASON} has not finished in every region`);
-  if (season.archive?.status === 'complete') throw new Error(`${SEASON} is already archived`);
+  const regions = (process.env.RAIDERIO_REGIONS ?? 'us,eu,kr,tw,cn').split(',');
+  if (regionsOwed(season, regions).length === 0) throw new Error(`${SEASON} is already archived in every region`);
 
   const archive = app.get(MplusArchiveService);
   const startedAt = Date.now();
@@ -73,11 +74,11 @@ try {
       .toArray(),
   });
 
-  const topRuns = await runs.find({ season: SEASON }).sort({ rank: 1 }).limit(5).toArray();
+  const topRuns = await runs.find({ season: SEASON }).sort({ score: -1 }).limit(5).toArray();
   out(
-    'top 5 runs (compare with the world leaderboard)',
+    'top 5 runs by score (each region ranks its own board)',
     {
-      leaderboard: `https://raider.io/mythic-plus-rankings/${SEASON}/all/world/leaderboards`,
+      leaderboard: `https://raider.io/mythic-plus-rankings/${SEASON}/all/<region>/leaderboards`,
       runs: topRuns.map((run) => ({
         rank: run.rank,
         score: run.score,
@@ -96,7 +97,7 @@ try {
 
   const topCharacters = await characters.find({ season: SEASON }).sort({ mythicScore: -1 }).limit(5).toArray();
   out(
-    'top 5 characters by archived score (score is over these 2,000 world runs only)',
+    'top 5 characters by archived score (score is over the region top 2,000 runs only)',
     topCharacters.map((character) => ({
       key: character.key,
       mythicScore: character.mythicScore,

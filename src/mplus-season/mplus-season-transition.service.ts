@@ -16,7 +16,7 @@ import { resolveRegions, type ResolvedMplusSeason } from './mplus-season.service
 export interface MplusPurgeCandidate {
   region: RaiderIoRegion;
   season: string;
-  /** Whether the archive's marker for the season is settled (`complete` or `unarchivable`). */
+  /** Whether the archive holds this region's share of the season, or refused the season. */
   archived: boolean;
   /** The marker's status, or null when the archive has not tried the season. */
   archiveStatus: string | null;
@@ -172,7 +172,7 @@ export class MplusSeasonTransitionService {
         const candidate: MplusPurgeCandidate = {
           region,
           season: slug,
-          archived: entry ? isArchiveSettled(entry) : false,
+          archived: entry ? isArchiveSettled(entry, region) : false,
           archiveStatus: entry?.archive?.status ?? null,
         };
 

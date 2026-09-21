@@ -538,8 +538,11 @@ export async function expectMplusRosterKeysMirrorRoster(db: Db): Promise<void> {
  * rows are written before the marker for exactly this reason; this is what
  * catches the order being reversed.
  *
- * Only `complete` markers. A season interrupted by a higher-priority job has
- * rows and deliberately no marker, and an `incomplete` one is retried in full.
+ * Checked per region, since each region's share is settled on its own, and
+ * then for the season as a whole, so no run sits outside the regions recorded.
+ *
+ * Only `complete` markers. A `partial` or `incomplete` season still has a region
+ * to read, whose rows the marker does not claim yet.
  */
 export async function expectMplusArchiveMarkersMatchRows(db: Db): Promise<void> {
   const seasons = await db
@@ -548,19 +551,32 @@ export async function expectMplusArchiveMarkersMatchRows(db: Db): Promise<void> 
     .toArray();
 
   for (const season of seasons) {
-    const label = `I19: archive of ${season.slug}`;
-    const archive = season.archive as { runs: number; characters: number };
+    const archive = season.archive as {
+      runs: number;
+      characters: number;
+      regions?: Record<string, { runs: number; characters: number }>;
+    };
+
+    expect(archive.regions, `I19: ${season.slug} records its regions`).toBeDefined();
+
+    for (const [region, entry] of Object.entries(archive.regions ?? {})) {
+      const label = `I19: archive of ${season.slug} in ${region}`;
+      const filter = { season: season.slug, region };
+
+      expect(
+        await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments(filter),
+        `${label} runs`,
+      ).toBe(entry.runs);
+      expect(
+        await db.collection(MPLUS_ARCHIVE_CHARACTERS_COLLECTION).countDocuments(filter),
+        `${label} characters`,
+      ).toBe(entry.characters);
+    }
 
     expect(
       await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments({ season: season.slug }),
-      `${label} runs`,
+      `I19: ${season.slug} stores no run outside the regions it records`,
     ).toBe(archive.runs);
-    expect(
-      await db
-        .collection(MPLUS_ARCHIVE_CHARACTERS_COLLECTION)
-        .countDocuments({ season: season.slug }),
-      `${label} characters`,
-    ).toBe(archive.characters);
   }
 }
 

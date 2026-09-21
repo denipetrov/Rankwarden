@@ -170,7 +170,9 @@ export class FakeRaiderIo {
         throw new RaiderIoApiError(400, url, '"page" must be less than or equal to 1000');
       }
 
-      if (region !== 'world' && !this.world.regions.includes(region)) {
+      // `world` included: nothing reads the aggregate board any more, so a
+      // request for it is a regression and fails like any unknown region.
+      if (!this.world.regions.includes(region)) {
         throw new RaiderIoApiError(404, url, `region ${region} is not in this world`);
       }
 

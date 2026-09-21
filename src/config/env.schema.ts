@@ -407,9 +407,10 @@ export const envSchema = z.object({
    */
   MPLUS_ARCHIVE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
   /**
-   * Pages of the world leaderboard archived per season, counted from zero.
-   * 100 is 2,000 runs. Kept deliberately shallow: the archive is a record of
-   * the top of each season, not a copy of it.
+   * Pages of each region's board archived per season, counted from zero — the
+   * same boards the live pass reads, one per `RAIDERIO_REGIONS` entry. 100 is
+   * 2,000 runs a region, ~500 requests a season at five regions. Kept shallow:
+   * the archive is a record of the top of each region's season, not a copy.
    */
   MPLUS_ARCHIVE_PAGES: z.coerce
     .number()

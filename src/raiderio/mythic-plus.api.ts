@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { RaiderIoHttpService } from './http/raiderio-http.service.js';
-import type { RunsRegion } from './raiderio.constants.js';
+import type { RaiderIoRegion } from './raiderio.constants.js';
 import {
   mythicPlusRunsSchema,
   type MythicPlusRunsPage,
@@ -24,7 +24,7 @@ export class MythicPlusApi {
    */
   async getRunsPage(
     season: string,
-    region: RunsRegion,
+    region: RaiderIoRegion,
     page: number,
     dungeon = 'all',
   ): Promise<MythicPlusRunsPage> {

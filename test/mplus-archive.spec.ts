@@ -29,8 +29,9 @@ import { World } from './support/world.js';
  * The Mythic+ archive of finished seasons, driven by hand.
  *
  * The world holds three expansions: Dragonflight (9), The War Within (10) and
- * Midnight (11). Each finished main season has its own world board; a side
- * event and the running season are there to be left alone.
+ * Midnight (11), over two regions. Each finished main season has its own board
+ * per region, read region by region as the live pass reads them; a side event
+ * and the running season are there to be left alone.
  */
 describe('Mythic+ archive', () => {
   let app: TestApp;
@@ -40,14 +41,32 @@ describe('Mythic+ archive', () => {
   let db: Db;
   const world = new MplusWorld();
 
-  const runsRequestsFor = (season: string) =>
+  const runsRequestsFor = (season: string, region?: string) =>
     app.raiderIo.requests.filter(
-      (request) => request.path === 'mythic-plus/runs' && request.season === season,
+      (request) =>
+        request.path === 'mythic-plus/runs' &&
+        request.season === season &&
+        (region === undefined || request.region === region),
     ).length;
+
+  interface RegionMarker {
+    status: string;
+    runs: number;
+    characters: number;
+    source: string;
+    failedPages: number[];
+  }
 
   const marker = async (slug: string) =>
     (await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug }))?.archive as
-      | { status: string; runs: number; characters: number; source: string; failedPages: number[] }
+      | {
+          status: string;
+          runs: number;
+          characters: number;
+          source: string;
+          failedPages: string[];
+          regions: Record<string, RegionMarker>;
+        }
       | undefined;
 
   beforeAll(async () => {
@@ -87,15 +106,17 @@ describe('Mythic+ archive', () => {
       },
     );
 
-    // Three pages is a full read at MPLUS_ARCHIVE_PAGES=3: 60 runs across two
-    // regions, so the world board has more than the archive reads.
+    // Three pages is a full read at MPLUS_ARCHIVE_PAGES=3: 60 runs a region.
+    // TWW 3's US board is deeper than that and its EU board shallower, so one
+    // season shows both the page limit and a board that ends first.
     world
       .seed('us', 40, 600, 'season-mn-1')
       .seed('eu', 30, 590, 'season-mn-1')
-      .seed('us', 40, 550, 'season-tww-3')
+      .seed('us', 80, 550, 'season-tww-3')
       .seed('eu', 30, 540, 'season-tww-3')
       .seed('us', 40, 500, 'season-tww-3-break-the-meta')
-      // A board shallower than the page limit: it ends on page 1.
+      // A board shallower than the page limit, ending on page 1 — and no EU
+      // board at all, as Legion and BfA have none in China.
       .seed('us', 20, 450, 'season-df-4')
       // The running season, for the live pass.
       .seed('us', 20, 400, 'season-mn-2');
@@ -129,7 +150,7 @@ describe('Mythic+ archive', () => {
     app = await bootTestApp(
       World.seed({ regions: ['us'], players: 20 }),
       {
-        RAIDERIO_REGIONS: 'us',
+        RAIDERIO_REGIONS: 'us,eu',
         // One page a batch, so the archive re-checks priority between pages.
         RAIDERIO_PAGE_BATCH: '1',
         MPLUS_CATALOGUE_FIRST_EXPANSION: '9',
@@ -201,22 +222,48 @@ describe('Mythic+ archive', () => {
     ).toBe(0);
   });
 
-  it('reads the world board only, to the configured depth', async () => {
-    const runs = await db
-      .collection(MPLUS_ARCHIVE_RUNS_COLLECTION)
-      .countDocuments({ season: 'season-tww-3' });
+  it("reads each region's own board, to the configured depth", async () => {
+    const tww3 = await marker('season-tww-3');
 
-    // 70 runs on the board, 3 pages x 20 archived.
-    expect(runs).toBe(60);
-    expect((await marker('season-tww-3'))?.runs).toBe(60);
+    // 80 runs on the US board, 3 pages x 20 archived; 30 on the EU board, all.
+    expect(tww3?.regions.us.runs).toBe(60);
+    expect(tww3?.regions.eu.runs).toBe(30);
+    expect(tww3?.runs).toBe(90);
+    expect(
+      await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments({ season: 'season-tww-3' }),
+    ).toBe(90);
+
+    // Ranks are each region's own, as the live board's are — the point of
+    // reading per region.
+    const topRanks = await db
+      .collection(MPLUS_ARCHIVE_RUNS_COLLECTION)
+      .find({ season: 'season-tww-3', rank: 1 })
+      .toArray();
+    expect(topRanks.map((run) => run.region).sort()).toEqual(['eu', 'us']);
   });
 
-  it('treats a board shorter than the page limit as complete, not as a failure', async () => {
+  it('never asks for the world board', async () => {
+    // The fake answers `world` with a 404, so a request for it would also have
+    // marked a season unarchivable; asserting the request itself is clearer.
+    await db
+      .collection(MPLUS_SEASONS_COLLECTION)
+      .updateOne({ slug: 'season-df-4' }, { $unset: { archive: '' } });
+    await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).deleteMany({ season: 'season-df-4' });
+
+    await archive.archiveBacklog();
+
+    expect(app.raiderIo.requests.filter((request) => request.region === 'world')).toEqual([]);
+    expect(runsRequestsFor('season-df-4', 'us')).toBeGreaterThan(0);
+    expect(runsRequestsFor('season-df-4', 'eu')).toBeGreaterThan(0);
+  });
+
+  it('treats a board shorter than the page limit, or none at all, as complete', async () => {
     const df4 = await marker('season-df-4');
 
     expect(df4?.status).toBe('complete');
-    expect(df4?.runs).toBe(20);
-    expect(df4?.failedPages).toEqual([]);
+    expect(df4?.regions.us).toMatchObject({ status: 'complete', runs: 20, failedPages: [] });
+    // No EU board: page 0 answers with no rankings, which ends the region.
+    expect(df4?.regions.eu).toMatchObject({ status: 'complete', runs: 0, pagesFetched: 1 });
   });
 
   it("keeps each run's own affixes and adds every one to the affix collection", async () => {
@@ -241,7 +288,7 @@ describe('Mythic+ archive', () => {
     expect(affixes.every((affix) => affix.description && affix.icon)).toBe(true);
   });
 
-  it("files each run and character under the roster's region", async () => {
+  it('files each run and character under the region whose board it came from', async () => {
     const regions = (await db
       .collection(MPLUS_ARCHIVE_RUNS_COLLECTION)
       .distinct('region', { season: 'season-tww-3' })) as string[];
@@ -252,7 +299,6 @@ describe('Mythic+ archive', () => {
       .distinct('region', { season: 'season-tww-3' })) as string[];
     expect(characterRegions.sort()).toEqual(['eu', 'us']);
 
-    // Never the aggregate the query was made against.
     expect(
       await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments({ region: 'world' }),
     ).toBe(0);
@@ -303,18 +349,26 @@ describe('Mythic+ archive', () => {
     expect(app.app.get(QuotaBudget).spent('archive'), "Blizzard's archive share").toBe(0);
   });
 
-  it('adopts a season whose marker was lost when its rows prove a full read', async () => {
+  it('adopts a region whose rows prove a full read, and refetches one whose rows do not', async () => {
     await db
       .collection(MPLUS_SEASONS_COLLECTION)
       .updateOne({ slug: 'season-tww-3' }, { $unset: { archive: '' } });
 
     const result = await archive.archiveBacklog();
 
+    // The US holds exactly a full read (60). Europe holds 30, which a board
+    // that ended early and a fetch that died halfway would both leave, so it is
+    // read again rather than trusted.
     expect(result!.seasons.map((season) => [season.season, season.outcome])).toEqual([
-      ['season-tww-3', 'adopted'],
+      ['season-tww-3', 'complete'],
     ]);
-    expect(runsRequestsFor('season-tww-3'), 'recovered without refetching').toBe(0);
-    expect((await marker('season-tww-3'))?.source).toBe('adopted');
+    expect(runsRequestsFor('season-tww-3', 'us'), 'the US recovered without refetching').toBe(0);
+    expect(runsRequestsFor('season-tww-3', 'eu')).toBeGreaterThan(0);
+
+    const tww3 = await marker('season-tww-3');
+    expect(tww3?.regions.us.source).toBe('adopted');
+    expect(tww3?.regions.eu.source).toBe('fetched');
+    expect(tww3?.status).toBe('complete');
   });
 
   it('refetches a season whose rows are ambiguous rather than trust them', async () => {
@@ -333,7 +387,7 @@ describe('Mythic+ archive', () => {
     const mn1 = await marker('season-mn-1');
     expect(mn1?.status).toBe('complete');
     expect(mn1?.source).toBe('fetched');
-    expect(mn1?.runs).toBe(60);
+    expect(mn1?.runs).toBe(70);
   });
 
   it('marks a season incomplete on a failed page, and retries it on a later tick', async () => {
@@ -356,15 +410,23 @@ describe('Mythic+ archive', () => {
     expect(first!.seasons.find((season) => season.season === 'season-tww-2')?.outcome).toBe(
       'incomplete',
     );
-    expect((await marker('season-tww-2'))?.status).toBe('incomplete');
+    const failed = await marker('season-tww-2');
+    expect(failed?.status).toBe('incomplete');
+    // The US's first page failed; Europe, with no board, was read cleanly.
+    expect(failed?.failedPages).toEqual(['us:0']);
+    expect(failed?.regions.eu.status).toBe('complete');
     expect(first!.pending, 'still owed').toBe(1);
-    // Set aside for the rest of that tick, not retried in a loop.
-    expect(runsRequestsFor('season-tww-2')).toBe(3);
+    // Set aside for the rest of that tick, not retried in a loop: three US
+    // pages and the one EU page that ended its board.
+    expect(runsRequestsFor('season-tww-2')).toBe(4);
 
     app.raiderIo.reset();
     await archive.archiveBacklog();
 
     expect((await marker('season-tww-2'))?.status).toBe('complete');
+    // Only the region that failed is read again.
+    expect(runsRequestsFor('season-tww-2', 'us')).toBe(3);
+    expect(runsRequestsFor('season-tww-2', 'eu')).toBe(0);
   });
 
   it('marks a season Raider.io will not serve as unarchivable, and never asks again', async () => {
@@ -413,7 +475,7 @@ describe('Mythic+ archive', () => {
     }
   });
 
-  it('yields mid-season when a higher-priority job starts, leaving no marker', async () => {
+  it('yields mid-region when a higher-priority job starts, leaving no marker', async () => {
     let release!: () => void;
     let sweep: Promise<unknown> | undefined;
 
@@ -442,9 +504,71 @@ describe('Mythic+ archive', () => {
     expect((await marker('season-df-4'))?.status).toBe('complete');
   });
 
-  it('survives the live pass purging non-current seasons from the live collections', async () => {
-    // The live pass deletes every season but the current one from `mplus_runs`.
-    // The archive's own collections are what keeps history out of that reach.
+  it('keeps its regions read when interrupted between regions, and reads only the rest', async () => {
+    await db
+      .collection(MPLUS_SEASONS_COLLECTION)
+      .updateOne({ slug: 'season-df-4' }, { $unset: { archive: '' } });
+    await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).deleteMany({ season: 'season-df-4' });
+
+    let release!: () => void;
+    let sweep: Promise<unknown> | undefined;
+
+    // The sweep starts on the US's last page — the empty one that ends its
+    // board — so the US finishes and Europe is next when the archive checks.
+    app.raiderIo.beforeServe = (request) => {
+      if (
+        request.season === 'season-df-4' &&
+        request.region === 'us' &&
+        request.page === 1 &&
+        !sweep
+      ) {
+        sweep = coordinator.duringSweep(() => new Promise<void>((resolve) => (release = resolve)));
+      }
+    };
+
+    const result = await archive.archiveBacklog();
+    expect(result!.seasons.find((season) => season.season === 'season-df-4')?.outcome).toBe(
+      'yielded',
+    );
+
+    // Nothing failed, so nothing claims a failure — but the US is kept.
+    const partial = await marker('season-df-4');
+    expect(partial?.status).toBe('partial');
+    expect(partial?.regions.us.status).toBe('complete');
+    expect(partial?.regions.eu).toBeUndefined();
+
+    release();
+    await sweep;
+    app.raiderIo.reset();
+
+    await archive.archiveBacklog();
+    expect((await marker('season-df-4'))?.status).toBe('complete');
+    expect(runsRequestsFor('season-df-4', 'us'), 'the US is not read again').toBe(0);
+    expect(runsRequestsFor('season-df-4', 'eu')).toBeGreaterThan(0);
+  });
+
+  it('re-reads a season archived from the world board, region by region', async () => {
+    // A marker from the earlier archive: complete, but with no regions. It says
+    // nothing about any one region's board, so the season is owed again. Its
+    // rows are overwritten in place: every run in the world top 2,000 is also
+    // in its own region's top 2,000.
+    const regions = (await marker('season-mn-1'))!.regions;
+    await db
+      .collection(MPLUS_SEASONS_COLLECTION)
+      .updateOne({ slug: 'season-mn-1' }, { $unset: { 'archive.regions': '' } });
+
+    await archive.archiveBacklog();
+
+    expect(runsRequestsFor('season-mn-1', 'us')).toBeGreaterThan(0);
+    expect(runsRequestsFor('season-mn-1', 'eu')).toBeGreaterThan(0);
+    const reread = await marker('season-mn-1');
+    expect(reread?.status).toBe('complete');
+    expect(Object.keys(reread!.regions).sort()).toEqual(Object.keys(regions).sort());
+  });
+
+  it('keeps archived rows out of reach of the live pass', async () => {
+    // The live collections are rewritten, pruned and eventually retired every
+    // season. The archive's own collections are what keeps history out of that.
     const archivedBefore = await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments();
     expect(archivedBefore).toBeGreaterThan(0);
 

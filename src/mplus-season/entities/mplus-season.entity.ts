@@ -1,33 +1,65 @@
 import type { RaiderIoRegion } from '../../raiderio/raiderio.constants.js';
 
 /**
+ * One region's share of a season's archive.
+ *
+ * The archive reads each region's own board, as the live pass does, so each
+ * region is settled on its own: a retry re-reads only the regions that are not
+ * `complete`, and the season transition can retire a region's live board as
+ * soon as that region is archived.
+ */
+export interface MplusRegionArchive {
+  /**
+   * `complete` — every page planned was read, or the board ended first. A
+   * region with no board at all for the season (Legion and BfA in `cn`) ends on
+   * page 0 and is complete with no runs.
+   * `incomplete` — at least one page failed; the region is read again, in full,
+   * on a later tick, because the character fold needs every page at once.
+   */
+  status: 'complete' | 'incomplete';
+  pagesFetched: number;
+  failedPages: number[];
+  runs: number;
+  characters: number;
+  archivedAt: Date;
+  /** How it was written: by fetching, or recovered from stored rows. */
+  source: 'fetched' | 'adopted';
+}
+
+/**
  * Where a season's archive stands. Its presence and status are what make the
- * archive run once: a `complete` season is never fetched again.
+ * archive run once: a season whose every configured region is `complete` is
+ * never fetched again.
  *
  * A durable record rather than an inference from stored rows, for the reason
  * `archive_brackets` exists on the PvP side (SKILLS §5.4): rows cannot tell a
  * fetch that finished from one that died halfway, and a board shallower than
  * the page limit stores fewer rows without anything having gone wrong.
+ *
+ * The top-level counts are totals over `regions`. A marker with no `regions`
+ * was written by the earlier archive, which read the `world` board; it is
+ * treated as owed, so such a season is read again region by region.
  */
 export interface MplusSeasonArchiveMarker {
   /**
-   * `complete` — every page planned was read, or the board ended first. Never
-   * fetched again.
-   * `incomplete` — at least one page failed. Retried on a later tick, in full,
-   * because the character fold needs every page at once.
+   * `complete` — every configured region is complete.
+   * `incomplete` — a region has a failed page. Retried on a later tick.
+   * `partial` — a higher-priority job interrupted the season after some
+   * regions were read; the rest are read on a later tick. Nothing failed.
    * `unarchivable` — Raider.io answered 404 for the season. Recorded so one
    * dead season cannot block the backlog behind it, and never retried.
    */
-  status: 'complete' | 'incomplete' | 'unarchivable';
+  status: 'complete' | 'incomplete' | 'partial' | 'unarchivable';
+  /** Pages planned per region. */
   pagesPlanned: number;
   pagesFetched: number;
-  failedPages: number[];
+  /** Failed pages as `region:page`, e.g. `eu:7`. */
+  failedPages: string[];
   runs: number;
   characters: number;
-  /** Runs skipped because their roster named a region this service does not know. */
-  skippedRuns: number;
+  regions: Partial<Record<RaiderIoRegion, MplusRegionArchive>>;
   archivedAt: Date;
-  /** How the marker was written: by fetching, or recovered from stored rows. */
+  /** `adopted` only when every region was recovered from stored rows. */
   source: 'fetched' | 'adopted';
   lastError?: string;
 }

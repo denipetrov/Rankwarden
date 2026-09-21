@@ -75,8 +75,10 @@ describe('Mythic+ archive scheduling', () => {
     // archive one: the archive went after the live pass had finished, rather
     // than alongside it.
     const requests = app.raiderIo.requests.filter((request) => request.path === 'mythic-plus/runs');
-    const lastLive = requests.map((request) => request.region).lastIndexOf('us');
-    const firstArchive = requests.map((request) => request.region).indexOf('world');
+    // Told apart by season: the live pass reads the running one, the archive
+    // the finished one, and both read the region's own board.
+    const lastLive = requests.map((request) => request.season).lastIndexOf('season-mn-2');
+    const firstArchive = requests.map((request) => request.season).indexOf('season-mn-1');
 
     expect(lastLive).toBeGreaterThanOrEqual(0);
     expect(firstArchive).toBeGreaterThan(lastLive);
