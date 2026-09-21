@@ -5,7 +5,7 @@ import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js
 import { RunLogger, withRunId } from '../common/logging/run-context.js';
 import { RaiderIoBudget } from '../common/quota/raiderio-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
-import { describeError } from '../common/utils/errors.js';
+import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import type { MplusAffixDocument } from '../mplus/entities/mplus-affix.entity.js';
 import {
@@ -22,6 +22,7 @@ import type {
   MplusSeasonArchiveMarker,
   MplusSeasonDocument,
 } from '../mplus-season/entities/mplus-season.entity.js';
+import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
 import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
 import {
   MplusCatalogueService,
@@ -123,6 +124,7 @@ export class MplusArchiveService {
     private readonly affixes: MplusRepository,
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: RaiderIoBudget,
+    private readonly representation: MplusSpecRepresentationService,
   ) {
     this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
     this.pages = config.get('MPLUS_ARCHIVE_PAGES', { infer: true });
@@ -192,6 +194,8 @@ export class MplusArchiveService {
 
       if (result.outcome === 'incomplete') skip.add(next.slug);
     }
+
+    await this.backfillRepresentation();
 
     const pending = pendingSeasons(await this.seasons.allSeasons(), {
       now: new Date(),
@@ -288,6 +292,15 @@ export class MplusArchiveService {
     // marker, which the next tick recovers or refetches. The other order would
     // leave a `complete` marker over rows that were never written.
     await this.seasons.recordArchive(season.slug, marker);
+
+    // Once, as the season is completed, and after its marker: the marker is what
+    // the figures are judged "archived" by, and a crash between the two is
+    // caught by the backfill at the end of the tick.
+    if (marker.status === 'complete') {
+      await this.recordRepresentation(() =>
+        this.representation.recordArchived({ ...season, archive: marker }),
+      );
+    }
 
     result.outcome =
       marker.status === 'incomplete' ? 'incomplete' : fetched ? 'complete' : 'adopted';
@@ -449,6 +462,28 @@ export class MplusArchiveService {
     if (entry.failedPages.length > 0) entry.status = 'incomplete';
 
     return { kind: 'read', entry };
+  }
+
+  /** Figures for seasons archived without them. Never fails the tick. */
+  private async backfillRepresentation(): Promise<void> {
+    await this.recordRepresentation(async () => {
+      const filled = await this.representation.backfillArchived();
+
+      if (filled.length > 0) {
+        this.logger.log(`Recorded Mythic+ spec representation for ${filled.join(', ')}`);
+      }
+    });
+  }
+
+  private async recordRepresentation(work: () => Promise<unknown>): Promise<void> {
+    try {
+      await work();
+    } catch (error) {
+      this.logger.error(
+        `Could not record Mythic+ spec representation: ${describeError(error)}`,
+        errorStack(error),
+      );
+    }
   }
 
   private async markUnarchivable(

@@ -112,6 +112,9 @@ src/
     mplus.repository.ts         mplus_runs + mplus_characters + mplus_affixes
     mplus.service.ts            the pass
     mplus.scheduler.ts          interval + warm-up gate
+  mplus-representation/
+    mplus-spec-representation.mapper.ts   tallies -> per-region + all-region documents
+    mplus-spec-representation.service.ts  live after each pass; archive once per season
   mplus-archive/
     mplus-archive.mapper.ts     which seasons are still owed
     mplus-archive.repository.ts mplus_archive_runs + mplus_archive_characters
@@ -306,7 +309,10 @@ spent budget is still observable without a sixty-second sleep.
    region; write the characters at the end.
 5. Clean up in two stages — **only if the pass finished cleanly**: runs this pass did not
    refresh, then characters no surviving run lists (§5.6).
-6. Nothing else. A superseded season is **not** deleted by the pass; the M+ season
+6. Recompute spec representation for the seasons just read (§5.9) — unless the archive
+   already holds the season everywhere, when its figures are the archive's. Never fails the
+   pass.
+7. Nothing else. A superseded season is **not** deleted by the pass; the M+ season
    transition retires it once the archive holds it (§4.6.2).
 
 Observed live (2026-09-14): 6 pages across us+eu in 987ms; a full pass is **1,001 requests
@@ -352,7 +358,10 @@ the data, not a failure, so `400` is deliberately absent from the retryable stat
    adopt them; otherwise read **that region's own board** — the same query as the live pass —
    pages `0..MPLUS_ARCHIVE_PAGES-1` (100 by default: 2,000 runs), writing runs per batch and
    folding characters across the region.
-4. Write the marker **after** the rows, then take the next season.
+4. Write the marker **after** the rows. When it is `complete`, write the season's spec
+   representation from the archived runs — once (§5.9). Then take the next season.
+5. At the end of the tick, write representation for any season archived everywhere that has
+   none — the backstop for a crash between the marker and the figures.
 
 **Per region, not `world`.** Until 2026-09-21 the archive read the `world` board. It is gone,
 for two reasons. The world top 2,000 is dominated by one region — 1,212 of `season-tww-3`'s
@@ -1122,6 +1131,53 @@ Indexes — `mplus_seasons`: `season_identity` (unique `slug`), `season_expansio
 `season+key`), `archive_score_board`, `archive_score_region_board`,
 `archive_character_lookup`.
 
+### 5.9 Mythic+ spec representation — `mplus_spec_representation`
+
+```js
+// one per season per region, plus region: 'all' combining every region
+{ season: 'season-tww-3', seasonId: 15, region: 'eu',   // | 'us' … | 'all'
+  source: 'archive',                   // | 'live'
+  runs: 2000,
+  slots: 10000,                        // roster slots counted, anonymised included
+  classified: 10000,                   // slots with a known spec; percent is of these
+  roles: { tank: 2000, healer: 2000, dps: 6000 },
+  specs: [                             // highest count first, ties by specId
+    { classId: 6, className: 'Death Knight', specId: 250, specName: 'Blood', role: 'tank',
+      count: 812, percent: 8.12, rolePercent: 40.6 }, … ],
+  computedAt: Date }
+```
+
+**Counted by roster slot.** Every member of every stored run counts once for their spec, so
+a player in forty runs counts forty times. That measures how often a spec is **brought** to
+the top of a board — Raider.io's own spec-usage figures — not how many players play it.
+Anonymised members count: their spec is still reported. A slot with no spec counts in
+`slots` but not `classified`.
+
+**`rolePercent` is the figure to compare specs by.** A run is always one tank, one healer and
+three damage dealers, so the most-played tank has a smaller `percent` than a mid-table damage
+spec while being the tank almost every group brings. Percentages are 0–100, two decimals.
+
+**Two writers, one rule each.** The live pass recomputes the current season after every pass
+(`source: 'live'`). The archive writes a finished season **once**, from `mplus_archive_runs`,
+when its marker becomes `complete` (`source: 'archive'`), and nothing recomputes it after.
+Between them: **once a season is archived in every configured region, the live pass leaves
+its figures alone.** A season stays current in a region until its successor opens (§4.6.2),
+so a pass can still be reading an ended season the archive has taken, and would otherwise
+overwrite the archived figures every pass until the region rolled. An `unarchivable` season
+keeps whatever the live board last showed.
+
+It describes **what was stored**: the top of each region's board to the depth read — up to
+20,020 runs a region live, 2,000 archived — not every run played. Live and archived figures
+for the same spec are therefore not like for like; compare within a source.
+
+Counted in the database: one `$unwind`/`$group` over the season's runs returns a few hundred
+(region, spec) totals. The documents for a season are replaced whole and any region no longer
+present is deleted, so they always describe one computation. A region with no runs gets no
+document rather than an empty one, which would read as "nothing was played".
+
+Indexes: `mplus_representation_identity` (unique `season+region`),
+`mplus_representation_by_region`.
+
 ---
 
 ## 6. Blizzard API surface
@@ -1751,7 +1807,11 @@ main-season selection, per-region depth and ranks, never asking for `world`, a r
 board, fetch-once, markers surviving a catalogue refresh, per-region adoption and its refusal
 of ambiguous rows, `incomplete` retrying only the failed region, `unarchivable`, yielding to
 each job above it before, **during** and **between** regions (keeping the regions read), a
-`world`-era marker re-read per region, and a live pass running beside the archive. `mplus-archive-scheduler.spec.ts` switches the archive and the live pass on and
+`world`-era marker re-read per region, and a live pass running beside the archive.
+`mplus-spec-representation.spec.ts` covers §5.9: live documents per region and for all,
+slot counts, shares adding to 100 overall and per role, a later pass recomputing, the
+archive writing a completed season once and never again, the backfill, and the live pass
+leaving an archived season alone. `mplus-archive-scheduler.spec.ts` switches the archive and the live pass on and
 proves the real boot order: nothing at boot, then the live pass, then the archive — every
 live request before every archive one.
 

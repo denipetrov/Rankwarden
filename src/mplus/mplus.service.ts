@@ -5,11 +5,12 @@ import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js
 import { RunLogger, withRunId } from '../common/logging/run-context.js';
 import { RaiderIoBudget, type MplusOutlook } from '../common/quota/raiderio-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
-import { describeError } from '../common/utils/errors.js';
+import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import { MAX_RUNS_PAGE, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
+import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
 import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import type { MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import type { MplusRunDocument } from './entities/mplus-run.entity.js';
@@ -90,6 +91,7 @@ export class MplusService {
     private readonly repository: MplusRepository,
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: RaiderIoBudget,
+    private readonly representation: MplusSpecRepresentationService,
   ) {
     this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
     this.concurrency = config.get('RAIDERIO_CONCURRENCY', { infer: true });
@@ -182,6 +184,7 @@ export class MplusService {
     // region rolled would discard a season before the archive had read it.
 
     const seasons = Object.fromEntries(results.map((result) => [result.region, result.season]));
+    await this.recordRepresentation(Object.values(seasons));
     const durationMs = Date.now() - startedAt.getTime();
     const requests = this.budget.spent('mplus') - requestsBefore;
     const summary: MplusSweepResult = {
@@ -342,6 +345,27 @@ export class MplusService {
     );
 
     return result;
+  }
+
+  /**
+   * Recomputes spec representation for the seasons this pass read.
+   *
+   * After a pass that stopped early too: the figures describe what is stored,
+   * and a partial pass leaves the stored board as it was plus what was read.
+   * Never fails the pass — the runs just ingested are correct either way, and
+   * the next pass recomputes.
+   */
+  private async recordRepresentation(seasons: string[]): Promise<void> {
+    if (seasons.length === 0) return;
+
+    try {
+      await this.representation.recordLive(seasons);
+    } catch (error) {
+      this.logger.error(
+        `Could not record Mythic+ spec representation: ${describeError(error)}`,
+        errorStack(error),
+      );
+    }
   }
 
   /** The verdict readiness reports, computed from the pass that just ran. */
