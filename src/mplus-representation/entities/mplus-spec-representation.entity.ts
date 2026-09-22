@@ -1,3 +1,4 @@
+import type { MplusDungeonRef } from '../../mplus/entities/mplus-run.entity.js';
 import type { RaiderIoRegion } from '../../raiderio/raiderio.constants.js';
 
 /** The region a representation document covers: one region, or all of them together. */
@@ -33,8 +34,12 @@ export interface MplusSpecShare {
  * spec is brought to the top of the board, which is what Raider.io's own
  * spec-usage figures measure — not how many distinct players play it.
  *
- * One document per season and region, plus one with `region: 'all'` combining
- * every region. Its inputs are the runs stored for the season — the live board
+ * One document per season, region and dungeon: for each region — and for
+ * `region: 'all'`, combining every region — one document over every dungeon
+ * (`dungeonId: null`) and one per dungeon the region's runs include. Separate
+ * documents rather than a nested breakdown, so a board filtered to one region
+ * and one dungeon is a single indexed read of a document shaped like the rest.
+ * Its inputs are the runs stored for the season — the live board
  * (`source: 'live'`) or the archive (`source: 'archive'`) — so it describes the
  * top of each region's board to the depth that was read, not every run played.
  */
@@ -43,6 +48,10 @@ export interface MplusSpecRepresentationDocument {
   /** Blizzard's M+ season id, for reference. */
   seasonId: number | null;
   region: MplusRepresentationRegion;
+  /** The dungeon counted, or null for every dungeon of the season together. */
+  dungeonId: number | null;
+  /** The dungeon's details, as the runs carry them; null with `dungeonId`. */
+  dungeon: MplusDungeonRef | null;
   /**
    * `live` — recomputed after every live pass while the season is current.
    * `archive` — written once, when the archive holds the season in every

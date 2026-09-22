@@ -13,7 +13,14 @@ import {
   MPLUS_SPEC_REPRESENTATION_COLLECTION,
   type MplusSpecRepresentationDocument,
 } from './entities/mplus-spec-representation.entity.js';
-import { representationsOf, type MplusSpecTally } from './mplus-spec-representation.mapper.js';
+import {
+  representationsOf,
+  type MplusRunCount,
+  type MplusSpecTally,
+} from './mplus-spec-representation.mapper.js';
+
+/** The unique index before documents were split by dungeon: one per season and region. */
+const LEGACY_IDENTITY_INDEX = 'mplus_representation_identity';
 
 /**
  * Keeps `mplus_spec_representation` in step with the runs stored.
@@ -32,8 +39,9 @@ import { representationsOf, type MplusSpecTally } from './mplus-spec-representat
  * archived figures on every pass until the region rolled.
  *
  * Counted in the database with one aggregation per season, not in the process:
- * the live board is up to 100,000 runs a region, and only the few hundred
- * (region, spec) totals need to come back.
+ * the live board is up to 100,000 runs a region, and only the few thousand
+ * (region, dungeon, spec) totals need to come back. Every other document — a
+ * region over every dungeon, every region together — is summed from those.
  */
 @Injectable()
 export class MplusSpecRepresentationService implements OnModuleInit {
@@ -55,8 +63,19 @@ export class MplusSpecRepresentationService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
+    // The old identity allowed one document per season and region, so every
+    // per-dungeon document would collide with it. Dropped before the new one is
+    // built; absent on a fresh database, which is not an error.
+    await this.collection.dropIndex(LEGACY_IDENTITY_INDEX).catch(() => undefined);
+
     await this.collection.createIndexes([
-      { key: { season: 1, region: 1 }, name: 'mplus_representation_identity', unique: true },
+      // Also the front end's filter: season, then region, then dungeon — null
+      // for every dungeon together.
+      {
+        key: { season: 1, region: 1, dungeonId: 1 },
+        name: 'mplus_representation_key',
+        unique: true,
+      },
       { key: { region: 1, season: 1 }, name: 'mplus_representation_by_region' },
     ]);
 
@@ -109,10 +128,18 @@ export class MplusSpecRepresentationService implements OnModuleInit {
    * its figures, or figures dropped by hand, would otherwise leave the season
    * without them for good, since a finished season is never archived again.
    * One distinct read when nothing is missing.
+   *
+   * "None" means no per-dungeon document. A season recorded before documents
+   * were split by dungeon has only its all-dungeon ones, and is written again
+   * once — the one time an archived season's figures are recomputed — so it
+   * gains the per-dungeon breakdown every other season has.
    */
   async backfillArchived(): Promise<string[]> {
     const recorded = new Set(
-      (await this.collection.distinct('season', { source: 'archive' })) as string[],
+      (await this.collection.distinct('season', {
+        source: 'archive',
+        dungeonId: { $ne: null },
+      })) as string[],
     );
     const missing = (await this.catalogue.allSeasons()).filter(
       (season) => this.isArchived(season) && !recorded.has(season.slug),
@@ -142,7 +169,7 @@ export class MplusSpecRepresentationService implements OnModuleInit {
     runsCollection: string,
   ): Promise<number> {
     const runs = this.mongo.collection(runsCollection);
-    const [tallies, counts] = await Promise.all([
+    const [tallies, runCounts] = await Promise.all([
       runs
         .aggregate<MplusSpecTally>(
           [
@@ -150,7 +177,12 @@ export class MplusSpecRepresentationService implements OnModuleInit {
             { $unwind: '$roster' },
             {
               $group: {
-                _id: { region: '$region', classId: '$roster.classId', specId: '$roster.specId' },
+                _id: {
+                  region: '$region',
+                  dungeonId: '$dungeon.id',
+                  classId: '$roster.classId',
+                  specId: '$roster.specId',
+                },
                 className: { $first: '$roster.className' },
                 specName: { $first: '$roster.specName' },
                 role: { $first: '$roster.role' },
@@ -161,6 +193,7 @@ export class MplusSpecRepresentationService implements OnModuleInit {
               $project: {
                 _id: 0,
                 region: '$_id.region',
+                dungeonId: '$_id.dungeonId',
                 classId: '$_id.classId',
                 specId: { $ifNull: ['$_id.specId', null] },
                 className: 1,
@@ -174,37 +207,48 @@ export class MplusSpecRepresentationService implements OnModuleInit {
         )
         .toArray(),
       runs
-        .aggregate<{ _id: string; runs: number }>([
+        .aggregate<MplusRunCount>([
           { $match: { season } },
-          { $group: { _id: '$region', runs: { $sum: 1 } } },
+          {
+            $group: {
+              _id: { region: '$region', dungeonId: '$dungeon.id' },
+              dungeon: { $first: '$dungeon' },
+              runs: { $sum: 1 },
+            },
+          },
+          { $project: { _id: 0, region: '$_id.region', dungeon: 1, runs: 1 } },
         ])
         .toArray(),
     ]);
 
+    const computedAt = new Date();
     const documents = representationsOf({
       season,
       seasonId,
       source,
-      runsByRegion: new Map(counts.map((count) => [count._id, count.runs])),
+      runCounts,
       tallies,
-      computedAt: new Date(),
+      computedAt,
     });
 
-    // Replaced whole, and anything for a region no longer present removed, so
-    // the documents for a season always describe one computation.
+    // Replaced whole, then anything this computation did not write removed — a
+    // region or a dungeon no longer present — so the documents for a season
+    // always describe one computation. `dungeonId: null` also matches a
+    // document from before the split, which has no such field.
     for (const document of documents) {
-      await this.collection.replaceOne({ season, region: document.region }, document, {
-        upsert: true,
-      });
+      await this.collection.replaceOne(
+        { season, region: document.region, dungeonId: document.dungeonId },
+        document,
+        { upsert: true },
+      );
     }
-    await this.collection.deleteMany({
-      season,
-      region: { $nin: documents.map((document) => document.region) },
-    });
+    await this.collection.deleteMany({ season, computedAt: { $ne: computedAt } });
 
     this.logger.log(
       `Mythic+ spec representation of ${season} (${source}): ${documents.length} document(s)` +
-        (documents.length > 0 ? `, ${documents.at(-1)!.slots} roster slots` : ''),
+        (documents.length > 0
+          ? `, ${documents.find((document) => document.region === 'all' && document.dungeonId === null)?.slots ?? 0} roster slots`
+          : ''),
     );
 
     return documents.length;

@@ -113,7 +113,7 @@ src/
     mplus.service.ts            the pass
     mplus.scheduler.ts          interval + warm-up gate
   mplus-representation/
-    mplus-spec-representation.mapper.ts   tallies -> per-region + all-region documents
+    mplus-spec-representation.mapper.ts   tallies -> per region/dungeon + all documents
     mplus-spec-representation.service.ts  live after each pass; archive once per season
   mplus-archive/
     mplus-archive.mapper.ts     which seasons are still owed
@@ -1134,8 +1134,12 @@ Indexes — `mplus_seasons`: `season_identity` (unique `slug`), `season_expansio
 ### 5.9 Mythic+ spec representation — `mplus_spec_representation`
 
 ```js
-// one per season per region, plus region: 'all' combining every region
+// one per season x region x dungeon: region 'all' combines every region, and
+// dungeonId null combines every dungeon
 { season: 'season-tww-3', seasonId: 15, region: 'eu',   // | 'us' … | 'all'
+  dungeonId: 12773,                    // | null for every dungeon together
+  dungeon: { id: 12773, name: 'Operation: Floodgate', slug: 'operation-floodgate',
+             shortName: 'FLOOD' },     // | null with dungeonId
   source: 'archive',                   // | 'live'
   runs: 2000,
   slots: 10000,                        // roster slots counted, anonymised included
@@ -1146,6 +1150,14 @@ Indexes — `mplus_seasons`: `season_identity` (unique `slug`), `season_expansio
       count: 812, percent: 8.12, rolePercent: 40.6 }, … ],
   computedAt: Date }
 ```
+
+**Split by region and by dungeon, as separate documents.** For each region, and for `all`,
+there is one document over every dungeon (`dungeonId: null`) and one per dungeon the region's
+runs include — at eight dungeons and five regions, 54 documents a season. Separate documents
+rather than a nested breakdown, so the front end's filter is one read on the key index
+(`season`, `region`, `dungeonId`) and every document has the same shape. The dungeons
+partition their region: per-dungeon runs and slots add up to the all-dungeon document. A
+dungeon a region never ran gets no document.
 
 **Counted by roster slot.** Every member of every stored run counts once for their spec, so
 a player in forty runs counts forty times. That measures how often a spec is **brought** to
@@ -1170,13 +1182,23 @@ It describes **what was stored**: the top of each region's board to the depth re
 20,020 runs a region live, 2,000 archived — not every run played. Live and archived figures
 for the same spec are therefore not like for like; compare within a source.
 
-Counted in the database: one `$unwind`/`$group` over the season's runs returns a few hundred
-(region, spec) totals. The documents for a season are replaced whole and any region no longer
-present is deleted, so they always describe one computation. A region with no runs gets no
-document rather than an empty one, which would read as "nothing was played".
+Counted in the database: one `$unwind`/`$group` over the season's runs returns a few thousand
+(region, dungeon, spec) totals, and every other document is summed from them in the process.
+The documents for a season are replaced whole, and whatever this computation did not write —
+a region or a dungeon no longer present — is deleted by `computedAt`, so they always describe
+one computation. A region or dungeon with no runs gets no document rather than an empty one,
+which would read as "nothing was played".
 
-Indexes: `mplus_representation_identity` (unique `season+region`),
-`mplus_representation_by_region`.
+**Documents from before the split (2026-09-22).** They have no `dungeonId` field. The live
+season is simply rewritten by the next pass — `dungeonId: null` matches a missing field, so the
+old document is replaced rather than kept beside the new one. An archived season is written
+again **once** by the backfill, which looks for archived seasons with no per-dungeon document:
+the one time an archived season's figures are recomputed. The old unique index
+`mplus_representation_identity` (`season+region`) would reject every per-dungeon document, so
+`onModuleInit` drops it before building the new one.
+
+Indexes: `mplus_representation_key` (unique `season+region+dungeonId`, also the front end's
+filter), `mplus_representation_by_region`.
 
 ---
 
@@ -1809,9 +1831,10 @@ of ambiguous rows, `incomplete` retrying only the failed region, `unarchivable`,
 each job above it before, **during** and **between** regions (keeping the regions read), a
 `world`-era marker re-read per region, and a live pass running beside the archive.
 `mplus-spec-representation.spec.ts` covers §5.9: live documents per region and for all,
-slot counts, shares adding to 100 overall and per role, a later pass recomputing, the
-archive writing a completed season once and never again, the backfill, and the live pass
-leaving an archived season alone. `mplus-archive-scheduler.spec.ts` switches the archive and the live pass on and
+per-dungeon documents that add up to their region, slot counts, shares adding to 100 overall
+and per role, a later pass recomputing, the archive writing a completed season once and never
+again, the backfill, a pre-split season gaining its dungeons, the old index being dropped, and
+the live pass leaving an archived season alone. `mplus-archive-scheduler.spec.ts` switches the archive and the live pass on and
 proves the real boot order: nothing at boot, then the live pass, then the archive — every
 live request before every archive one.
 
