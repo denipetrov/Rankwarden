@@ -101,6 +101,8 @@ src/
     mplus-catalogue.service.ts  every main season + dungeon, walked across expansions
     mplus-catalogue.mapper.ts   catalogue mapping; which season is current per region
     mplus-catalogue.repository.ts  mplus_seasons + mplus_dungeons (+ archive markers)
+    mplus-cutoffs.service.ts    title + percentile cutoffs per season and region
+    mplus-cutoffs.mapper.ts     cutoffs payload -> what is stored
     mplus-season.service.ts     current season per region, observed + announced
     mplus-season.scheduler.ts   catalogue at boot, season check hourly
     mplus-season-events.service.ts   rxjs Subject for "ended" / "rollover"
@@ -312,7 +314,9 @@ spent budget is still observable without a sixty-second sleep.
 6. Recompute spec representation for the seasons just read (§5.9) — unless the archive
    already holds the season everywhere, when its figures are the archive's. Never fails the
    pass.
-7. Nothing else. A superseded season is **not** deleted by the pass; the M+ season
+7. Re-read the season cutoffs of each region (§5.10): one request a region, because a live
+   season's title cutoffs move with the ladder. Never fails the pass.
+8. Nothing else. A superseded season is **not** deleted by the pass; the M+ season
    transition retires it once the archive holds it (§4.6.2).
 
 Observed live (2026-09-14): 6 pages across us+eu in 987ms; a full pass is **1,001 requests
@@ -359,9 +363,10 @@ the data, not a failure, so `400` is deliberately absent from the retryable stat
    pages `0..MPLUS_ARCHIVE_PAGES-1` (100 by default: 2,000 runs), writing runs per batch and
    folding characters across the region.
 4. Write the marker **after** the rows. When it is `complete`, write the season's spec
-   representation from the archived runs — once (§5.9). Then take the next season.
-5. At the end of the tick, write representation for any season archived everywhere that has
-   none — the backstop for a crash between the marker and the figures.
+   representation from the archived runs and read its cutoffs — once each (§5.9, §5.10).
+   Then take the next season.
+5. At the end of the tick, write representation and read cutoffs for any season archived
+   everywhere that is missing them — the backstop for a crash between the marker and either.
 
 **Per region, not `world`.** Until 2026-09-21 the archive read the `world` board. It is gone,
 for two reasons. The world top 2,000 is dominated by one region — 1,212 of `season-tww-3`'s
@@ -1200,6 +1205,64 @@ the one time an archived season's figures are recomputed. The old unique index
 Indexes: `mplus_representation_key` (unique `season+region+dungeonId`, also the front end's
 filter), `mplus_representation_by_region`.
 
+### 5.10 Mythic+ season cutoffs — `mplus_seasons.cutoffs`
+
+```js
+// on the season document, one entry per region
+cutoffs: {
+  us: {
+    status: 'ok',                    // | 'missing' | 'failed' | 'unavailable'
+    updatedAt: Date,                 // Raider.io's own stamp for the figures
+    keystones: {                     // only the titles the season awarded
+      keystoneExplorer:  { score: 750,  alliance: Band, horde: Band, all: Band },
+      keystoneConqueror: { score: 1500, … },
+      keystoneMaster:    { score: 2000, … },
+      keystoneHero:      { score: 2500, … },
+      keystoneLegend:    { score: 3000, … },   // Dragonflight onwards
+      keystoneMyth:      { score: 3500, … } }, // Midnight onwards
+    quantiles: {                     // the two title percentiles
+      p999: { score: null, alliance: Band, horde: Band, all: Band },   // top 0.1%
+      p990: { … } },                                                   // top 1%
+    fetchedAt: Date, attempts: 0, lastError? } }
+
+// Band: { quantile, minScore, populationCount, populationFraction, totalPopulation }
+```
+
+Read from `mythic-plus/season-cutoffs`, **one request per season and region**. Worth a
+request rather than a calculation: Raider.io computes these over the **whole** ladder, and
+the runs stored here are only the top of each board (§4.6.1), so a cutoff derived from them
+would be wrong by construction.
+
+`minScore` is the figure a player is measured against. `all` is both factions together and
+is what a board should show unless factions are being compared; `alliance` and `horde` have
+their own cutoffs, and differ by 200+ score in some regions. `populationCount` /
+`totalPopulation` say how big the ladder behind the cutoff is — the reason a percentile
+means anything.
+
+**A tier absent means the season had no such title**, in that region. Raider.io reports it as
+`null` and it is dropped, so a reader never has to tell "not awarded" from "not read":
+`keystoneMyth` is null before Midnight, `keystoneLegend` before Dragonflight, and Taiwan's
+`season-sl-4` has no Hero, Legend or Myth cutoff at all. The payload carries far more —
+`p900`, `p750`, `p600`, `graphData`, `allTimed2..29`, faction colours — none of which is kept.
+
+**Live seasons move; finished ones do not.** The live pass re-reads the current season's
+regions on every pass (five requests, §4.6). The archive reads a finished season once per
+region as it completes it, and never again.
+
+**What "no cutoffs" looks like, and why there is an attempt cap** (checked live, 2026-09-23):
+
+| Seasons                                   | Answer                | Recorded                        |
+| ----------------------------------------- | --------------------- | ------------------------------- |
+| `season-sl-3` onward, `us`/`eu`/`kr`/`tw` | 200                   | `ok`                            |
+| `season-df-4` onward, `cn`                | 200                   | `ok`                            |
+| before `season-sl-3` (BfA, Legion, sl-1/2) | 404 "Could not find"  | `missing`, never asked again    |
+| before `season-df-4` in `cn`              | **500**, consistently | `failed`, then `unavailable`    |
+
+The 500 is why a cap exists: it is not a 404 and does not settle itself, so without one the
+archive would ask again on every tick for ever. Three attempts (`MAX_ATTEMPTS`) still absorbs
+a real outage spread over three ticks. A `missing` or `unavailable` region is skipped even
+while its season is live.
+
 ---
 
 ## 6. Blizzard API surface
@@ -1259,6 +1322,7 @@ Non-2xx becomes `RaiderIoApiError` with `statusCode`, `isNotFound` and `isBadReq
 | `/api/v1/mythic-plus/runs?season&region&dungeon=all&page` | the M+ pass — 1,001 pages a region                              |
 | `/api/v1/mythic-plus/static-data?expansion_id`            | the current season; the whole catalogue, one call per expansion |
 | `/api/v1/mythic-plus/runs?…&region=<region>` (archive)     | the archive — 100 pages a region, a finished season             |
+| `/api/v1/mythic-plus/season-cutoffs?season&region`        | title + percentile cutoffs, one per season and region (§5.10)  |
 
 **The access key travels as a query parameter**, which Raider.io requires and which means it
 lands inside every url — including the ones got bakes into its own error messages. It is
@@ -1830,6 +1894,13 @@ board, fetch-once, markers surviving a catalogue refresh, per-region adoption an
 of ambiguous rows, `incomplete` retrying only the failed region, `unarchivable`, yielding to
 each job above it before, **during** and **between** regions (keeping the regions read), a
 `world`-era marker re-read per region, and a live pass running beside the archive.
+`mplus-cutoffs.spec.ts` covers §5.10: the live season read per region and re-read each pass,
+the tiers and percentiles stored, a tier the season did not award left out, a finished season
+read once as it is archived and never again, a region left outstanding picked up by the
+backfill, a 404 recorded as `missing` and never asked again, and repeated failures giving up
+after three attempts. `MplusWorld.cutoffs` serves the payload, with `seasonsWithoutCutoffs`
+for the 404 and `cutoffBase` so each season and region has its own figures.
+
 `mplus-spec-representation.spec.ts` covers §5.9: live documents per region and for all,
 per-dungeon documents that add up to their region, slot counts, shares adding to 100 overall
 and per role, a later pass recomputing, the archive writing a completed season once and never

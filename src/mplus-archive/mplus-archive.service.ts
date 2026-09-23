@@ -24,6 +24,7 @@ import type {
 } from '../mplus-season/entities/mplus-season.entity.js';
 import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
 import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
+import { MplusCutoffsService } from '../mplus-season/mplus-cutoffs.service.js';
 import {
   MplusCatalogueService,
   type CatalogueRefresh,
@@ -125,6 +126,7 @@ export class MplusArchiveService {
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: RaiderIoBudget,
     private readonly representation: MplusSpecRepresentationService,
+    private readonly cutoffs: MplusCutoffsService,
   ) {
     this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
     this.pages = config.get('MPLUS_ARCHIVE_PAGES', { infer: true });
@@ -300,6 +302,9 @@ export class MplusArchiveService {
       await this.recordRepresentation(() =>
         this.representation.recordArchived({ ...season, archive: marker }),
       );
+      // The season's own cutoffs, once per region: Raider.io's computation over
+      // the whole ladder, which the archived top of each board cannot give.
+      await this.recordRepresentation(() => this.cutoffs.recordSeason(season));
     }
 
     result.outcome =
@@ -471,6 +476,17 @@ export class MplusArchiveService {
 
       if (filled.length > 0) {
         this.logger.log(`Recorded Mythic+ spec representation for ${filled.join(', ')}`);
+      }
+    });
+
+    await this.recordRepresentation(async () => {
+      const seasons = (await this.seasons.allSeasons()).filter(
+        (season) => season.archive?.status === 'complete',
+      );
+      const filled = await this.cutoffs.backfill(seasons);
+
+      if (filled.length > 0) {
+        this.logger.log(`Read Mythic+ cutoffs for ${filled.join(', ')}`);
       }
     });
   }

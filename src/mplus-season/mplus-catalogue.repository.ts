@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
+import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
+import type { MplusSeasonCutoffs } from './entities/mplus-cutoffs.entity.js';
 import {
   MPLUS_DUNGEONS_COLLECTION,
   MPLUS_SEASONS_COLLECTION,
@@ -119,5 +121,22 @@ export class MplusCatalogueRepository implements OnModuleInit {
 
   async recordArchive(slug: string, marker: MplusSeasonArchiveMarker): Promise<void> {
     await this.seasons.updateOne({ slug }, { $set: { archive: marker } });
+  }
+
+  findSeason(slug: string): Promise<MplusSeasonDocument | null> {
+    return this.seasons.findOne({ slug });
+  }
+
+  /**
+   * Writes one region's cutoffs. Field-level, like the archive marker and for
+   * the same reason: the catalogue refresh, the archive and the cutoffs all
+   * write the same document and must not overwrite each other's half.
+   */
+  async recordCutoffs(
+    slug: string,
+    region: RaiderIoRegion,
+    cutoffs: MplusSeasonCutoffs,
+  ): Promise<void> {
+    await this.seasons.updateOne({ slug }, { $set: { [`cutoffs.${region}`]: cutoffs } });
   }
 }

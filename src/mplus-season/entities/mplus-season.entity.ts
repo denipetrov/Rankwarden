@@ -1,4 +1,5 @@
 import type { RaiderIoRegion } from '../../raiderio/raiderio.constants.js';
+import type { MplusSeasonCutoffs } from './mplus-cutoffs.entity.js';
 
 /**
  * One region's share of a season's archive.
@@ -96,6 +97,13 @@ export interface MplusSeasonDocument {
    * Raider.io's season list can never erase the record of what was archived.
    */
   archive?: MplusSeasonArchiveMarker;
+  /**
+   * Title and percentile cutoffs per region (`MplusSeasonCutoffs`), read from
+   * `mythic-plus/season-cutoffs`. Absent for a region never asked; a region
+   * Raider.io has no cutoffs for is recorded as such rather than left absent,
+   * so it is asked once and not again.
+   */
+  cutoffs?: Partial<Record<RaiderIoRegion, MplusSeasonCutoffs>>;
 }
 
 /**

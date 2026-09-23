@@ -162,6 +162,16 @@ export class FakeRaiderIo {
   ): unknown {
     if (path === 'mythic-plus/static-data') return this.world.staticData(expansionId);
 
+    if (path === 'mythic-plus/season-cutoffs') {
+      // No cutoffs for the season: a 404 naming it, as upstream answers for
+      // everything before `season-sl-3`.
+      if (season !== null && this.world.seasonsWithoutCutoffs.has(season)) {
+        throw new RaiderIoApiError(404, url, `Could not find cutoffs for season ${season}`);
+      }
+
+      return this.world.cutoffs(season ?? 'season-mn-2', region);
+    }
+
     if (path === 'mythic-plus/runs') {
       // The endpoint's real behaviour past its cap: a 400 naming the parameter,
       // not an empty page. The pass treats it as the end of the data, so a fake

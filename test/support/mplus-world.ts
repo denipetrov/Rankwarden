@@ -114,6 +114,15 @@ export class MplusWorld {
   readonly unservedSeasons = new Set<string>();
 
   /**
+   * Seasons `season-cutoffs` answers 404 for. Real: nothing before
+   * `season-sl-3` has cutoffs at all.
+   */
+  readonly seasonsWithoutCutoffs = new Set<string>();
+
+  /** The p999 score a season's cutoffs start from; each region adds its own offset. */
+  cutoffBase: Record<string, number> = {};
+
+  /**
    * Adds `count` runs to a region, scored descending from `topScore`, served for
    * `season` only when one is given.
    */
@@ -238,6 +247,57 @@ export class MplusWorld {
           })),
         })),
       dungeons: [],
+    };
+  }
+
+  /**
+   * The `/mythic-plus/season-cutoffs` payload for one season and region.
+   *
+   * Reproduces the two shapes that matter. A tier the season did not award is
+   * `null` — `keystoneMyth` is, for every season before Midnight — and the
+   * payload carries far more than is stored, so the extra keys are here to be
+   * ignored.
+   */
+  cutoffs(season: string, region: string): unknown {
+    const base = (this.cutoffBase[season] ?? 3_000) + this.regions.indexOf(region) * 10;
+    const band = (score: number, quantile: number, count: number) => ({
+      quantile,
+      quantileMinValue: score,
+      quantilePopulationCount: count,
+      quantilePopulationFraction: quantile,
+      totalPopulationCount: 100_000,
+    });
+    const entry = (score: number, quantile: number, tierScore?: number) => ({
+      ...(tierScore === undefined ? {} : { score: tierScore }),
+      horde: band(score - 20, quantile, 500),
+      hordeColor: '#e85e7d',
+      alliance: band(score + 20, quantile, 520),
+      allianceColor: '#f87342',
+      all: band(score, quantile, 1_020),
+      allColor: '#f77149',
+    });
+
+    return {
+      cutoffs: {
+        updatedAt: 'Mon Jan 19 2026 22:41:01 GMT+0000 (Coordinated Universal Time)',
+        region: { name: region.toUpperCase(), slug: region, short_name: region.toUpperCase() },
+        p999: entry(base, 0.999),
+        p990: entry(base - 300, 0.99),
+        // Stored figures stop here; the rest is payload the mapper drops.
+        p900: entry(base - 600, 0.9),
+        p750: entry(base - 900, 0.75),
+        graphData: [{ x: 1, y: 2 }],
+        // Midnight's tier: null for every earlier season, as upstream.
+        keystoneMyth: null,
+        keystoneLegend: null,
+        keystoneHero: entry(2_500, 0.658, 2_500),
+        keystoneMaster: entry(2_000, 0.515, 2_000),
+        keystoneConqueror: entry(1_500, 0.32, 1_500),
+        keystoneExplorer: entry(750, 0.12, 750),
+        bracketDungeonLevels: {},
+        isRemappedSeason: true,
+        allTimed20: 5,
+      },
     };
   }
 

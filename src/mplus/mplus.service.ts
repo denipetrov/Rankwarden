@@ -11,6 +11,7 @@ import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import { MAX_RUNS_PAGE, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
+import { MplusCutoffsService } from '../mplus-season/mplus-cutoffs.service.js';
 import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import type { MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import type { MplusRunDocument } from './entities/mplus-run.entity.js';
@@ -92,6 +93,7 @@ export class MplusService {
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: RaiderIoBudget,
     private readonly representation: MplusSpecRepresentationService,
+    private readonly cutoffs: MplusCutoffsService,
   ) {
     this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
     this.concurrency = config.get('RAIDERIO_CONCURRENCY', { infer: true });
@@ -185,6 +187,9 @@ export class MplusService {
 
     const seasons = Object.fromEntries(results.map((result) => [result.region, result.season]));
     await this.recordRepresentation(Object.values(seasons));
+    await this.recordCutoffs(
+      new Map(results.map((result) => [result.region, result.season] as const)),
+    );
     const durationMs = Date.now() - startedAt.getTime();
     const requests = this.budget.spent('mplus') - requestsBefore;
     const summary: MplusSweepResult = {
@@ -363,6 +368,24 @@ export class MplusService {
     } catch (error) {
       this.logger.error(
         `Could not record Mythic+ spec representation: ${describeError(error)}`,
+        errorStack(error),
+      );
+    }
+  }
+
+  /**
+   * Re-reads the title and percentile cutoffs of the seasons this pass read:
+   * one request a region, of a ladder-wide computation this service cannot make
+   * from the top of a board (§5.10). Never fails the pass.
+   */
+  private async recordCutoffs(current: Map<RaiderIoRegion, string>): Promise<void> {
+    if (current.size === 0) return;
+
+    try {
+      await this.cutoffs.recordLive(current);
+    } catch (error) {
+      this.logger.error(
+        `Could not read Mythic+ cutoffs: ${describeError(error)}`,
         errorStack(error),
       );
     }

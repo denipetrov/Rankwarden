@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { RaiderIoModule } from '../raiderio/raiderio.module.js';
 import { MplusCatalogueRepository } from './mplus-catalogue.repository.js';
 import { MplusCatalogueService } from './mplus-catalogue.service.js';
+import { MplusCutoffsService } from './mplus-cutoffs.service.js';
 import { MplusSeasonEvents } from './mplus-season-events.service.js';
 import { MplusSeasonStateRepository } from './mplus-season-state.repository.js';
 import { MplusSeasonTransitionScheduler } from './mplus-season-transition.scheduler.js';
@@ -23,6 +24,7 @@ import { MplusSeasonService } from './mplus-season.service.js';
   providers: [
     MplusCatalogueRepository,
     MplusCatalogueService,
+    MplusCutoffsService,
     MplusSeasonStateRepository,
     MplusSeasonEvents,
     MplusSeasonService,
@@ -33,6 +35,7 @@ import { MplusSeasonService } from './mplus-season.service.js';
   exports: [
     MplusCatalogueRepository,
     MplusCatalogueService,
+    MplusCutoffsService,
     MplusSeasonEvents,
     MplusSeasonService,
     MplusSeasonStateRepository,
