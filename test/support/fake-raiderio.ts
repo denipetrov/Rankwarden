@@ -48,12 +48,19 @@ export class FakeRaiderIo {
   budget?: RaiderIoBudget;
   /** Paths set to fail, and how. Keyed by a fragment of the path. */
   readonly failures = new Map<string, { status?: number; empty?: boolean; times?: number }>();
+  /**
+   * Called as each request is served, before its payload is built. Lets a test
+   * change the world mid-job — start a higher-priority job partway through a
+   * season, say — at a point the job cannot see coming.
+   */
+  beforeServe?: (request: RecordedRaiderIoRequest) => void;
   peakInFlight = 0;
   private inFlight = 0;
 
   constructor(private readonly world: MplusWorld) {}
 
   reset(): void {
+    this.beforeServe = undefined;
     this.requests.length = 0;
     this.failures.clear();
     this.peakInFlight = 0;
@@ -74,6 +81,7 @@ export class FakeRaiderIo {
     const region = String(params.region ?? options.region ?? 'global');
     const season = params.season === undefined ? null : String(params.season);
     const page = params.page === undefined ? null : Number(params.page);
+    const expansionId = params.expansion_id === undefined ? undefined : Number(params.expansion_id);
 
     this.requests.push({ path, region, season, page, at: Date.now() });
 
@@ -89,6 +97,8 @@ export class FakeRaiderIo {
     try {
       if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 
+      this.beforeServe?.(this.requests[this.requests.length - 1]);
+
       const failure = this.nextFailure(path, page);
 
       if (failure?.empty) throw new RaiderIoEmptyResponseError(url);
@@ -100,7 +110,7 @@ export class FakeRaiderIo {
         );
       }
 
-      const payload = this.route(path, region, season, page, url);
+      const payload = this.route(path, region, season, page, url, expansionId);
 
       // Mirrors the real client, which rejects an empty body as a transport
       // failure rather than letting `''` reach the zod boundary and be misread
@@ -148,8 +158,19 @@ export class FakeRaiderIo {
     season: string | null,
     page: number | null,
     url: string,
+    expansionId?: number,
   ): unknown {
-    if (path === 'mythic-plus/static-data') return this.world.staticData();
+    if (path === 'mythic-plus/static-data') return this.world.staticData(expansionId);
+
+    if (path === 'mythic-plus/season-cutoffs') {
+      // No cutoffs for the season: a 404 naming it, as upstream answers for
+      // everything before `season-sl-3`.
+      if (season !== null && this.world.seasonsWithoutCutoffs.has(season)) {
+        throw new RaiderIoApiError(404, url, `Could not find cutoffs for season ${season}`);
+      }
+
+      return this.world.cutoffs(season ?? 'season-mn-2', region);
+    }
 
     if (path === 'mythic-plus/runs') {
       // The endpoint's real behaviour past its cap: a 400 naming the parameter,
@@ -159,8 +180,14 @@ export class FakeRaiderIo {
         throw new RaiderIoApiError(400, url, '"page" must be less than or equal to 1000');
       }
 
+      // `world` included: nothing reads the aggregate board any more, so a
+      // request for it is a regression and fails like any unknown region.
       if (!this.world.regions.includes(region)) {
         throw new RaiderIoApiError(404, url, `region ${region} is not in this world`);
+      }
+
+      if (season !== null && this.world.unservedSeasons.has(season)) {
+        throw new RaiderIoApiError(404, url, `season ${season} is not served`);
       }
 
       return this.world.runsPage(season ?? 'season-mn-2', region, page ?? 0);

@@ -13,7 +13,9 @@ export type RaiderIoRegion = (typeof RAIDERIO_REGIONS)[number];
 /**
  * The aggregate pseudo-region. It is the union of the real ones, so ingesting
  * it alongside them would fetch every run twice and leave the runs with no
- * region of their own to be filtered by.
+ * region of their own to be filtered by. Nothing reads it — the live pass and
+ * the archive both read each region's own board — and it is named only so the
+ * configuration can refuse it.
  */
 export const AGGREGATE_REGION = 'world';
 
@@ -28,8 +30,7 @@ export const RUNS_PER_PAGE = 20;
 export const MAX_RUNS_PAGE = 1000;
 
 /**
- * WoW expansion the M+ seasons are read from. Raider.io keys its static data
- * by expansion, and a season that has not rolled into the next expansion is
- * always listed under the current one.
+ * The first expansion with Mythic+ seasons. Legion introduced Mythic+, and
+ * `static-data?expansion_id=5` answers with dungeons but no seasons at all.
  */
-export const CURRENT_EXPANSION_ID = 11;
+export const FIRST_MPLUS_EXPANSION_ID = 6;

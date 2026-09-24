@@ -44,6 +44,9 @@ export class MplusScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   onApplicationBootstrap(): void {
     if (!this.enabled) {
       this.logger.log('Mythic+ ingestion disabled');
+      // Releases the Mythic+ archive, which otherwise waits for a first pass
+      // that is never coming.
+      this.coordinator.markMplusDisabled();
       return;
     }
 

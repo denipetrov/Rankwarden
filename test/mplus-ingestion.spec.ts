@@ -58,7 +58,7 @@ describe('Mythic+ ingestion', () => {
     const result = await mplus.sweep();
 
     expect(result).not.toBeNull();
-    expect(result!.season).toBe('season-mn-2');
+    expect(result!.seasons).toEqual({ us: 'season-mn-2', eu: 'season-mn-2' });
     expect(result!.regions.map((region) => region.region)).toEqual(['us', 'eu']);
 
     const runs = await db.collection(MPLUS_RUNS_COLLECTION).countDocuments();

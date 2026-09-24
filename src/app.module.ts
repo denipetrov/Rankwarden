@@ -9,7 +9,9 @@ import { SeasonModule } from './season/season.module.js';
 import { LeaderboardModule } from './leaderboard/leaderboard.module.js';
 import { ProfileModule } from './profile/profile.module.js';
 import { ArchiveModule } from './archive/archive.module.js';
+import { MplusSeasonModule } from './mplus-season/mplus-season.module.js';
 import { MplusModule } from './mplus/mplus.module.js';
+import { MplusArchiveModule } from './mplus-archive/mplus-archive.module.js';
 import { RepresentationModule } from './representation/representation.module.js';
 import { SyncModule } from './sync/sync.module.js';
 import { HealthModule } from './health/health.module.js';
@@ -27,7 +29,9 @@ import { AdminModule } from './admin/admin.module.js';
     ProfileModule,
     RepresentationModule,
     ArchiveModule,
+    MplusSeasonModule,
     MplusModule,
+    MplusArchiveModule,
     SyncModule,
     HealthModule,
     AdminModule,

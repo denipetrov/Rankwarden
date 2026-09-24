@@ -18,6 +18,14 @@ import {
 } from '../../src/mplus/entities/mplus-character.entity.js';
 import { MPLUS_RUNS_COLLECTION } from '../../src/mplus/entities/mplus-run.entity.js';
 import { MPLUS_AFFIXES_COLLECTION } from '../../src/mplus/entities/mplus-affix.entity.js';
+import {
+  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+} from '../../src/mplus-archive/entities/mplus-archive.entity.js';
+import {
+  MPLUS_DUNGEONS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+} from '../../src/mplus-season/entities/mplus-season.entity.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
@@ -49,6 +57,13 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectMplusRunsReferenceKnownAffixes(db);
   await expectNoAnonymisedMplusCharacters(db);
   await expectMplusCharacterKeysWellFormed(db);
+  // The same three rules, held against the archive: an archived board that
+  // does not add up is as wrong as a live one, and nothing re-reads it to notice.
+  await expectMplusScoreMatchesRuns(db, MPLUS_ARCHIVE_CHARACTERS_COLLECTION);
+  await expectMplusRunsReferenceKnownAffixes(db, MPLUS_ARCHIVE_RUNS_COLLECTION);
+  await expectNoAnonymisedMplusCharacters(db, MPLUS_ARCHIVE_CHARACTERS_COLLECTION);
+  await expectMplusArchiveMarkersMatchRows(db);
+  await expectMplusSeasonsReferenceKnownDungeons(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -354,8 +369,11 @@ export async function expectArchiveSelfContained(db: Db): Promise<void> {
  * dungeon, which would double-count that dungeon's score and put a character
  * above people who actually out-performed them.
  */
-export async function expectMplusScoreMatchesRuns(db: Db): Promise<void> {
-  const characters = await db.collection(MPLUS_CHARACTERS_COLLECTION).find({}).toArray();
+export async function expectMplusScoreMatchesRuns(
+  db: Db,
+  collection: string = MPLUS_CHARACTERS_COLLECTION,
+): Promise<void> {
+  const characters = await db.collection(collection).find({}).toArray();
 
   for (const character of characters) {
     const runs = (character.dungeonRuns ?? []) as { dungeon: { id: number }; score: number }[];
@@ -378,8 +396,11 @@ export async function expectMplusScoreMatchesRuns(db: Db): Promise<void> {
  * id resolves. An id with no row is a run whose affixes cannot be rendered, and
  * nothing else in the system would notice.
  */
-export async function expectMplusRunsReferenceKnownAffixes(db: Db): Promise<void> {
-  const referenced = (await db.collection(MPLUS_RUNS_COLLECTION).distinct('affixIds')) as number[];
+export async function expectMplusRunsReferenceKnownAffixes(
+  db: Db,
+  collection: string = MPLUS_RUNS_COLLECTION,
+): Promise<void> {
+  const referenced = (await db.collection(collection).distinct('affixIds')) as number[];
 
   if (referenced.length === 0) return;
 
@@ -397,9 +418,12 @@ export async function expectMplusRunsReferenceKnownAffixes(db: Db): Promise<void
  * them folded together, holding one player's runs under another's name. The run
  * roster is where they belong, and this asserts they are still there.
  */
-export async function expectNoAnonymisedMplusCharacters(db: Db): Promise<void> {
+export async function expectNoAnonymisedMplusCharacters(
+  db: Db,
+  collection: string = MPLUS_CHARACTERS_COLLECTION,
+): Promise<void> {
   const leaked = await db
-    .collection(MPLUS_CHARACTERS_COLLECTION)
+    .collection(collection)
     .find({ $or: [{ realmSlug: 'anonymous' }, { rioCharacterId: 0 }] }, { projection: { key: 1 } })
     .limit(5)
     .toArray();
@@ -504,4 +528,77 @@ export async function expectMplusRosterKeysMirrorRoster(db: Db): Promise<void> {
       expected,
     );
   }
+}
+
+/**
+ * I19 - a `complete` archive marker describes exactly the rows stored for it.
+ *
+ * The marker is what makes the archive run once, so a marker claiming more than
+ * is stored makes the shortfall permanent: the season is never read again. The
+ * rows are written before the marker for exactly this reason; this is what
+ * catches the order being reversed.
+ *
+ * Checked per region, since each region's share is settled on its own, and
+ * then for the season as a whole, so no run sits outside the regions recorded.
+ *
+ * Only `complete` markers. A `partial` or `incomplete` season still has a region
+ * to read, whose rows the marker does not claim yet.
+ */
+export async function expectMplusArchiveMarkersMatchRows(db: Db): Promise<void> {
+  const seasons = await db
+    .collection(MPLUS_SEASONS_COLLECTION)
+    .find({ 'archive.status': 'complete' })
+    .toArray();
+
+  for (const season of seasons) {
+    const archive = season.archive as {
+      runs: number;
+      characters: number;
+      regions?: Record<string, { runs: number; characters: number }>;
+    };
+
+    expect(archive.regions, `I19: ${season.slug} records its regions`).toBeDefined();
+
+    for (const [region, entry] of Object.entries(archive.regions ?? {})) {
+      const label = `I19: archive of ${season.slug} in ${region}`;
+      const filter = { season: season.slug, region };
+
+      expect(
+        await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments(filter),
+        `${label} runs`,
+      ).toBe(entry.runs);
+      expect(
+        await db.collection(MPLUS_ARCHIVE_CHARACTERS_COLLECTION).countDocuments(filter),
+        `${label} characters`,
+      ).toBe(entry.characters);
+    }
+
+    expect(
+      await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).countDocuments({ season: season.slug }),
+      `I19: ${season.slug} stores no run outside the regions it records`,
+    ).toBe(archive.runs);
+  }
+}
+
+/**
+ * I20 - every dungeon a catalogued season lists is in the dungeon catalogue.
+ *
+ * Seasons reference dungeons by id so the details are stored once; an id with
+ * no document is a season whose dungeons cannot be named.
+ */
+export async function expectMplusSeasonsReferenceKnownDungeons(db: Db): Promise<void> {
+  const referenced = (await db
+    .collection(MPLUS_SEASONS_COLLECTION)
+    .distinct('dungeonIds')) as number[];
+
+  if (referenced.length === 0) return;
+
+  const known = new Set(
+    (await db.collection(MPLUS_DUNGEONS_COLLECTION).distinct('id')) as number[],
+  );
+
+  expect(
+    referenced.filter((id) => !known.has(id)),
+    'I20: every dungeon a season lists must be catalogued',
+  ).toEqual([]);
 }

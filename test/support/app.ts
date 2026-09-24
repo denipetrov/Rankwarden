@@ -61,6 +61,19 @@ const BASE_ENV: Record<string, string> = {
   // raise this deliberately.
   RAIDERIO_MAX_PAGES: '5',
   RAIDERIO_PAGE_BATCH: '5',
+  // A spent minute is waited out in production. Here it has to be observable
+  // without a sixty-second sleep, so a spent budget stops at once.
+  RAIDERIO_BUDGET_WAIT_MS: '0',
+  MPLUS_ARCHIVE_ENABLED: 'false',
+  MPLUS_ARCHIVE_CHECK_INTERVAL_MS: '3600000',
+  MPLUS_ARCHIVE_PAGES: '3',
+  // The fake world lists its seasons under Midnight, and the catalogue walk
+  // stops at the first expansion with none, so it starts there.
+  MPLUS_CATALOGUE_FIRST_EXPANSION: '11',
+  MPLUS_SEASON_REFRESH_ENABLED: 'false',
+  MPLUS_SEASON_CHECK_INTERVAL_MS: '3600000',
+  MPLUS_TRANSITION_ENABLED: 'false',
+  MPLUS_TRANSITION_CHECK_INTERVAL_MS: '3600000',
   RAIDER_IO_API_KEY: 'test-raiderio-key',
 };
 

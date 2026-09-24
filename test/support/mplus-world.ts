@@ -9,7 +9,25 @@ export interface MplusWorldRun {
   mythicLevel: number;
   /** Region the run belongs to, which is the region it is served for. */
   region: string;
+  /**
+   * The season the run is served for. Absent means every season, which is what
+   * the live-pass files rely on; archive files set it, so one archived season's
+   * board does not leak into another's.
+   */
+  season?: string;
+  /**
+   * The run's affixes. Absent means Tyrannical and Fortified, which the
+   * live-pass files rely on; set it for a season whose affixes rotated weekly,
+   * so runs on one board carry different sets, as they do upstream.
+   */
+  affixes?: MplusWorldAffix[];
   roster: MplusWorldMember[];
+}
+
+export interface MplusWorldAffix {
+  id: number;
+  name: string;
+  slug: string;
 }
 
 export interface MplusWorldMember {
@@ -32,7 +50,13 @@ export interface MplusWorldSeason {
   isMainSeason: boolean;
   /** ISO start per region; absent regions are treated as already open. */
   starts: Record<string, string>;
+  /** ISO end per region. A running season carries Raider.io's 2030 placeholder. */
+  ends?: Record<string, string>;
+  /** Which `static-data?expansion_id` lists it. Midnight (11) when absent. */
+  expansionId?: number;
   dungeons: number;
+  /** First dungeon id this season lists, so seasons can share dungeons or not. */
+  firstDungeonId?: number;
 }
 
 /**
@@ -50,6 +74,7 @@ export class MplusWorld {
       name: 'MN Season 2',
       blizzardSeasonId: 18,
       isMainSeason: true,
+      ends: { us: '2030-01-01T00:00:00Z', eu: '2030-01-01T00:00:00Z' },
       starts: {
         us: '2026-08-18T15:00:00Z',
         eu: '2026-08-19T04:00:00Z',
@@ -64,6 +89,7 @@ export class MplusWorld {
       name: 'MN Season 1',
       blizzardSeasonId: 17,
       isMainSeason: true,
+      ends: { us: '2026-08-18T15:00:00Z', eu: '2026-08-19T04:00:00Z' },
       starts: { us: '2026-03-24T15:00:00Z' },
       dungeons: 8,
     },
@@ -73,6 +99,7 @@ export class MplusWorld {
       name: 'Break the Meta',
       blizzardSeasonId: 17,
       isMainSeason: false,
+      ends: { us: '2026-07-21T15:00:00Z' },
       starts: { us: '2026-07-14T15:00:00Z' },
       dungeons: 8,
     },
@@ -83,8 +110,23 @@ export class MplusWorld {
   /** Regions the fake will serve at all; anything else 404s. */
   regions = ['us', 'eu', 'kr', 'tw', 'cn'];
 
-  /** Adds `count` runs to a region, scored descending from `topScore`. */
-  seed(region: string, count: number, topScore = 500): this {
+  /** Seasons Raider.io answers 404 for, for the unarchivable path. */
+  readonly unservedSeasons = new Set<string>();
+
+  /**
+   * Seasons `season-cutoffs` answers 404 for. Real: nothing before
+   * `season-sl-3` has cutoffs at all.
+   */
+  readonly seasonsWithoutCutoffs = new Set<string>();
+
+  /** The p999 score a season's cutoffs start from; each region adds its own offset. */
+  cutoffBase: Record<string, number> = {};
+
+  /**
+   * Adds `count` runs to a region, scored descending from `topScore`, served for
+   * `season` only when one is given.
+   */
+  seed(region: string, count: number, topScore = 500, season?: string): this {
     const dungeons = [
       [9527, 'Temple of Sethraliss', 'temple-of-sethraliss'],
       [9526, "Kings' Rest", 'kings-rest'],
@@ -103,6 +145,7 @@ export class MplusWorld {
         score: topScore - index,
         mythicLevel: 22,
         region,
+        ...(season ? { season } : {}),
         roster: [
           {
             id: 1_000 + index,
@@ -174,28 +217,87 @@ export class MplusWorld {
     return this;
   }
 
-  /** The `/mythic-plus/static-data` payload. */
-  staticData(): unknown {
+  /**
+   * The `/mythic-plus/static-data` payload for one expansion.
+   *
+   * Per expansion, as the real endpoint is: `expansion_id=6` lists Legion and
+   * nothing else. An expansion with no seasons answers with an empty list, which
+   * is how the catalogue walk knows where to stop.
+   */
+  staticData(expansionId = 11): unknown {
     return {
-      seasons: this.seasons.map((season) => ({
-        slug: season.slug,
-        name: season.name,
-        short_name: season.slug.toUpperCase(),
-        blizzard_season_id: season.blizzardSeasonId,
-        is_main_season: season.isMainSeason,
-        seasonal_affix: null,
-        starts: season.starts,
-        ends: {},
-        dungeons: Array.from({ length: season.dungeons }, (_unused, index) => ({
-          id: 9_500 + index,
-          challenge_mode_id: 200 + index,
-          slug: `dungeon-${index}`,
-          name: `Dungeon ${index}`,
-          short_name: `D${index}`,
-          keystone_timer_seconds: 1_800,
+      seasons: this.seasons
+        .filter((season) => (season.expansionId ?? 11) === expansionId)
+        .map((season) => ({
+          slug: season.slug,
+          name: season.name,
+          short_name: season.slug.toUpperCase(),
+          blizzard_season_id: season.blizzardSeasonId,
+          is_main_season: season.isMainSeason,
+          seasonal_affix: null,
+          starts: season.starts,
+          ends: season.ends ?? {},
+          dungeons: Array.from({ length: season.dungeons }, (_unused, index) => ({
+            id: (season.firstDungeonId ?? 9_500) + index,
+            challenge_mode_id: 200 + index,
+            slug: `dungeon-${index}`,
+            name: `Dungeon ${index}`,
+            short_name: `D${index}`,
+            keystone_timer_seconds: 1_800,
+          })),
         })),
-      })),
       dungeons: [],
+    };
+  }
+
+  /**
+   * The `/mythic-plus/season-cutoffs` payload for one season and region.
+   *
+   * Reproduces the two shapes that matter. A tier the season did not award is
+   * `null` — `keystoneMyth` is, for every season before Midnight — and the
+   * payload carries far more than is stored, so the extra keys are here to be
+   * ignored.
+   */
+  cutoffs(season: string, region: string): unknown {
+    const base = (this.cutoffBase[season] ?? 3_000) + this.regions.indexOf(region) * 10;
+    const band = (score: number, quantile: number, count: number) => ({
+      quantile,
+      quantileMinValue: score,
+      quantilePopulationCount: count,
+      quantilePopulationFraction: quantile,
+      totalPopulationCount: 100_000,
+    });
+    const entry = (score: number, quantile: number, tierScore?: number) => ({
+      ...(tierScore === undefined ? {} : { score: tierScore }),
+      horde: band(score - 20, quantile, 500),
+      hordeColor: '#e85e7d',
+      alliance: band(score + 20, quantile, 520),
+      allianceColor: '#f87342',
+      all: band(score, quantile, 1_020),
+      allColor: '#f77149',
+    });
+
+    return {
+      cutoffs: {
+        updatedAt: 'Mon Jan 19 2026 22:41:01 GMT+0000 (Coordinated Universal Time)',
+        region: { name: region.toUpperCase(), slug: region, short_name: region.toUpperCase() },
+        p999: entry(base, 0.999),
+        p990: entry(base - 300, 0.99),
+        // Stored figures stop here; the rest is payload the mapper drops.
+        p900: entry(base - 600, 0.9),
+        p750: entry(base - 900, 0.75),
+        graphData: [{ x: 1, y: 2 }],
+        // Midnight's tier: null for every earlier season, as upstream.
+        keystoneMyth: null,
+        keystoneLegend: null,
+        keystoneHero: entry(2_500, 0.658, 2_500),
+        keystoneMaster: entry(2_000, 0.515, 2_000),
+        keystoneConqueror: entry(1_500, 0.32, 1_500),
+        keystoneExplorer: entry(750, 0.12, 750),
+        bracketDungeonLevels: {},
+        isRemappedSeason: true,
+        allTimed20: 5,
+      },
     };
   }
 
@@ -203,6 +305,7 @@ export class MplusWorld {
   runsPage(season: string, region: string, page: number): unknown {
     const ranked = this.runs
       .filter((run) => run.region === region)
+      .filter((run) => run.season === undefined || run.season === season)
       .sort((left, right) => right.score - left.score);
     const start = page * RUNS_PER_PAGE;
 
@@ -231,7 +334,13 @@ export class MplusWorld {
           completed_at: '2026-09-13T08:00:10.000Z',
           num_chests: 1,
           time_remaining_ms: 14_610,
-          weekly_modifiers: [
+          weekly_modifiers: run.affixes?.map((affix) => ({
+            id: affix.id,
+            icon: `icon-${affix.slug}`,
+            name: affix.name,
+            slug: affix.slug,
+            description: `${affix.name}, as described upstream.`,
+          })) ?? [
             {
               id: 9,
               icon: 'achievement_boss_archaedas',
@@ -241,7 +350,7 @@ export class MplusWorld {
             },
             { id: 10, icon: 'ability_toughness', name: 'Fortified', slug: 'fortified' },
           ],
-          num_modifiers_active: 2,
+          num_modifiers_active: run.affixes?.length ?? 2,
           faction: 'alliance',
           deleted_at: null,
           platoon: null,

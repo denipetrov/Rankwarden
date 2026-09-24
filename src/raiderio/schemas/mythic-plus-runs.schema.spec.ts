@@ -167,6 +167,61 @@ describe('mythicPlusRunsSchema', () => {
     expect(parsed.rankings[0].run.roster[1].loadout).toBeNull();
   });
 
+  /**
+   * Verbatim from `season-7.2.5` page 1, rank 37, fetched 2026-09-16. Every
+   * member of that roster carries this placeholder. Before it was handled the
+   * page failed to parse, and the season archived as incomplete forever.
+   */
+  it('reads an empty spec placeholder as no spec, rather than failing the page', () => {
+    const legion = structuredClone(page);
+    const member = legion.rankings[0].run.roster[0].character as Record<string, unknown>;
+    member.spec = { name: '', slug: '' };
+    member.race = { name: '', slug: '' };
+
+    const parsed = mythicPlusRunsSchema.parse(legion);
+    const character = parsed.rankings[0].run.roster[0].character;
+
+    expect(character.spec).toBeNull();
+    expect(character.race).toBeNull();
+  });
+
+  /**
+   * Verbatim realm from `season-df-2` page 36, rank 734, fetched 2026-09-16: the
+   * MDI tournament realm, which has no Blizzard live realm id and says so with
+   * `null` rather than by omitting the field.
+   */
+  it('accepts a tournament realm whose Blizzard realm id is null', () => {
+    const tournament = structuredClone(page);
+    (tournament.rankings[0].run.roster[0].character as Record<string, unknown>).realm = {
+      id: 2571,
+      connectedRealmId: 800,
+      wowRealmId: null,
+      wowConnectedRealmId: 4606,
+      name: 'EU Mythic Dungeons',
+      altName: null,
+      slug: 'eu-mythic-dungeons',
+      altSlug: 'eu-mythic-dungeons',
+      locale: 'en_GB',
+      isConnected: false,
+      realmType: 'tr',
+    };
+
+    const realm = mythicPlusRunsSchema.parse(tournament).rankings[0].run.roster[0].character.realm;
+
+    expect(realm.wowRealmId).toBeNull();
+    expect(realm.realmType).toBe('tr');
+  });
+
+  it('still requires a class, which a run cannot be shown without', () => {
+    const broken = structuredClone(page);
+    (broken.rankings[0].run.roster[0].character as Record<string, unknown>).class = {
+      name: '',
+      slug: '',
+    };
+
+    expect(() => mythicPlusRunsSchema.parse(broken)).toThrow();
+  });
+
   it('accepts an empty page, which is how a shallow region ends', () => {
     expect(mythicPlusRunsSchema.parse({ rankings: [] }).rankings).toEqual([]);
   });

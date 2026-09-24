@@ -308,14 +308,6 @@ export const envSchema = z.object({
     .transform(trimTrailingSlashes),
   /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
   RAIDERIO_REGIONS: raiderIoRegionCsv('us,eu,kr,tw,cn'),
-  /**
-   * Season slug to ingest, e.g. `season-mn-2`. Empty means "ask Raider.io",
-   * which is the default on purpose: pinned, the service goes on fetching a
-   * frozen ladder after a rollover while reporting every pass as a success.
-   */
-  RAIDERIO_SEASON: z.string().default(''),
-  /** How long a resolved season is reused before it is looked up again. */
-  RAIDERIO_SEASON_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   RAIDERIO_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(2),
   /** Pages fetched in parallel. At ~0.65s a page, 12 is ~18 pages a second. */
@@ -359,6 +351,24 @@ export const envSchema = z.object({
    * of a minute cannot spend the window before the budget notices.
    */
   RAIDERIO_REQUESTS_PER_SECOND: z.coerce.number().positive().default(14),
+  /**
+   * The most of each minute's usable budget the Mythic+ archive may spend.
+   *
+   * A cap, not a courtesy: the archive and the live pass draw from one
+   * per-minute window, and the archive runs in exactly the gaps before a live
+   * pass begins. Capped at half, a live pass always starts with at least half
+   * the minute and has the rest within one window.
+   */
+  RAIDERIO_ARCHIVE_SHARE: z.coerce.number().positive().max(1).default(0.5),
+  /**
+   * How long a job waits for a spent minute to free before giving up.
+   *
+   * One window by default, which is always enough once lower-priority spend
+   * has stopped. Zero restores the old behaviour of stopping on the spot, which
+   * is what the test harness uses so a spent budget is observable without a
+   * sixty-second sleep.
+   */
+  RAIDERIO_BUDGET_WAIT_MS: z.coerce.number().int().nonnegative().default(60_000),
 
   // Mythic+ ingestion.
   /**
@@ -381,6 +391,95 @@ export const envSchema = z.object({
    * and how much Mongo churn is reasonable, not for the quota.
    */
   MPLUS_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
+
+  // Mythic+ archive of finished seasons.
+  /**
+   * Off by default for the same reason as `MPLUS_ENABLED`: it needs the
+   * Raider.io key, which a deployment that predates Mythic+ does not have.
+   */
+  MPLUS_ARCHIVE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * How often the archive looks for work. Cheap once history is in: a tick is
+   * one indexed read, plus the catalogue refresh when that is due.
+   */
+  MPLUS_ARCHIVE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /**
+   * Pages of each region's board archived per season, counted from zero — the
+   * same boards the live pass reads, one per `RAIDERIO_REGIONS` entry. 100 is
+   * 2,000 runs a region, ~500 requests a season at five regions. Kept shallow:
+   * the archive is a record of the top of each region's season, not a copy.
+   */
+  MPLUS_ARCHIVE_PAGES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(MAX_RUNS_PAGE + 1)
+    .default(100),
+  /**
+   * First expansion the catalogue walks from. The walk continues upward until an
+   * expansion answers with no seasons, so a new expansion needs no change here.
+   */
+  MPLUS_CATALOGUE_FIRST_EXPANSION: z.coerce.number().int().positive().default(6),
+  /**
+   * How long the season catalogue is trusted before it is re-read.
+   *
+   * It has to be re-read at all because a season only becomes archivable when
+   * it ends, and Raider.io lists a running season with a placeholder end
+   * (`2030-01-01`) that it replaces with the real date afterwards. A catalogue
+   * read once and never again would never see a season finish.
+   */
+  MPLUS_CATALOGUE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+
+  // Mythic+ seasons: which one is current, and retiring the one it replaced.
+  /**
+   * Checks the Mythic+ season on its own schedule: the catalogue at boot and
+   * whenever its TTL is up, and which season is current in each region. Idle
+   * unless `MPLUS_ENABLED` or `MPLUS_ARCHIVE_ENABLED` is on. A live pass checks
+   * for itself too, so switching this off delays noticing a transition rather
+   * than breaking ingestion.
+   */
+  MPLUS_SEASON_REFRESH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /**
+   * How often. Hourly where the PvP check is daily, because a check here costs
+   * no request unless the catalogue is due; this is how late a season opening
+   * or ending is noticed when no pass runs first.
+   */
+  MPLUS_SEASON_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  MPLUS_TRANSITION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /** Fallback cadence; a detected rollover also ticks, once any running pass has finished. */
+  MPLUS_TRANSITION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /**
+   * Only retire a superseded season once the Mythic+ archive holds it
+   * (`complete`, or `unarchivable` when Raider.io refuses it). With the archive
+   * switched off, nothing is ever retired while this is on.
+   */
+  MPLUS_PURGE_REQUIRE_ARCHIVE: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  /**
+   * Log the plan and delete nothing.
+   *
+   * Off by default, where `SEASON_PURGE_DRY_RUN` is on. The PvP default guards
+   * a first deploy deleting every archived season at boot. Here the live pass
+   * already deleted a superseded season the moment it rolled, with no archive
+   * check at all, so there is no stored history to protect on a first deploy -
+   * and a dry-run default would leave every rolled season in place until
+   * someone remembered to flip it.
+   */
+  MPLUS_PURGE_DRY_RUN: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 
   // Runtime.
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -427,6 +526,15 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
 
   // A key-less M+ job fails every request and reports an outage it caused
   // itself. Better to refuse to boot naming the variable.
+  if (env.MPLUS_ARCHIVE_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAIDER_IO_API_KEY'],
+      message:
+        'is required when MPLUS_ARCHIVE_ENABLED is true; set it or set MPLUS_ARCHIVE_ENABLED=false',
+    });
+  }
+
   if (env.MPLUS_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {
     ctx.addIssue({
       code: 'custom',

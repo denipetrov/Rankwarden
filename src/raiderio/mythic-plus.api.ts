@@ -6,7 +6,8 @@ import {
   mythicPlusRunsSchema,
   type MythicPlusRunsPage,
 } from './schemas/mythic-plus-runs.schema.js';
-import { staticDataSchema, type StaticSeason } from './schemas/static-data.schema.js';
+import { seasonCutoffsSchema, type SeasonCutoffs } from './schemas/season-cutoffs.schema.js';
+import { staticDataSchema, type StaticData } from './schemas/static-data.schema.js';
 
 /** Typed access to the Mythic+ slice of the Raider.io API. */
 @Injectable()
@@ -37,17 +38,32 @@ export class MythicPlusApi {
   }
 
   /**
-   * The seasons and dungeons Raider.io publishes for an expansion.
+   * Title and percentile cutoffs for one season in one region.
    *
-   * This is what keeps the season slug out of the configuration. A hardcoded
-   * `season-mn-2` would go on being fetched after the season ends, filling the
-   * collections with a frozen ladder while the new season went uningested.
+   * Answers 404 for a season it has no cutoffs for — every season before
+   * `season-sl-3` — and 500 for `cn` before `season-df-4`, which is the same
+   * "nothing here" in a shape a caller has to tell apart for itself.
    */
-  async getSeasons(expansionId: number): Promise<StaticSeason[]> {
+  async getSeasonCutoffs(season: string, region: RaiderIoRegion): Promise<SeasonCutoffs> {
+    const payload = await this.http.get('mythic-plus/season-cutoffs', {
+      region,
+      searchParams: { season, region },
+    });
+
+    return seasonCutoffsSchema.parse(payload).cutoffs;
+  }
+
+  /**
+   * One expansion's seasons, each with its own dungeon list.
+   *
+   * Per expansion, not global: `expansion_id=6` answers with Legion's six
+   * seasons and nothing else, so the full history is one call per expansion.
+   */
+  async getStaticData(expansionId: number): Promise<StaticData> {
     const payload = await this.http.get('mythic-plus/static-data', {
       searchParams: { expansion_id: expansionId },
     });
 
-    return staticDataSchema.parse(payload).seasons;
+    return staticDataSchema.parse(payload);
   }
 }

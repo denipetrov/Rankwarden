@@ -10,15 +10,19 @@ import type { Env } from '../config/env.schema.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import { MAX_RUNS_PAGE, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
+import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
+import { MplusCutoffsService } from '../mplus-season/mplus-cutoffs.service.js';
+import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import type { MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import type { MplusRunDocument } from './entities/mplus-run.entity.js';
-import { MplusSeasonService, openRegions } from './mplus-season.service.js';
 import { MplusCharacterAccumulator, toAffixDocument, toRunDocument } from './mplus.mapper.js';
 import { MplusRepository } from './mplus.repository.js';
 
 /** What one region's pass achieved. */
 export interface MplusRegionResult {
   region: RaiderIoRegion;
+  /** The season ingested for the region: the one current there when the pass began. */
+  season: string;
   pagesPlanned: number;
   pagesFetched: number;
   pagesFailed: number;
@@ -40,7 +44,12 @@ export interface MplusRegionResult {
 }
 
 export interface MplusSweepResult {
-  season: string;
+  /**
+   * The season ingested per region. Usually one slug everywhere; on the day a
+   * season rolls, regions that have opened the new one and regions still on
+   * the old one appear side by side.
+   */
+  seasons: Record<string, string>;
   startedAt: string;
   durationMs: number;
   regions: MplusRegionResult[];
@@ -73,6 +82,7 @@ export class MplusService {
   private readonly pageBatch: number;
   private readonly maxPages: number;
   private readonly intervalMs: number;
+  private readonly budgetWaitMs: number;
   private running = false;
 
   constructor(
@@ -82,12 +92,15 @@ export class MplusService {
     private readonly repository: MplusRepository,
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: RaiderIoBudget,
+    private readonly representation: MplusSpecRepresentationService,
+    private readonly cutoffs: MplusCutoffsService,
   ) {
     this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
     this.concurrency = config.get('RAIDERIO_CONCURRENCY', { infer: true });
     this.pageBatch = config.get('RAIDERIO_PAGE_BATCH', { infer: true });
     this.maxPages = config.get('RAIDERIO_MAX_PAGES', { infer: true });
     this.intervalMs = config.get('MPLUS_INTERVAL_MS', { infer: true });
+    this.budgetWaitMs = config.get('RAIDERIO_BUDGET_WAIT_MS', { infer: true });
   }
 
   get isRunning(): boolean {
@@ -127,13 +140,22 @@ export class MplusService {
   }
 
   private async runSweep(startedAt: Date, requestsBefore: number): Promise<MplusSweepResult> {
-    const season = await this.seasons.current();
-    const regions = openRegions(season, this.regions, startedAt);
-    const skipped = this.regions.filter((region) => !regions.includes(region));
+    // The catalogue before any runs request: the season each region is on is
+    // read from it, and a pass that could not resolve one has nothing it could
+    // correctly fetch. Usually already fresh — the season check reads it at
+    // boot — in which case this is one indexed read.
+    await this.seasons.ensureCatalogue(startedAt);
+
+    // Observed, not just resolved, so a pass notices a season ending or rolling
+    // over even when the season check is switched off.
+    const resolution = await this.seasons.observe(startedAt);
+    const regions = this.regions.filter((region) => resolution.has(region));
+    const skipped = this.regions.filter((region) => !resolution.has(region));
 
     if (skipped.length > 0) {
       this.logger.log(
-        `Season ${season.slug} has not started in ${skipped.join(', ')}; skipping ${skipped.length} region(s)`,
+        `No catalogued Mythic+ season has opened in ${skipped.join(', ')}; ` +
+          `skipping ${skipped.length} region(s)`,
       );
     }
 
@@ -152,18 +174,26 @@ export class MplusService {
         break;
       }
 
+      const season = resolution.get(region)!;
       const result = await this.sweepRegion(season.slug, season.seasonId, region);
       results.push(result);
 
       if (result.stoppedEarly && !stoppedEarly) stoppedEarly = result.stoppedEarly;
     }
 
-    await this.purgeSupersededSeasons(season.slug);
+    // A superseded season is left where it is. `MplusSeasonTransitionService`
+    // retires it per region once the archive holds it; deleting it the moment a
+    // region rolled would discard a season before the archive had read it.
 
+    const seasons = Object.fromEntries(results.map((result) => [result.region, result.season]));
+    await this.recordRepresentation(Object.values(seasons));
+    await this.recordCutoffs(
+      new Map(results.map((result) => [result.region, result.season] as const)),
+    );
     const durationMs = Date.now() - startedAt.getTime();
     const requests = this.budget.spent('mplus') - requestsBefore;
     const summary: MplusSweepResult = {
-      season: season.slug,
+      seasons,
       startedAt: startedAt.toISOString(),
       durationMs,
       regions: results,
@@ -175,7 +205,8 @@ export class MplusService {
 
     this.budget.publishMplusOutlook(this.outlookOf(summary));
     this.logger.log(
-      `Mythic+ pass for ${season.slug} finished in ${Math.round(durationMs / 1000)}s: ` +
+      `Mythic+ pass for ${[...new Set(Object.values(seasons))].join(', ') || 'no season'} ` +
+        `finished in ${Math.round(durationMs / 1000)}s: ` +
         `${summary.runs} runs, ${summary.characters} characters across ${results.length} region(s)`,
     );
 
@@ -196,6 +227,7 @@ export class MplusService {
     const lastPage = Math.min(this.maxPages - 1, MAX_RUNS_PAGE);
     const result: MplusRegionResult = {
       region,
+      season,
       pagesPlanned: lastPage + 1,
       pagesFetched: 0,
       pagesFailed: 0,
@@ -211,9 +243,12 @@ export class MplusService {
     for (let first = 0; first <= lastPage && !exhausted; first += this.pageBatch) {
       // The budget is a per-minute ceiling, so this is checked per batch rather
       // than per pass: a pass runs for minutes and the window rolls underneath
-      // it. The limiter paces within the minute; this is what stops the pass
-      // from planning a batch the minute cannot pay for.
-      if (this.budget.allowance() <= 0) {
+      // it. A short window is waited out rather than treated as the end: the
+      // archive shares this window and may have spent in the seconds before the
+      // pass began, and stopping on that would skip the prune and report the
+      // pass degraded for a whole interval. Only a window that stays spent past
+      // `RAIDERIO_BUDGET_WAIT_MS` — something genuinely over-spending — stops it.
+      if (!(await this.budget.waitForAllowance('mplus', 1, this.budgetWaitMs))) {
         result.stoppedEarly = 'Raider.io budget spent';
         this.logger.warn(
           `Raider.io budget for the current minute is spent; stopping ${region} at page ${first}`,
@@ -318,30 +353,39 @@ export class MplusService {
   }
 
   /**
-   * Drops seasons the service is no longer ingesting.
+   * Recomputes spec representation for the seasons this pass read.
    *
-   * Unlike the PvP archive there is nothing to preserve: M+ data here is a
-   * snapshot of a live leaderboard, rebuilt in full on every pass, and a season
-   * that has rolled over would otherwise sit in the collections forever, frozen,
-   * indistinguishable from the current one to anything that forgets to filter.
+   * After a pass that stopped early too: the figures describe what is stored,
+   * and a partial pass leaves the stored board as it was plus what was read.
+   * Never fails the pass — the runs just ingested are correct either way, and
+   * the next pass recomputes.
    */
-  private async purgeSupersededSeasons(current: string): Promise<void> {
-    try {
-      const stored = await this.repository.storedSeasons();
-      const superseded = stored.filter((season) => season !== current);
+  private async recordRepresentation(seasons: string[]): Promise<void> {
+    if (seasons.length === 0) return;
 
-      for (const season of superseded) {
-        const removed = await this.repository.purgeSeason(season);
-        this.logger.warn(
-          `Retired Mythic+ season ${season}: removed ${removed.runs} run(s) and ` +
-            `${removed.characters} character(s)`,
-        );
-      }
+    try {
+      await this.representation.recordLive(seasons);
     } catch (error) {
-      // Never fails the pass: the data just ingested is correct either way, and
-      // the next pass tries again.
       this.logger.error(
-        `Could not retire superseded Mythic+ seasons: ${describeError(error)}`,
+        `Could not record Mythic+ spec representation: ${describeError(error)}`,
+        errorStack(error),
+      );
+    }
+  }
+
+  /**
+   * Re-reads the title and percentile cutoffs of the seasons this pass read:
+   * one request a region, of a ladder-wide computation this service cannot make
+   * from the top of a board (§5.10). Never fails the pass.
+   */
+  private async recordCutoffs(current: Map<RaiderIoRegion, string>): Promise<void> {
+    if (current.size === 0) return;
+
+    try {
+      await this.cutoffs.recordLive(current);
+    } catch (error) {
+      this.logger.error(
+        `Could not read Mythic+ cutoffs: ${describeError(error)}`,
         errorStack(error),
       );
     }

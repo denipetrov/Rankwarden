@@ -24,7 +24,11 @@ import type {
  * the data actually carries. About one roster entry in two hundred.
  */
 export function isAnonymised(member: {
-  character: { id: number; anonymized?: boolean; realm: { slug: string; anonymized?: boolean } };
+  character: {
+    id: number;
+    anonymized?: boolean | null;
+    realm: { slug: string; anonymized?: boolean | null };
+  };
 }): boolean {
   const { character } = member;
 
@@ -203,6 +207,7 @@ export class MplusCharacterAccumulator {
   constructor(
     private readonly season: string,
     private readonly seasonId: number | null,
+    /** The region every character is filed under: the board being read. */
     private readonly region: RaiderIoRegion,
   ) {}
 

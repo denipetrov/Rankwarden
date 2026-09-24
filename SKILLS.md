@@ -93,16 +93,35 @@ src/
     pvp.api.ts                  season index/detail, bracket index, leaderboards
     profile.api.ts              character summary + specializations
   raiderio/
-    raiderio.constants.ts       regions (cn included), page cap, expansion id
+    raiderio.constants.ts       regions (cn included), page cap, first M+ expansion
     http/                       shared got instance, key injection, typed errors
     schemas/                    zod schemas for every Raider.io payload consumed
     mythic-plus.api.ts          runs pages + season static data
+  mplus-season/
+    mplus-catalogue.service.ts  every main season + dungeon, walked across expansions
+    mplus-catalogue.mapper.ts   catalogue mapping; which season is current per region
+    mplus-catalogue.repository.ts  mplus_seasons + mplus_dungeons (+ archive markers)
+    mplus-cutoffs.service.ts    title + percentile cutoffs per season and region
+    mplus-cutoffs.mapper.ts     cutoffs payload -> what is stored
+    mplus-season.service.ts     current season per region, observed + announced
+    mplus-season.scheduler.ts   catalogue at boot, season check hourly
+    mplus-season-events.service.ts   rxjs Subject for "ended" / "rollover"
+    mplus-season-state.repository.ts mplus_season_state + mplus_season_transitions
+    mplus-season-transition.service.ts   retires a superseded season per region
+    mplus-season-transition.scheduler.ts interval + on every rollover
   mplus/
-    mplus-season.service.ts     which M+ season is current, resolved not configured
     mplus.mapper.ts             payload -> documents; the per-character score fold
     mplus.repository.ts         mplus_runs + mplus_characters + mplus_affixes
     mplus.service.ts            the pass
     mplus.scheduler.ts          interval + warm-up gate
+  mplus-representation/
+    mplus-spec-representation.mapper.ts   tallies -> per region/dungeon + all documents
+    mplus-spec-representation.service.ts  live after each pass; archive once per season
+  mplus-archive/
+    mplus-archive.mapper.ts     which seasons are still owed
+    mplus-archive.repository.ts mplus_archive_runs + mplus_archive_characters
+    mplus-archive.service.ts    archives each finished season once
+    mplus-archive.scheduler.ts  interval + two warm-up gates
   season/                       active season per region, daily refresh
   leaderboard/                  the sweep, character + rating repositories
   profile/                      background profile enrichment
@@ -118,7 +137,7 @@ scripts/migrate-to-characters.mjs
 
 ## 4. Background jobs and their priority
 
-Five jobs run on intervals. They compete for an upstream quota, for MongoDB, and in part
+Six jobs run on intervals. They compete for an upstream quota, for MongoDB, and in part
 for the same documents, so [`IngestionCoordinator`](src/common/ingestion-coordinator.service.ts)
 ranks them:
 
@@ -129,12 +148,22 @@ ranks them:
 | 3        | **Mythic+ pass**        | `MPLUS_INTERVAL_MS` (6h), after warm-up                          | sweep **and** enrichment     | Raider.io |
 | 3        | **Spec representation** | `REPRESENTATION_CHECK_INTERVAL_MS` (1h), writes once per UTC day | the sweep                    | none      |
 | 4        | **Season archive**      | `ARCHIVE_CHECK_INTERVAL_MS` (1h)                                 | sweep, enrichment **and** M+ | Blizzard  |
+| 5        | **Mythic+ archive**     | `MPLUS_ARCHIVE_CHECK_INTERVAL_MS` (1h), after both warm-ups      | **every** job above          | Raider.io |
 | —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)         | Blizzard  |
 | —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)       | none      |
+| —        | **M+ season check**     | `MPLUS_SEASON_CHECK_INTERVAL_MS` (1h) + at boot                  | nothing (catalogue only)     | Raider.io |
+| —        | **M+ season transition** | `MPLUS_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | a running M+ pass (waits)    | none      |
 
 The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
-`isLiveIngestionActive`, `isWarmedUp`, and `warmedUp$`. `duringSweep()` /
-`duringEnrichment()` / `duringMplus()` wrap the work.
+`isArchiveActive`, `isMplusArchiveActive`, `isLiveIngestionActive`,
+`isAboveMplusArchiveActive`, `isWarmedUp`, `isMplusWarmedUp`, `warmedUp$` and
+`mplusWarmedUp$`. `duringSweep()` / `duringEnrichment()` / `duringMplus()` /
+`duringArchive()` / `duringMplusArchive()` wrap the work.
+
+> **Why the PvP archive now registers itself.** Nothing above it waits on it, so it never
+> needed to. It does now purely so the Mythic+ archive — the one job below it — can yield
+> to it. Without that, the two lowest-priority jobs would share every gap the live jobs
+> leave, which is exactly what "lowest priority" rules out.
 
 > **Why M+ yields at all.** The two upstreams meter separately, so no _request_ of the M+
 > pass competes with a Blizzard job — it yields because it shares MongoDB and the process,
@@ -148,6 +177,18 @@ The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
 which fires once the first sweep _and_ first enrichment pass have both completed.
 `markEnrichmentDisabled()` releases the gate when enrichment is switched off — without it
 the archive would wait forever for a pass that never comes.
+
+**The Mythic+ archive has a second gate**, `mplusWarmedUp$`, which fires when the first live
+Mythic+ pass finishes — or at boot, from `markMplusDisabled()`, when Mythic+ is off. It is
+separate from `warmedUp$` so the PvP archive never starts waiting on a Mythic+ job it has
+nothing to do with. The scheduler subscribes to **both** and re-checks both conditions at
+every tick, because they arrive in either order.
+
+> **A gate that the boot order hides.** At a real boot the live pass subscribes to
+> `warmedUp$` before the archive does, so it is already active when the archive checks —
+> which protects the archive even with the second gate removed. The integration test passed
+> with the gate deleted. The gates are therefore pinned by a unit spec
+> (`mplus-archive.scheduler.spec.ts`) where nothing else can stand in for them.
 
 ### 4.0 The shared Blizzard quota budget
 
@@ -234,19 +275,49 @@ if 429s appear. `Retry-After` _is_ honoured, by got's own delay calculation, cap
 > **Same known gap.** In memory, per process; a restart forgets the last minute. A minute
 > is short enough that this matters even less than it does for the hour.
 
+**The archive's share.** The live pass and the Mythic+ archive spend from one per-minute
+window, so the budget has a second consumer, `mplusArchive`, capped at
+`RAIDERIO_ARCHIVE_SHARE` (half) of the usable minute. The live pass may use the whole
+window; `allowanceFor('mplusArchive')` is the lesser of the room left and the archive's
+unspent share.
+
+The cap protects the live pass, and the reason is specific. The archive runs in exactly the
+gaps _before_ a live pass begins, so without a cap it could fill the minute seconds before a
+pass started — and the live pass used to **stop** the moment its allowance read zero,
+skipping its prune and reporting degraded for a whole six-hour interval. Capped, a live pass
+always starts with at least `usable - archiveShare`.
+
+**Jobs now wait for a spent minute instead of giving up — a behaviour change to the live
+pass.** A per-minute ceiling is a rate: the window frees itself within sixty seconds.
+`waitForAllowance(consumer, needed, maxWaitMs, abandon)` polls until there is room, up to
+`RAIDERIO_BUDGET_WAIT_MS` (one window). The live pass stops only when the window stays spent
+for longer than that, which means something is genuinely over-spending. The archive passes an
+`abandon` that is true whenever a higher-priority job is running, so it lets go of the wait
+the moment the minute is most needed elsewhere. The test harness sets the wait to 0, so a
+spent budget is still observable without a sixty-second sleep.
+
 ### 4.6 Mythic+ ingestion
 
 `MplusService.sweep()` — the top Mythic+ runs of the current season, per region.
 
-1. Resolve the current season from Raider.io (`MplusSeasonService`, cached a day).
-2. Skip regions the season has not opened in yet — they stagger by up to 32 hours.
+1. Make sure the season catalogue is loaded (`ensureCatalogue`) — **before any runs
+   request**. Usually already fresh from the boot-time season check; otherwise read now.
+2. Resolve and observe the season current in **each region** (§4.6.2). A region no
+   catalogued season has opened in is skipped; on the day a season rolls, regions ingest
+   different seasons side by side.
 3. Per region, page through `mythic-plus/runs?dungeon=all` in batches of
    `RAIDERIO_PAGE_BATCH`, at `RAIDERIO_CONCURRENCY` in flight.
 4. Write each batch's runs and affixes as it arrives; fold characters across the whole
    region; write the characters at the end.
 5. Clean up in two stages — **only if the pass finished cleanly**: runs this pass did not
    refresh, then characters no surviving run lists (§5.6).
-6. Purge any season that is no longer current.
+6. Recompute spec representation for the seasons just read (§5.9) — unless the archive
+   already holds the season everywhere, when its figures are the archive's. Never fails the
+   pass.
+7. Re-read the season cutoffs of each region (§5.10): one request a region, because a live
+   season's title cutoffs move with the ladder. Never fails the pass.
+8. Nothing else. A superseded season is **not** deleted by the pass; the M+ season
+   transition retires it once the archive holds it (§4.6.2).
 
 Observed live (2026-09-14): 6 pages across us+eu in 987ms; a full pass is **1,001 requests
 per region** — `page` 0–1000 inclusive, 20 runs a page, 20,020 runs. At five regions that
@@ -277,6 +348,144 @@ Where the data ends is signalled two ways, and both are handled: a region with f
 than the page ceiling answers `200` with `rankings: []`, and `page` above 1000 answers
 `400 {"message":"\"page\" must be less than or equal to 1000"}` — the documented end of
 the data, not a failure, so `400` is deliberately absent from the retryable statuses.
+
+### 4.6.1 Mythic+ archive
+
+`MplusArchiveService.archiveBacklog()` — finished Mythic+ seasons, each archived once.
+
+1. Refresh the season and dungeon catalogue if it is empty or past `MPLUS_CATALOGUE_TTL_MS`
+   (§5.8).
+2. Pick the newest season still owed: finished in **every** region, not `unarchivable`, and
+   with at least one configured region (`RAIDERIO_REGIONS`) not `complete` (`regionsOwed`).
+   Every catalogued season is a main season, so there is nothing else to filter.
+3. For each region owed: if the season has no marker and the region's rows prove a full read,
+   adopt them; otherwise read **that region's own board** — the same query as the live pass —
+   pages `0..MPLUS_ARCHIVE_PAGES-1` (100 by default: 2,000 runs), writing runs per batch and
+   folding characters across the region.
+4. Write the marker **after** the rows. When it is `complete`, write the season's spec
+   representation from the archived runs and read its cutoffs — once each (§5.9, §5.10).
+   Then take the next season.
+5. At the end of the tick, write representation and read cutoffs for any season archived
+   everywhere that is missing them — the backstop for a crash between the marker and either.
+
+**Per region, not `world`.** Until 2026-09-21 the archive read the `world` board. It is gone,
+for two reasons. The world top 2,000 is dominated by one region — 1,212 of `season-tww-3`'s
+were `cn`, 45 `tw` — so it held only the very top of the other boards. And a region's ranks,
+scores and title cutoffs are read against that region's board, which the world board cannot
+give. Each region now contributes its own top 2,000: **~500 requests and up to 10,000 runs a
+season** at five regions, against 100 and 2,000 before.
+
+A region with no board for a season answers **`200` with no rankings**, not an error —
+Legion and BfA have none in `cn` — so it is `complete` with 0 runs. `404` still names the
+whole season as unarchivable.
+
+Observed live (2026-09-16), at the defaults, when the archive still read the `world` board: 6 expansions and 56 seasons listed, of which the
+21 main seasons and their 74 dungeons are catalogued; **all 20 finished main seasons archived** — 39,997 runs, 31,837 characters, in
+280s for the whole backlog, paced by the archive's share of the minute. 103MB of data,
+25.6MB on disk plus 12MB of indexes. A second tick made no requests at all.
+
+**"Once" is a marker, never a row count** — and it is kept **per region**, in
+`archive.regions`. A board shorter than the page limit and a fetch that died halfway both
+store fewer rows; only the marker tells them apart. A region whose marker was lost (the
+collection dropped, say) is **adopted** from its rows only when they are exactly a full
+read's worth; anything else is refetched, since adopting ambiguous rows would make a partial
+region permanent, and the refetch costs 100 requests. One season can mix both: in the test,
+the US is adopted and Europe, with a shallower board, is read again.
+
+| Outcome for a region                      | Recorded                                 | Retried                  |
+| ----------------------------------------- | ---------------------------------------- | ------------------------ |
+| every page read, or the board ended first | region `complete`                        | never                    |
+| a page failed (5xx, timeout, schema)      | region `incomplete`, season `incomplete` | that region, **in full** |
+| 404 for the season                        | season `unarchivable`                    | never                    |
+| a higher-priority job started mid-region  | regions already read kept; season `partial` | the rest, next tick   |
+
+The season's `status` is judged over the configured regions: `complete` when every one is.
+Only the regions owed are read on a retry, so one flaky region costs 100 requests, not 500.
+A region is retried **in full**, not page by page, because its character fold needs every page
+in one pass. Within one tick an `incomplete` season is set aside after failing, so it is retried
+once a tick rather than in a loop until the share is spent — the trap `failedThisTick` exists
+for in the PvP archive.
+
+A **yield records no failure**. The region interrupted is read again from its first page;
+regions finished before it are kept under a `partial` marker, so a long season is not restarted
+from scratch every time the live jobs pre-empt it. A yield before any region finished writes
+nothing at all.
+
+**Archives from the `world` board are re-read.** A marker with no `regions` came from the old
+reader and says nothing about any one region, so the season is owed again and read region by
+region. Its rows are overwritten in place rather than deleted first: every run in the world
+top 2,000 has a region rank at most its world rank, so it is inside its region's top 2,000
+too, and every character on those runs is folded again. A region added to `RAIDERIO_REGIONS`
+later is owed the same way, and read without refetching the others.
+
+**No monotonic merge.** Archived characters are written with a plain `$set`: a finished
+season cannot gain a run, and each document comes from one complete read.
+
+### 4.6.2 Mythic+ seasons and transitions
+
+The Mythic+ counterpart of §4.7 and §4.8, following the same rules. There is **no season
+setting**: `RAIDERIO_SEASON` and `CURRENT_EXPANSION_ID` are gone, and the season comes from
+the catalogue (`mplus_seasons`, §5.8), which already holds every main season with per-region
+start and end dates.
+
+**Which season is current** — `currentSeasonIn(seasons, region, now)`: the catalogued season
+that most recently **opened in that region**. Decided on start dates only — never list order,
+never end dates, since a running season carries Raider.io's `2030-01-01` placeholder end. A
+region the season lists no start for takes its earliest start; a season with no start at all
+is never current. Every catalogued season is a main season, so a side event cannot be picked.
+
+**Catalogue before runs.** `MplusSeasonScheduler` ticks at boot: `ensureCatalogue()` (read
+Raider.io if empty or past `MPLUS_CATALOGUE_TTL_MS`) then `observe()`. The live pass does the
+same two things before its first page, so the ordering does not depend on the boot tick
+winning a race. A refresh in flight is shared between callers. With the catalogue still empty
+afterwards, the pass throws rather than guess. The check is idle unless `MPLUS_ENABLED` or
+`MPLUS_ARCHIVE_ENABLED` is on — without one there is no key to read the catalogue with.
+
+**Observing** — `MplusSeasonService.observe()` compares each region with what was last seen,
+persisted in `mplus_season_state` and rehydrated in `onModuleInit`, so a rollover while the
+process was down is still a rollover (`acrossRestart: true`). It publishes on
+`MplusSeasonEvents.transitions$`:
+
+| Event      | When                                                   | Reacts           |
+| ---------- | ------------------------------------------------------ | ---------------- |
+| `ended`    | same season, its end in the region has just passed     | logs only        |
+| `rollover` | a different season is now current in the region        | transition tick  |
+
+A season replaced before an `ended` observation was made emits only `rollover`, as on the
+PvP side.
+
+**A season's life, per region:**
+
+1. **Running.** Ingested by the pass.
+2. **Ended, successor not open.** Still current; the pass keeps ingesting it with no churn
+   (the board does not empty between seasons). Archivable only once it has ended in **every**
+   region (`isFinished`, §4.6.1).
+3. **Successor open in the region.** The pass moves the region onto the new season. The old
+   season's rows stay.
+4. **Old season archived** (`complete`, or `unarchivable`). `MplusSeasonTransitionService`
+   deletes the old season **in that region only** — characters first, then runs, so I18 holds
+   at every moment — and records it in `mplus_season_transitions`.
+
+`plan()` is read-only and on `GET /health/seasons`. It abstains with an empty catalogue
+(every stored season would look like a leftover) and while a pass is running (it may still
+be writing the old season). Candidates are stored seasons in the region that are not current
+and opened before the current one; a slug the catalogue does not list is a leftover and is a
+candidate too. There is **no once-only guard**: candidates come from stored rows, so a
+retired pair only returns if rows did, and retiring it again is right.
+
+**The rollover tick waits for the pass.** A rollover is most often noticed by the pass
+itself, before its first page — so the tick it triggers would find that pass running and
+abstain until the next hourly check. `whenMplusIdle()` on the coordinator lets it wait
+instead and run the moment the pass finishes.
+
+- `MPLUS_PURGE_REQUIRE_ARCHIVE` (default on) holds back a season the archive does not
+  hold. Because the archive waits for the **last** region to end, the first region to roll
+  keeps its old board for hours longer. Harmless: every read is scoped by season. With the
+  archive switched off nothing is ever retired, which the scheduler warns about at boot.
+- `MPLUS_PURGE_DRY_RUN` defaults to **off**, unlike `SEASON_PURGE_DRY_RUN`. The PvP default
+  guards a first deploy deleting archived history at boot; here the pass used to delete a
+  superseded season on the spot with no archive check, so there is no live history to
+  protect, and an on default would leave every rolled season in place indefinitely.
 
 ### 4.1 Leaderboard sweep
 
@@ -776,10 +985,10 @@ Indexes — `mplus_runs`: `run_identity` (unique `season+region+keystoneRunId`),
 §5.7 stage 2 replaced the timestamp check with a referential one, nothing queries
 `updatedAt`, and an index nothing reads only costs write throughput.
 
-**Season rollover is a purge, not an archive.** M+ data here is a snapshot of a live
-leaderboard, rebuilt in full on every pass, so a superseded season is simply stale and is
-deleted at the end of the next pass. There is nothing to preserve and nothing gating it —
-the opposite of §4.8.
+**Season rollover is retired per region, after the archive.** A superseded season is
+not deleted by the pass. It stays until its successor has opened in the region **and** the
+Mythic+ archive holds it, then `MplusSeasonTransitionService` removes it from that region —
+the same gate as §4.8. See §4.6.2.
 
 ### 5.6 Why `mythicScore` only ever goes up
 
@@ -838,6 +1047,222 @@ not with room to spare.
 Both stages refuse to act on a region with no runs, for the reason `removeRetiredBrackets`
 refuses an empty bracket list: that state means the pass failed, not that the ladder emptied.
 
+### 5.8 Mythic+ catalogue and archive — `mplus_seasons`, `mplus_dungeons`, `mplus_archive_*`
+
+```js
+// mplus_seasons - every main season of every expansion
+{ slug: 'season-df-2', name: 'DF Season 2', shortName: 'DF2', expansionId: 9,
+  blizzardSeasonId: 10,                 // 0 for all of Legion; reference only
+  starts: { us: Date, eu: Date, … }, ends: { us: Date, eu: Date, … },
+  dungeonIds: [14032, 9391, …],         // details live in mplus_dungeons
+  catalogueUpdatedAt: Date,
+  archive: {                            // absent until the archive tries the season
+    status: 'complete',                 // | 'incomplete' | 'partial' | 'unarchivable'
+    pagesPlanned: 100,                  // per region
+    pagesFetched: 500, failedPages: [], // failed pages as 'eu:7'
+    runs: 10000, characters: 6100,      // totals over regions
+    regions: {                          // one per region read
+      us: { status: 'complete',         // | 'incomplete'
+            pagesFetched: 100, failedPages: [], runs: 2000, characters: 1200,
+            archivedAt: Date, source: 'fetched' },   // | 'adopted'
+      eu: { … }, kr: { … }, tw: { … }, cn: { … } },
+    archivedAt: Date, source: 'fetched', // 'adopted' only when every region was
+    lastError? } }
+
+// mplus_dungeons - one per dungeon, however many seasons ran it
+{ id: 7805, slug: 'black-rook-hold', name: 'Black Rook Hold', shortName: 'BRH',
+  challengeModeId: 199, keystoneTimerSeconds: 2340, iconUrl, backgroundImageUrl,
+  expansionIds: [6, 8, 9, 10], updatedAt: Date }
+
+// mplus_season_state       - per region: { region, season, name, startsAt, endsAt,
+//                            ended, observedAt } - what was last observed (§4.6.2)
+// mplus_season_transitions - { season, region, purgedAt, removed, triggeredBy, dryRun }
+
+// mplus_archive_runs       - the shape of mplus_runs (§5.5): the region's own board,
+//                            rank within the region
+// mplus_archive_characters - the shape of mplus_characters (§5.5), score over the
+//                            region's top runs only
+```
+
+**Main seasons only.** Raider.io lists 56 seasons; 35 are side events — break-the-meta weeks,
+"post" tails, Legion Timewalking and Remix. None is archived, so none is catalogued: an entry
+for one would describe a season the database holds no data for. `mainSeasonsOf` treats a
+season with no `is_main_season` flag as main, since guessing "side event" would silently drop
+a real season. Dungeons are taken from main seasons too, so every stored dungeon belongs to a
+stored season — and nothing is lost by it, because the 21 main seasons list all 74 dungeons.
+
+The walk's stopping rule is the one place side events still count. It stops at the first
+expansion that lists **nothing**, decided before filtering: decided on main seasons alone, an
+expansion listing only side events would end the walk and hide every expansion after it. A
+unit spec pins this.
+
+**Separate collections from the live ones**, as the PvP archive is (§5.4). The live
+collections are rewritten, pruned and merged every pass, and a superseded season is deleted
+from them once archived (§4.6.2). Sharing documents would put history within reach of every
+cleanup written for the live board. An integration case runs a live pass over an archive and
+asserts the archive is untouched.
+
+**The catalogue and the marker share a document, and that is the one trap here.** A refresh
+writes the catalogue fields with a field-level `$set` and never the whole document; a
+wholesale replace would erase every marker, and the next tick would silently refetch the
+entire archive. `toSeasonDocument` returns the document minus `archive` so the type makes the
+mistake harder, and an integration case refreshes the catalogue over a finished archive and
+asserts no request is made — the test that caught this when the replace was put back.
+
+**The catalogue is refreshed; the archive is not.** Seasons change after the fact in exactly
+one way that matters: a running season is listed with Raider.io's placeholder end
+`2030-01-01`, replaced by the real date once it is over. A catalogue read once would never see
+a season finish. Freshness is judged by the **oldest** `catalogueUpdatedAt`, not the newest —
+a refresh that fails at expansion 8 stamps 6 and 7 fresh, and judged by the newest stamp the
+catalogue would read as fresh while 8 onward stayed stale for a whole TTL.
+
+**Dungeon ids are stable across expansions**: Black Rook Hold is 7805 in Legion, Shadowlands,
+Dragonflight and The War Within; 31 of 74 dungeons recur. So `mplus_dungeons` holds one
+document per id, `expansionIds` grows with `$addToSet`, and seasons reference ids. Affixes
+work the same way and share `mplus_affixes` with the live pass — Legion's simply join it (30
+affixes after a full archive).
+
+**Archived `mythicScore` is narrower than the live one** (§5.5): at 100 pages it sums the
+best run per dungeon among the **region's** top 2,000 runs, where the live board reads up to
+20,020. Compare it only within a season and region, and only between characters with the same
+`dungeonsCovered` — never with a live score. It is folded per region exactly as the live score
+is, so raising `MPLUS_ARCHIVE_PAGES` to 1001 would make the two directly comparable.
+
+Indexes — `mplus_seasons`: `season_identity` (unique `slug`), `season_expansion`.
+`mplus_dungeons`: `dungeon_identity` (unique `id`). `mplus_archive_runs`:
+`archive_run_identity` (unique `season+keystoneRunId`), `archive_run_board`
+(`season+score`), `archive_run_region_board`, `archive_run_dungeon_board`,
+`archive_run_roster`. `mplus_archive_characters`: `archive_character_identity` (unique
+`season+key`), `archive_score_board`, `archive_score_region_board`,
+`archive_character_lookup`.
+
+### 5.9 Mythic+ spec representation — `mplus_spec_representation`
+
+```js
+// one per season x region x dungeon: region 'all' combines every region, and
+// dungeonId null combines every dungeon
+{ season: 'season-tww-3', seasonId: 15, region: 'eu',   // | 'us' … | 'all'
+  dungeonId: 12773,                    // | null for every dungeon together
+  dungeon: { id: 12773, name: 'Operation: Floodgate', slug: 'operation-floodgate',
+             shortName: 'FLOOD' },     // | null with dungeonId
+  source: 'archive',                   // | 'live'
+  runs: 2000,
+  slots: 10000,                        // roster slots counted, anonymised included
+  classified: 10000,                   // slots with a known spec; percent is of these
+  roles: { tank: 2000, healer: 2000, dps: 6000 },
+  specs: [                             // highest count first, ties by specId
+    { classId: 6, className: 'Death Knight', specId: 250, specName: 'Blood', role: 'tank',
+      count: 812, percent: 8.12, rolePercent: 40.6 }, … ],
+  computedAt: Date }
+```
+
+**Split by region and by dungeon, as separate documents.** For each region, and for `all`,
+there is one document over every dungeon (`dungeonId: null`) and one per dungeon the region's
+runs include — at eight dungeons and five regions, 54 documents a season. Separate documents
+rather than a nested breakdown, so the front end's filter is one read on the key index
+(`season`, `region`, `dungeonId`) and every document has the same shape. The dungeons
+partition their region: per-dungeon runs and slots add up to the all-dungeon document. A
+dungeon a region never ran gets no document.
+
+**Counted by roster slot.** Every member of every stored run counts once for their spec, so
+a player in forty runs counts forty times. That measures how often a spec is **brought** to
+the top of a board — Raider.io's own spec-usage figures — not how many players play it.
+Anonymised members count: their spec is still reported. A slot with no spec counts in
+`slots` but not `classified`.
+
+**`rolePercent` is the figure to compare specs by.** A run is always one tank, one healer and
+three damage dealers, so the most-played tank has a smaller `percent` than a mid-table damage
+spec while being the tank almost every group brings. Percentages are 0–100, two decimals.
+
+**Two writers, one rule each.** The live pass recomputes the current season after every pass
+(`source: 'live'`). The archive writes a finished season **once**, from `mplus_archive_runs`,
+when its marker becomes `complete` (`source: 'archive'`), and nothing recomputes it after.
+Between them: **once a season is archived in every configured region, the live pass leaves
+its figures alone.** A season stays current in a region until its successor opens (§4.6.2),
+so a pass can still be reading an ended season the archive has taken, and would otherwise
+overwrite the archived figures every pass until the region rolled. An `unarchivable` season
+keeps whatever the live board last showed.
+
+It describes **what was stored**: the top of each region's board to the depth read — up to
+20,020 runs a region live, 2,000 archived — not every run played. Live and archived figures
+for the same spec are therefore not like for like; compare within a source.
+
+Counted in the database: one `$unwind`/`$group` over the season's runs returns a few thousand
+(region, dungeon, spec) totals, and every other document is summed from them in the process.
+The documents for a season are replaced whole, and whatever this computation did not write —
+a region or a dungeon no longer present — is deleted by `computedAt`, so they always describe
+one computation. A region or dungeon with no runs gets no document rather than an empty one,
+which would read as "nothing was played".
+
+**Documents from before the split (2026-09-22).** They have no `dungeonId` field. The live
+season is simply rewritten by the next pass — `dungeonId: null` matches a missing field, so the
+old document is replaced rather than kept beside the new one. An archived season is written
+again **once** by the backfill, which looks for archived seasons with no per-dungeon document:
+the one time an archived season's figures are recomputed. The old unique index
+`mplus_representation_identity` (`season+region`) would reject every per-dungeon document, so
+`onModuleInit` drops it before building the new one.
+
+Indexes: `mplus_representation_key` (unique `season+region+dungeonId`, also the front end's
+filter), `mplus_representation_by_region`.
+
+### 5.10 Mythic+ season cutoffs — `mplus_seasons.cutoffs`
+
+```js
+// on the season document, one entry per region
+cutoffs: {
+  us: {
+    status: 'ok',                    // | 'missing' | 'failed' | 'unavailable'
+    updatedAt: Date,                 // Raider.io's own stamp for the figures
+    keystones: {                     // only the titles the season awarded
+      keystoneExplorer:  { score: 750,  alliance: Band, horde: Band, all: Band },
+      keystoneConqueror: { score: 1500, … },
+      keystoneMaster:    { score: 2000, … },
+      keystoneHero:      { score: 2500, … },
+      keystoneLegend:    { score: 3000, … },   // Dragonflight onwards
+      keystoneMyth:      { score: 3500, … } }, // Midnight onwards
+    quantiles: {                     // the two title percentiles
+      p999: { score: null, alliance: Band, horde: Band, all: Band },   // top 0.1%
+      p990: { … } },                                                   // top 1%
+    fetchedAt: Date, attempts: 0, lastError? } }
+
+// Band: { quantile, minScore, populationCount, populationFraction, totalPopulation }
+```
+
+Read from `mythic-plus/season-cutoffs`, **one request per season and region**. Worth a
+request rather than a calculation: Raider.io computes these over the **whole** ladder, and
+the runs stored here are only the top of each board (§4.6.1), so a cutoff derived from them
+would be wrong by construction.
+
+`minScore` is the figure a player is measured against. `all` is both factions together and
+is what a board should show unless factions are being compared; `alliance` and `horde` have
+their own cutoffs, and differ by 200+ score in some regions. `populationCount` /
+`totalPopulation` say how big the ladder behind the cutoff is — the reason a percentile
+means anything.
+
+**A tier absent means the season had no such title**, in that region. Raider.io reports it as
+`null` and it is dropped, so a reader never has to tell "not awarded" from "not read":
+`keystoneMyth` is null before Midnight, `keystoneLegend` before Dragonflight, and Taiwan's
+`season-sl-4` has no Hero, Legend or Myth cutoff at all. The payload carries far more —
+`p900`, `p750`, `p600`, `graphData`, `allTimed2..29`, faction colours — none of which is kept.
+
+**Live seasons move; finished ones do not.** The live pass re-reads the current season's
+regions on every pass (five requests, §4.6). The archive reads a finished season once per
+region as it completes it, and never again.
+
+**What "no cutoffs" looks like, and why there is an attempt cap** (checked live, 2026-09-23):
+
+| Seasons                                   | Answer                | Recorded                        |
+| ----------------------------------------- | --------------------- | ------------------------------- |
+| `season-sl-3` onward, `us`/`eu`/`kr`/`tw` | 200                   | `ok`                            |
+| `season-df-4` onward, `cn`                | 200                   | `ok`                            |
+| before `season-sl-3` (BfA, Legion, sl-1/2) | 404 "Could not find"  | `missing`, never asked again    |
+| before `season-df-4` in `cn`              | **500**, consistently | `failed`, then `unavailable`    |
+
+The 500 is why a cap exists: it is not a 404 and does not settle itself, so without one the
+archive would ask again on every tick for ever. Three attempts (`MAX_ATTEMPTS`) still absorbs
+a real outage spread over three ticks. A `missing` or `unavailable` region is skipped even
+while its season is live.
+
 ---
 
 ## 6. Blizzard API surface
@@ -892,10 +1317,12 @@ All calls go through `RaiderIoHttpService`: one shared got instance, the access 
 per request, retries on 408/429/5xx, per-second pacing and per-attempt budget accounting.
 Non-2xx becomes `RaiderIoApiError` with `statusCode`, `isNotFound` and `isBadRequest`.
 
-| Endpoint                                                  | Used by                                   |
-| --------------------------------------------------------- | ----------------------------------------- |
-| `/api/v1/mythic-plus/runs?season&region&dungeon=all&page` | the M+ pass — 1,001 pages a region        |
-| `/api/v1/mythic-plus/static-data?expansion_id`            | which season is current, and its dungeons |
+| Endpoint                                                  | Used by                                                         |
+| --------------------------------------------------------- | --------------------------------------------------------------- |
+| `/api/v1/mythic-plus/runs?season&region&dungeon=all&page` | the M+ pass — 1,001 pages a region                              |
+| `/api/v1/mythic-plus/static-data?expansion_id`            | the current season; the whole catalogue, one call per expansion |
+| `/api/v1/mythic-plus/runs?…&region=<region>` (archive)     | the archive — 100 pages a region, a finished season             |
+| `/api/v1/mythic-plus/season-cutoffs?season&region`        | title + percentile cutoffs, one per season and region (§5.10)  |
 
 **The access key travels as a query parameter**, which Raider.io requires and which means it
 lands inside every url — including the ones got bakes into its own error messages. It is
@@ -1000,19 +1427,35 @@ Two further rules this endpoint must keep:
 
 ### `GET /health/seasons`
 
-Per-region season detail plus the read-only season-transition `plan()`. Kept off the
-readiness path because it reads the database.
+Per-region season detail plus the read-only season-transition `plan()`, and under `mplus`
+the same pair for Mythic+: what was last observed per region and the M+ transition `plan()`
+(current season per region, `candidates`, `blockedByArchive`). Kept off the readiness path
+because both read the database. Liveness (`GET /health`) carries `mplusSeasons` from memory.
 
 ### `POST /admin/*` — dev-only job triggers
 
 `sweep`, `enrich`, `snapshot`, `archive`, `archive-rewards`, `mplus`, `mplus-season`,
-`season-refresh`, `season-transition`. Each drives
+`mplus-season-transition`, `mplus-archive`, `mplus-catalogue`, `season-refresh`,
+`season-transition`. Each drives
 exactly **one** cycle and returns that cycle's own result object. Every route **404s when
 `NODE_ENV=production`**.
 
 They exist because the alternative — shrinking the intervals through configuration — makes
 every job race every other one, so a runtime rehearsal stops being a controlled
 observation.
+
+`mplus-archive` runs one archive tick directly, so it runs whatever else is active — a
+rehearsal is the point — though it still yields between batches if a higher-priority job
+starts. `mplus-catalogue` re-reads the catalogue ignoring its TTL. `mplus-season` does that
+and then observes the season per region, announcing an end or rollover exactly as the
+scheduled check would. `mplus-season-transition` plans and runs the M+ transition, honouring
+its dry-run flag.
+
+Liveness also carries `jobs.archiveRunning`, `jobs.mplusArchiveRunning` and
+`jobs.mplusArchive` — the archive's last tick (seasons attempted, still pending, why it
+stopped) from memory. It is **reported, never judged**: a season still owed is history that
+has already waited years, and no state of the archive makes the service less able to serve,
+so it cannot degrade readiness.
 
 ### `POST /characters/sync`
 
@@ -1153,8 +1596,6 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAIDER_IO_API_KEY`                   | —                                   | **Required when `MPLUS_ENABLED=true`**                     |
 | `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | The test seam for the second upstream                      |
 | `RAIDERIO_REGIONS`                    | `us,eu,kr,tw,cn`                    | Includes `cn`; `world` is rejected                         |
-| `RAIDERIO_SEASON`                     | _(empty)_                           | Empty = ask Raider.io. Pin only for a rehearsal            |
-| `RAIDERIO_SEASON_TTL_MS`              | `86400000`                          | How long a resolved season is reused                       |
 | `RAIDERIO_REQUEST_TIMEOUT_MS`         | `30000`                             | Also caps `Retry-After`                                    |
 | `RAIDERIO_RETRY_LIMIT`                | `2`                                 | 408/429/5xx only — never 400                               |
 | `RAIDERIO_CONCURRENCY`                | `12`                                | Pages in flight; ~0.65s a page measured                    |
@@ -1165,6 +1606,19 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAIDERIO_REQUESTS_PER_SECOND`        | `14`                                | Token bucket; must fit inside the minute                   |
 | `MPLUS_ENABLED`                       | **`false`**                         | Opt-in — it needs a credential older deploys lack          |
 | `MPLUS_INTERVAL_MS`                   | `21600000`                          | 6h; ~5,005 requests a pass at five regions                 |
+| `RAIDERIO_ARCHIVE_SHARE`              | `0.5`                               | Most of each minute the archive may spend (§4.0.1)         |
+| `RAIDERIO_BUDGET_WAIT_MS`             | `60000`                             | Wait for a spent minute before giving up; 0 = stop at once |
+| `MPLUS_ARCHIVE_ENABLED`               | **`false`**                         | Opt-in — needs `RAIDER_IO_API_KEY`                         |
+| `MPLUS_ARCHIVE_CHECK_INTERVAL_MS`     | `3600000`                           | Cheap once history is in                                   |
+| `MPLUS_ARCHIVE_PAGES`                 | `100`                               | Pages per region per season: 2,000 runs a region           |
+| `MPLUS_CATALOGUE_FIRST_EXPANSION`     | `6`                                 | Legion; the walk continues until an empty expansion        |
+| `MPLUS_CATALOGUE_TTL_MS`              | `86400000`                          | How a new or finished season is noticed (§5.8)             |
+| `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
+| `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
+| `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
+| `MPLUS_TRANSITION_CHECK_INTERVAL_MS`  | `3600000`                           | A rollover also ticks, after any running pass              |
+| `MPLUS_PURGE_REQUIRE_ARCHIVE`         | `true`                              | Only once the M+ archive holds the season                  |
+| `MPLUS_PURGE_DRY_RUN`                 | **`false`**                         | Unlike the PvP flag — see §4.6.2                           |
 
 ---
 
@@ -1316,9 +1770,44 @@ a pass/fail flag.
 
 `season-mn-1-break-the-meta` ran for a week _inside_ season 1, with its own slug and its own
 leaderboard. Picking the newest season by start date alone would have swapped the whole
-ladder out for a week and swapped it back. `pickCurrent` filters on `is_main_season !== false`
-first, then takes the newest _already-started_ one — "started somewhere", not "started
-everywhere", because regions stagger by up to 32 hours exactly as PvP seasons do (§4.8).
+ladder out for a week and swapped it back. Side events never reach the catalogue
+(`mainSeasonsOf`), so `currentSeasonIn` only ever chooses among main seasons — the newest
+one already opened **in that region**, because regions stagger by up to 32 hours exactly as
+PvP seasons do (§4.8).
+
+### 9.13 `static-data` is per expansion
+
+`static-data?expansion_id=6` answers with **Legion's six seasons and nothing else**. The full
+history is one call per expansion: 6 (Legion) to 11 (Midnight) today, with 5 answering
+dungeons but no seasons and 12 answering nothing. The catalogue therefore walks upward from
+`MPLUS_CATALOGUE_FIRST_EXPANSION` and stops at the first expansion with no seasons, so a new
+expansion needs no change. A **failed** expansion also stops the walk rather than being
+skipped: skipped, a transient failure on expansion 8 would look identical to 8 having ended
+the list, and 9 onward would silently go unrefreshed.
+
+### 9.14 Old payloads carry placeholders the current ones do not
+
+Two shapes found only by archiving the **whole** history against the real API, each of which
+failed its page and would have left a season `incomplete` forever. Sampling four pages of
+three seasons per era had passed cleanly — which is why the rehearsal read everything.
+
+| Field                     | Observed in                            | Shape                                            | Read as |
+| ------------------------- | -------------------------------------- | ------------------------------------------------ | ------- |
+| `character.spec` / `race` | `season-7.2.5` (1 run in 20 on a page) | `{ "name": "", "slug": "" }` — no id, empty name | `null`  |
+| `realm.wowRealmId`        | `season-df-2`, `eu-mythic-dungeons`    | `null`, on a `realmType: "tr"` tournament realm  | `null`  |
+
+The second is the §9.5 trap again: the field was `.optional()`, which accepts _absent_ (the
+anonymised realm) and rejects `null` (the tournament realm). Every non-identity realm field
+is now `.nullish()`. Tournament-realm characters are real — the MDI is played there — so they
+are stored with `realmId: null` rather than skipped; 26 of them in a full archive.
+`character.class` is deliberately still required: a run cannot be displayed without it, and a
+class placeholder is worth failing loudly on.
+
+### 9.15 Rosters are not always five
+
+Most are, but two of thirteen sampled seasons had a 399-member page, and Raider.io publishes a
+`season-tww-3-legion-remix-1-player` board. Nothing in the schema or the fold assumes five; do
+not introduce anything that does.
 
 ---
 
@@ -1360,7 +1849,7 @@ Everything lives in `test/support/`:
 | `mplus-world.ts`   | Mutable model of Raider.io: seasons, runs, rosters.                      |
 | `fake-raiderio.ts` | Replaces `RaiderIoHttpService`, serving the M+ world as raw JSON.        |
 | `app.ts`           | `bootTestApp` — real `AppModule`, real Mongo, both fakes.                |
-| `invariants.ts`    | `expectInvariants` and the individual I1–I16 checks.                     |
+| `invariants.ts`    | `expectInvariants` and the individual I1–I20 checks.                     |
 | `database.ts`      | Test database naming and the guard below.                                |
 | `http.ts`          | `fetch` against a real listener; no supertest dependency.                |
 | `seams.ts`         | Every scheduler whose bootstrap work can be awaited.                     |
@@ -1386,7 +1875,52 @@ Four M+ files, split by the one-configuration-per-file rule: `mplus-ingestion.sp
 (the pass, the score fold, both cleanup stages, monotonicity, idempotence),
 `mplus-failures.spec.ts` (budget exhaustion, failed pages, empty bodies, the prune guard and
 the cleanup's own guard), `mplus-coordination.spec.ts` (job priority, readiness, key
-redaction, season rollover) and `mplus-sync.spec.ts` (the endpoint).
+redaction, moving onto a new season) and `mplus-sync.spec.ts` (the endpoint).
+
+`mplus-season-transition.spec.ts` tells one season's life in order, with the season check
+and the transition switched on: the catalogue read at boot with no runs requested; a pass
+reading a missing catalogue before its first runs request; a season ending in one region and
+staying live without churn, unarchived; the next season opening in the US only, the US
+rolling alone and its old board held by the archive interlock; the archive taking the old
+season and only the US being retired; Europe opening it and being retired by the rollover
+event with nothing calling the transition; and a rollover during downtime recognised at the
+next boot (`acrossRestart`). Dates are relative to the real clock. The rollover-during-a-pass
+wait is pinned by `mplus-season-transition.scheduler.spec.ts`, since the story never meets it
+with an archived season to retire.
+
+Two more for the archive. `mplus-archive.spec.ts` drives it by hand: the catalogue walk,
+main-season selection, per-region depth and ranks, never asking for `world`, a region with no
+board, fetch-once, markers surviving a catalogue refresh, per-region adoption and its refusal
+of ambiguous rows, `incomplete` retrying only the failed region, `unarchivable`, yielding to
+each job above it before, **during** and **between** regions (keeping the regions read), a
+`world`-era marker re-read per region, and a live pass running beside the archive.
+`mplus-cutoffs.spec.ts` covers §5.10: the live season read per region and re-read each pass,
+the tiers and percentiles stored, a tier the season did not award left out, a finished season
+read once as it is archived and never again, a region left outstanding picked up by the
+backfill, a 404 recorded as `missing` and never asked again, and repeated failures giving up
+after three attempts. `MplusWorld.cutoffs` serves the payload, with `seasonsWithoutCutoffs`
+for the 404 and `cutoffBase` so each season and region has its own figures.
+
+`mplus-spec-representation.spec.ts` covers §5.9: live documents per region and for all,
+per-dungeon documents that add up to their region, slot counts, shares adding to 100 overall
+and per role, a later pass recomputing, the archive writing a completed season once and never
+again, the backfill, a pre-split season gaining its dungeons, the old index being dropped, and
+the live pass leaving an archived season alone. `mplus-archive-scheduler.spec.ts` switches the archive and the live pass on and
+proves the real boot order: nothing at boot, then the live pass, then the archive — every
+live request before every archive one.
+
+`MplusWorld` grew for it: seasons carry `expansionId`, `ends` and `firstDungeonId`; runs carry
+an optional `season` so one archived board does not leak into another (absent means every
+season, which the live-pass files rely on); runs carry optional `affixes`, so an old
+season's board can rotate weekly sets the way `season-sl-4`'s does (absent means Tyrannical
+and Fortified); `unservedSeasons` answers 404; `region=world` answers 404, so a regression to
+the aggregate board fails loudly. `FakeRaiderIo.beforeServe` runs as each request is served, which is how a
+test starts a higher-priority job partway through a season at a moment the archive cannot
+see coming.
+
+I12–I14 now take a collection and run against the archive too. I19 asserts a `complete`
+marker describes exactly the rows stored for it, region by region and in total; I20 that every dungeon a season lists is
+catalogued. All five were also checked against the real, full archive during the rehearsal.
 
 ### 10.3 Two rules the harness enforces
 
@@ -1459,6 +1993,17 @@ the budget; the scheduler added to `test/support/seams.ts`; and a slot in
 `quotaConsumerFor` too: a new `RunKind` falls into Blizzard's never-throttled `other`
 bucket by default, which is only correct if the job makes no Blizzard requests.
 
+**Adding a job that shares an upstream budget with another.** The Mythic+ archive is the
+worked example. Give it its own consumer and a **capped share** (`allowanceFor`), so it cannot
+fill a window a higher-priority job is about to need; have both **wait** for a spent window
+(`waitForAllowance`) rather than stop, bounded by one window; and give the lower one an
+`abandon` that releases the wait the moment anything above it starts.
+
+**Validating a schema against history.** Read everything the job will read, not a sample.
+Both placeholders in §9.14 were invisible at four pages per season and surfaced only in a
+full read; the full archive is ~2,000 requests and five minutes. Drop the rehearsal database
+afterwards.
+
 ---
 
 ## 12. Known limitations
@@ -1512,3 +2057,27 @@ bucket by default, which is only correct if the job makes no Blizzard requests.
   deletes them (§5.7), so a player who drops off the board and returns later starts from
   what the board then shows rather than from what they had. Keeping them would mean an
   ever-growing collection of players no board ranks.
+- **The Mythic+ archive is shallow by design.** 100 pages is each region's top 2,000 runs,
+  so archived `mythicScore` covers fewer dungeons per character than the live one and is
+  comparable only within a season and region (§5.8). Title cutoffs read from it are exact
+  only while the cutoff sits inside that window — the top of each region. Deepening it later
+  means raising `MPLUS_ARCHIVE_PAGES` and clearing the `archive` markers so the seasons are
+  read again.
+- **Side-event seasons are neither catalogued nor archived.** Adding them later means
+  storing them in the catalogue again (`mainSeasonsOf` in `MplusCatalogueService.refresh`)
+  and archiving them — 35 seasons, about 3,500 more requests.
+- **A new Mythic+ season is noticed up to a catalogue TTL late** if Raider.io lists it only
+  after it has opened. Normally it is listed days ahead and the switch happens within the
+  hour of opening (the season check) or at the next pass. `POST /admin/mplus-season` forces it.
+- **An undated season is never current.** A catalogued season with no parseable start in any
+  region cannot be placed against the others, so it is skipped rather than guessed at. Not
+  observed in the real catalogue.
+- **The live board keeps only the archive's copy of a retired season.** The archive is 100
+  pages a region; the live board was up to 1,001. Retiring a season trades that
+  depth for storage, by design — disable `MPLUS_TRANSITION_ENABLED` to keep it.
+- **An archived season is never re-read.** If Raider.io corrects a finished season's board
+  after it was archived, the archive keeps the version it read. Clear the season's `archive`
+  field to fetch it again.
+- **A catalogue season Raider.io stops listing keeps its old stamp**, and freshness is judged
+  by the oldest stamp (§5.8), so the catalogue would then be refreshed on every tick — seven
+  requests an hour. Not observed; delete the stale season document if it happens.

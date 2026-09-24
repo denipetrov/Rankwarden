@@ -12,29 +12,76 @@ const namedRefSchema = z.object({
 });
 
 /**
+ * A reference Raider.io sometimes leaves as an empty placeholder, read as null.
+ *
+ * Found by archiving Legion: some `season-7.2.5` runs carry
+ * `spec: { "name": "", "slug": "" }` — no id, empty name — for every member of
+ * the roster, which is Raider.io saying the spec was never recorded (one run in
+ * twenty on the page observed). A schema requiring the id failed the whole page,
+ * so the season archived as `incomplete` and would have been retried forever.
+ * The placeholder means "unknown", and null is how the rest of the service
+ * already spells that.
+ *
+ * `race` gets the same treatment because it has the same shape and the same
+ * provenance. `class` does not: it is what a run is displayed by, and a class
+ * placeholder is worth failing loudly on rather than storing as nothing.
+ */
+const specSchema = z
+  .object({ id: z.number().int().optional(), name: z.string(), slug: z.string().optional() })
+  .nullish()
+  .transform((spec) =>
+    spec && spec.id !== undefined ? { id: spec.id, name: spec.name, slug: spec.slug } : null,
+  );
+
+const raceSchema = z
+  .object({
+    id: z.number().int().optional(),
+    name: z.string(),
+    slug: z.string().optional(),
+    faction: z.string().optional(),
+  })
+  .nullish()
+  .transform((race) =>
+    race && race.id !== undefined
+      ? { id: race.id, name: race.name, slug: race.slug, faction: race.faction }
+      : null,
+  );
+
+/**
  * A realm as Raider.io reports it.
  *
  * `wowRealmId` is Blizzard's realm id — verified against the Blizzard profile
  * API for four realms (stormrage 60, area-52 1566, zuljin 61, illidan 57) — and
  * is the only field here that means anything outside Raider.io. It is
- * **optional** because anonymised characters carry a placeholder realm that
- * omits it entirely, along with `altName`, `locale` and `realmType`. A schema
- * requiring it fails the whole page, and about one roster entry in two hundred
- * is anonymised, so every page would fail.
+ * **nullish**, for two separate reasons, because both shapes occur:
+ *
+ * - **absent**, on the placeholder realm of an anonymised character, which omits
+ *   it along with `altName`, `locale` and `realmType`. About one roster entry in
+ *   two hundred is anonymised, so a schema requiring it fails nearly every page.
+ * - **`null`**, on tournament realms. `season-df-2` rosters on
+ *   `eu-mythic-dungeons` ("EU Mythic Dungeons", `realmType: "tr"`, the MDI
+ *   realm) carry `wowRealmId: null`, because that realm is not a Blizzard live
+ *   realm and has no live id. The characters on it are real.
+ *
+ * `.optional()` accepts the first and rejects the second — the trap SKILLS §9.5
+ * records for Blizzard's `season_name` — and one tournament run failed its
+ * whole page, leaving the season archived as incomplete forever. Everything
+ * here but the identity fields is nullish for the same reason.
  */
 const realmSchema = z.object({
   id: z.number().int(),
   name: z.string(),
   slug: z.string(),
-  wowRealmId: z.number().int().optional(),
-  wowConnectedRealmId: z.number().int().optional(),
-  connectedRealmId: z.number().int().optional(),
+  wowRealmId: z.number().int().nullish(),
+  wowConnectedRealmId: z.number().int().nullish(),
+  connectedRealmId: z.number().int().nullish(),
   altName: z.string().nullish(),
   altSlug: z.string().nullish(),
-  locale: z.string().optional(),
-  isConnected: z.boolean().optional(),
-  realmType: z.string().optional(),
-  anonymized: z.boolean().optional(),
+  locale: z.string().nullish(),
+  isConnected: z.boolean().nullish(),
+  /** `live` for an ordinary realm, `tr` for a tournament realm. */
+  realmType: z.string().nullish(),
+  anonymized: z.boolean().nullish(),
 });
 
 /**
@@ -52,8 +99,8 @@ const rosterCharacterSchema = z.object({
   persona_id: z.number().int().optional(),
   name: z.string(),
   class: namedRefSchema,
-  race: namedRefSchema.extend({ faction: z.string().optional() }).nullish(),
-  spec: namedRefSchema.nullish(),
+  race: raceSchema,
+  spec: specSchema,
   faction: z.string().nullish(),
   level: z.number().int().nullish(),
   path: z.string().optional(),

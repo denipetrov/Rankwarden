@@ -109,7 +109,10 @@ describe('Mythic+ failure modes', () => {
   });
 
   it('records the outage on Raider.io health without failing the pass', async () => {
-    app.raiderIo.failWith('mythic-plus/runs', { status: 503 });
+    // Every Mythic+ path, not just the runs: a pass also reads the season
+    // cutoffs (§5.10), and one endpoint answering while another is down is a
+    // Raider.io that is up — health would be right to say so.
+    app.raiderIo.failWith('mythic-plus/', { status: 503 });
 
     const { DependencyHealth } = await import('../src/common/health/dependency-health.service.js');
     const health = app.app.get(DependencyHealth);
