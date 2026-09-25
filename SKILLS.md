@@ -1813,6 +1813,10 @@ not introduce anything that does.
 
 ## 10. Testing
 
+> **Mythic+ specifically:** [`MPLUS-TESTING.md`](MPLUS-TESTING.md) maps every Mythic+ part to
+> the rule it promises, the spec that pins it, and what is still unpinned. It is the file to
+> hand to anyone writing a Mythic+ test plan; this section stays the general reference.
+
 Two Vitest projects, because the layers have different prerequisites.
 
 | Command            | Project       | Covers                                                      | Needs   |

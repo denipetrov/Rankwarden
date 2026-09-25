@@ -1,5 +1,11 @@
 # Onboarding brief — Mythic+ ingestion (Raider.io)
 
+> **Historical.** This is the brief the Mythic+ work started from, kept for the reasoning
+> behind it. Its open questions (§8) are settled, and the file layout it proposes predates
+> `src/mplus-season/`, `src/mplus-archive/` and `src/mplus-representation/`. For what the
+> code does now read [`SKILLS.md`](SKILLS.md) §4.6–§4.6.2 and §5.5–§5.10; for testing it,
+> [`MPLUS-TESTING.md`](MPLUS-TESTING.md).
+
 You are adding Mythic+ data to **Rankwarden**, a NestJS (ESM, TypeScript) service that
 ingests World of Warcraft PvP leaderboards from the Blizzard Game Data API into MongoDB.
 Your work adds a **second upstream**: top M+ runs from the **Raider.io API**, stored
