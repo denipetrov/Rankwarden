@@ -30,7 +30,7 @@ import {
   type CatalogueRefresh,
 } from '../mplus-season/mplus-catalogue.service.js';
 import type { MplusArchiveRunDocument } from './entities/mplus-archive.entity.js';
-import { pendingSeasons, regionsOwed } from './mplus-archive.mapper.js';
+import { isArchivedEverywhere, pendingSeasons, regionsOwed } from './mplus-archive.mapper.js';
 import { MplusArchiveRepository } from './mplus-archive.repository.js';
 
 /** What one season's archive attempt came to. */
@@ -264,8 +264,35 @@ export class MplusArchiveService {
 
       const outcome = await this.fetchRegion(season, region);
 
-      if (outcome.kind === 'unarchivable')
+      // A 404 names the season only while nothing of it has been read. Once a
+      // region is held — this tick or an earlier one — Raider.io evidently
+      // serves the season, so the 404 is a failed read of this region: it is
+      // left incomplete and retried, and what is held stays owned.
+      const holdsAnything = progressed || Object.keys(season.archive?.regions ?? {}).length > 0;
+
+      if (outcome.kind === 'unarchivable' && !holdsAnything) {
         return this.markUnarchivable(season, result, outcome.error);
+      }
+
+      if (outcome.kind === 'unarchivable') {
+        this.logger.warn(
+          `Mythic+ archive of ${season.slug} in ${region} answered 404 after other regions ` +
+            `were read (${describeError(outcome.error)}); keeping them and retrying ${region}`,
+        );
+        held[region] = {
+          status: 'incomplete',
+          pagesFetched: 0,
+          failedPages: [0],
+          runs: 0,
+          characters: 0,
+          archivedAt: new Date(),
+          source: 'fetched',
+        };
+        fetched = true;
+        progressed = true;
+        result.failedPages.push(`${region}:0`);
+        continue;
+      }
 
       if (outcome.kind === 'yielded') {
         this.logger.log(
@@ -299,12 +326,12 @@ export class MplusArchiveService {
     // the figures are judged "archived" by, and a crash between the two is
     // caught by the backfill at the end of the tick.
     if (marker.status === 'complete') {
-      await this.recordRepresentation(() =>
+      await this.recordFigures('spec representation', () =>
         this.representation.recordArchived({ ...season, archive: marker }),
       );
       // The season's own cutoffs, once per region: Raider.io's computation over
       // the whole ladder, which the archived top of each board cannot give.
-      await this.recordRepresentation(() => this.cutoffs.recordSeason(season));
+      await this.recordFigures('cutoffs', () => this.cutoffs.recordSeason(season));
     }
 
     result.outcome =
@@ -416,10 +443,14 @@ export class MplusArchiveService {
         }
       });
 
-      // A 404 names the season, not the page: Raider.io will never serve it.
-      // A region with no board for the season answers 200 with no rankings
-      // instead, so this never mistakes a quiet region for a dead season.
-      if (notFound) return { kind: 'unarchivable', error: notFound };
+      // A 404 on a region's first batch, with nothing of it read, names the
+      // season: Raider.io will never serve it (whether anything else is held
+      // is the caller's to judge). A region with no board answers 200 with no
+      // rankings instead. A 404 after pages were read is a failed page, and is
+      // recorded as one below.
+      if (notFound && first === 0 && fetched.every(({ data }) => !data)) {
+        return { kind: 'unarchivable', error: notFound };
+      }
 
       const runs: MplusArchiveRunDocument[] = [];
       const affixes = new Map<number, MplusAffixDocument>();
@@ -471,7 +502,7 @@ export class MplusArchiveService {
 
   /** Figures for seasons archived without them. Never fails the tick. */
   private async backfillRepresentation(): Promise<void> {
-    await this.recordRepresentation(async () => {
+    await this.recordFigures('spec representation', async () => {
       const filled = await this.representation.backfillArchived();
 
       if (filled.length > 0) {
@@ -479,9 +510,9 @@ export class MplusArchiveService {
       }
     });
 
-    await this.recordRepresentation(async () => {
-      const seasons = (await this.seasons.allSeasons()).filter(
-        (season) => season.archive?.status === 'complete',
+    await this.recordFigures('cutoffs', async () => {
+      const seasons = (await this.seasons.allSeasons()).filter((season) =>
+        isArchivedEverywhere(season, this.regions),
       );
       const filled = await this.cutoffs.backfill(seasons);
 
@@ -491,12 +522,13 @@ export class MplusArchiveService {
     });
   }
 
-  private async recordRepresentation(work: () => Promise<unknown>): Promise<void> {
+  /** Records figures a season is archived with. Never fails the tick. */
+  private async recordFigures(what: string, work: () => Promise<unknown>): Promise<void> {
     try {
       await work();
     } catch (error) {
       this.logger.error(
-        `Could not record Mythic+ spec representation: ${describeError(error)}`,
+        `Could not record Mythic+ ${what}: ${describeError(error)}`,
         errorStack(error),
       );
     }

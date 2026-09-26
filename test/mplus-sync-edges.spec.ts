@@ -22,6 +22,8 @@ const SEASON = 'season-mn-2';
 /** One name, two encodings: precomposed ë, and e followed by a combining diaeresis. */
 const NFC_NAME = 'Zeph'.replace('e', 'ë').normalize('NFC');
 const NFD_NAME = NFC_NAME.normalize('NFD');
+/** A second name, which Raider.io is made to serve decomposed. */
+const SERVED_NFD = 'Noel'.replace('e', '\u00eb').normalize('NFD');
 
 /** A run payload the sync endpoint accepts, shaped as a stored `dungeonRuns` entry. */
 function run(dungeonId: number, score: number, keystoneRunId = dungeonId * 100) {
@@ -70,6 +72,15 @@ describe('POST /mplus/characters/sync — edge inputs', () => {
   beforeAll(async () => {
     world.seed('us', 40, 500);
     // Stored in NFC, as Raider.io serves names.
+    // And one served decomposed, which the fold must key composed.
+    world.addRun({
+      region: 'us',
+      score: 499.4,
+      members: [
+        member(7_201, SERVED_NFD),
+        ...[1, 2, 3, 4].map((n) => member(7_300 + n, `Band${n}`)),
+      ],
+    });
     world.addRun({
       region: 'us',
       score: 499.5,
@@ -103,19 +114,18 @@ describe('POST /mplus/characters/sync — edge inputs', () => {
     await app?.close();
   });
 
-  it('M9.1 [decide] a realm slug in another case is not found today', async () => {
+  it('M9.1 a realm slug in another case finds the same character', async () => {
     expect(await character('us/area-52/healer1')).not.toBeNull();
 
     const exact = await sync({ realmSlug: 'area-52', characterName: 'Healer1' });
     const cased = await sync({ realmSlug: 'Area-52', characterName: 'Healer1' });
 
     expect(exact.status).toBe(200);
-    // The key is built with the realm as given, so this reads as "not tracked".
-    // Decide: normalise it, or refuse it with a 400 that says why.
-    expect(cased.status).toBe(404);
+    expect(cased.status).toBe(200);
+    expect(cased.body.key).toBe('us/area-52/healer1');
   });
 
-  it('M9.2 [decide] a name in decomposed Unicode is not found today', async () => {
+  it('M9.2 a name in decomposed Unicode finds the same character, and is stored composed', async () => {
     expect(await character(`us/stormrage/${NFC_NAME.toLowerCase()}`)).not.toBeNull();
 
     expect(NFD_NAME, 'two encodings of one name').not.toBe(NFC_NAME);
@@ -123,28 +133,44 @@ describe('POST /mplus/characters/sync — edge inputs', () => {
     const decomposed = await sync({ realmSlug: 'stormrage', characterName: NFD_NAME });
 
     expect(composed.status).toBe(200);
-    // Keys are lowercased, not normalised. Decide on NFC at every key-building
-    // site at once — the fold, `rosterKeys` and here — or the others become
-    // unreachable.
-    expect(decomposed.status).toBe(404);
+    expect(decomposed.status).toBe(200);
+    expect(decomposed.body.key).toBe(composed.body.key);
+    const stored = (await character(`us/stormrage/${NFC_NAME.toLowerCase()}`))!;
+    expect(stored.characterName, 'the push did not rewrite the name decomposed').toBe(NFC_NAME);
+
+    // Served decomposed, found by the composed spelling a search API sends.
+    const served = await sync({
+      realmSlug: 'stormrage',
+      characterName: SERVED_NFD.normalize('NFC'),
+    });
+    expect(served.status).toBe(200);
+    expect(served.body.key).toBe(`us/stormrage/${SERVED_NFD.normalize('NFC').toLowerCase()}`);
+    await expectInvariants(db);
   });
 
-  it('M9.3 [decide] a dungeon the season does not list is accepted today, past the season count', async () => {
+  it('M9.3 a dungeon the season does not list is refused, naming it', async () => {
     const season = await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: SEASON });
-    const listed = new Set(season!.dungeonIds as number[]);
-    const unlisted = Array.from({ length: listed.size + 1 }, (_unused, index) => 50_000 + index);
-    expect(unlisted.some((id) => listed.has(id))).toBe(false);
+    const listed = season!.dungeonIds as number[];
+    const before = (await character('us/zuljin/alsoregular'))!;
 
     const response = await sync({
       realmSlug: 'zuljin',
       characterName: 'Alsoregular',
-      dungeonRuns: unlisted.map((id) => run(id, 100)),
+      dungeonRuns: [run(listed[3], 100), run(50_000, 100), run(50_001, 100)],
     });
 
-    // Decide: refuse it with 400, or accept it and document that coverage can
-    // exceed the season's own list.
-    expect(response.status).toBe(200);
-    expect(response.body.dungeonsCovered).toBeGreaterThan(listed.size);
+    expect(response.status).toBe(400);
+    expect(response.body.message).toMatch(/does not list dungeon\(s\) 50000, 50001/);
+    // Refused whole: not even the listed dungeon was taken.
+    expect((await character('us/zuljin/alsoregular'))!.dungeonRuns).toEqual(before.dungeonRuns);
+
+    const listedOnly = await sync({
+      realmSlug: 'zuljin',
+      characterName: 'Alsoregular',
+      dungeonRuns: [run(listed[3], 100)],
+    });
+    expect(listedOnly.status).toBe(200);
+    expect(listedOnly.body.dungeonsCovered).toBeLessThanOrEqual(listed.length);
     await expectInvariants(db);
   });
 

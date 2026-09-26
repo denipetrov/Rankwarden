@@ -49,6 +49,8 @@ describe('Mythic+ budget wait', () => {
       ...(await db.collection(MPLUS_RUNS_COLLECTION).findOne({ region: 'us' })),
       keystoneRunId: 1,
       fetchedAt: new Date(0),
+      // Missed by one clean pass already, so the next one prunes it.
+      missedSince: new Date(0),
     };
     delete run._id;
     await db.collection(MPLUS_RUNS_COLLECTION).insertOne(run);

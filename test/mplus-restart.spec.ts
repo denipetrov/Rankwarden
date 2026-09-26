@@ -102,20 +102,29 @@ describe('Mythic+ across a restart', () => {
     ).toEqual(before);
   });
 
-  it('M11.3 the Raider.io budget forgets the minute on restart (known gap, §4.0.1)', async () => {
+  it('M11.3 the Raider.io budget remembers the minute across a restart', async () => {
     const spent = app.app.get(RaiderIoBudget);
     spent.record('other', spent.usable);
     expect(spent.allowance()).toBe(0);
 
     await restart();
 
-    // A fresh window: the minute spent before the restart is not counted, so
-    // the first pass after boot is not throttled by it.
+    // Saved on the way down and restored on the way up: the minute just spent
+    // still counts, so a restart does not hand the next pass a second one.
+    expect(app.app.get(RaiderIoBudget).allowance()).toBe(0);
+    expect((await pass()).stoppedEarly).toBe('Raider.io budget spent');
+
+    // And it ages out on schedule, not on the clock of the new process. Left
+    // aged out, so the shutdown flush saves an empty minute for what follows.
+    const budget = app.app.get(RaiderIoBudget);
+    budget.now = () => Date.now() + 61_000;
+    expect(budget.allowance()).toBe(budget.usable);
+    budget.record('other', 0);
+    await restart();
     expect(app.app.get(RaiderIoBudget).allowance()).toBe(app.app.get(RaiderIoBudget).usable);
-    expect((await pass()).stoppedEarly).toBeNull();
   });
 
-  it('M11.4 cutoff attempts survive a restart, so the cap is not reset by one', async () => {
+  it('M11.4 cutoff attempts survive a restart, and a live season is still asked after it', async () => {
     app.raiderIo.failWith('season-cutoffs&region:us', { status: 503 });
     await pass();
     await pass();
@@ -124,8 +133,13 @@ describe('Mythic+ across a restart', () => {
     await restart();
     app.raiderIo.failWith('season-cutoffs&region:us', { status: 503 });
     await pass();
+    // Counted on from what was persisted, not from zero; and a live season is
+    // never given up on, so it stays `failed` rather than `unavailable`.
+    expect(await cutoffsOf('us')).toMatchObject({ status: 'failed', attempts: 3 });
 
-    expect(await cutoffsOf('us')).toMatchObject({ status: 'unavailable', attempts: 3 });
+    app.raiderIo.reset();
+    await pass();
+    expect((await cutoffsOf('us'))?.status).toBe('ok');
   });
 
   it('M11.1 a partial archive resumes where it stopped', async () => {

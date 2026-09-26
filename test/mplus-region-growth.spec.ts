@@ -234,39 +234,53 @@ describe('Mythic+ archive across region changes', () => {
     return deadEnd;
   };
 
-  it('M6.1 [F4] today: a 404 after a region was read drops it from the marker, and strands its rows', async () => {
+  it('M6.1 [F4] a 404 after a region was read keeps it, and leaves only the failing region to retry', async () => {
     const { usRows, marker: after } = await reachDeadEnd();
 
-    expect(after!.status).toBe('unarchivable');
-    expect(after!.regions, 'the US read earlier is gone from the marker').toEqual({});
-    expect(usRows, 'but its rows are still there, owned by nothing').toBe(60);
-    await expect(expectMplusArchiveRowsOwned(db)).rejects.toThrow(/I25/);
+    expect(after!.status).toBe('incomplete');
+    expect(after!.regions.us, 'the US read earlier is kept').toMatchObject({
+      status: 'complete',
+      runs: 60,
+    });
+    expect(after!.regions.eu).toMatchObject({ status: 'incomplete', failedPages: [1] });
+    expect(usRows).toBe(60);
+    await expectMplusArchiveRowsOwned(db);
 
-    // And the transition now treats the season as held everywhere, so the US's
-    // live rows would be retired, leaving the stranded rows as the only copy.
-    const live = await db
-      .collection(MPLUS_ARCHIVE_RUNS_COLLECTION)
-      .find({ season: DEAD, region: 'us' }, { projection: { _id: 0 } })
-      .limit(3)
-      .toArray();
-    await db.collection(MPLUS_RUNS_COLLECTION).insertMany(live);
-    const plan = await app.app.get(MplusSeasonTransitionService).plan();
-    expect(plan.candidates).toContainEqual(
-      expect.objectContaining({ season: DEAD, region: 'us', archived: true }),
-    );
-    await db.collection(MPLUS_RUNS_COLLECTION).deleteMany({ season: DEAD });
+    // Not settled in Europe, so the transition does not treat it as held there;
+    // and the next tick reads Europe again rather than giving up on the season.
+    app.raiderIo.reset();
+    await app.app.get(MplusArchiveService).archiveBacklog();
+    expect((await marker(DEAD))!.status).toBe('complete');
+    expect(runsRequests(DEAD).every((request) => request.region === 'eu')).toBe(true);
+    await expectMplusArchiveMarkersMatchRows(db);
+    await expectMplusArchiveRowsOwned(db);
   });
 
-  // Confirmed 2026-09-25 (I25: "expected [ 'season-sl-4|us' ] to deeply equal []").
-  // Remove `.fails` with the fix.
-  it.fails(
-    'M6.1 [F4] desired: a 404 partway through a season does not strand the regions already read',
-    async () => {
-      await reachDeadEnd();
+  it('M6.1 [F4] a region whose first page 404s is incomplete, not the season, once another is held', async () => {
+    // Back to "the US held, Europe owed", and this time Europe's whole board 404s.
+    await forgetRegion(DEAD, 'eu', 'partial');
+    await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).deleteMany({ season: DEAD, region: 'eu' });
+    await db
+      .collection(MPLUS_ARCHIVE_CHARACTERS_COLLECTION)
+      .deleteMany({ season: DEAD, region: 'eu' });
+    app.raiderIo.failWith(`mythic-plus/runs&season:${DEAD}&region:eu`, { status: 404 });
 
-      await expectMplusArchiveRowsOwned(db);
-    },
-  );
+    await app.app.get(MplusArchiveService).archiveBacklog();
+
+    const after = (await marker(DEAD))!;
+    expect(after.status).toBe('incomplete');
+    expect(after.regions.us.status).toBe('complete');
+    expect(after.regions.eu).toMatchObject({ status: 'incomplete', runs: 0 });
+    expect(
+      logger.of('warn', /answered 404 after other regions were read/),
+      'said, rather than calling the season unarchivable',
+    ).toHaveLength(1);
+    await expectMplusArchiveRowsOwned(db);
+
+    app.raiderIo.reset();
+    await app.app.get(MplusArchiveService).archiveBacklog();
+    expect((await marker(DEAD))!.status).toBe('complete');
+  });
 
   /** Rows for a season no expansion lists, as a renamed or dropped slug leaves them. */
   const leftover = async () => {
@@ -289,35 +303,17 @@ describe('Mythic+ archive across region changes', () => {
       .insertOne({ ...character, season: 'season-legacy' });
   };
 
-  it('M5.5 [F5] today: an uncatalogued leftover is held back on every run, and warned about each time', async () => {
+  it('M5.5 [F5] an uncatalogued leftover is retired under the default interlock', async () => {
     await leftover();
-    const transitions = app.app.get(MplusSeasonTransitionService);
 
-    for (let run = 0; run < 3; run += 1) {
-      const { plan, purged } = await transitions.run();
-      expect(plan.requireArchive, 'the default interlock').toBe(true);
-      expect(plan.blockedByArchive).toContainEqual(
-        expect.objectContaining({ season: 'season-legacy', region: 'us', archived: false }),
-      );
-      expect(purged).toEqual([]);
-    }
+    const { plan, purged } = await app.app.get(MplusSeasonTransitionService).run();
 
-    expect(logger.of('warn', /Holding back .*season-legacy\/us/)).toHaveLength(3);
+    expect(plan.requireArchive, 'the default interlock').toBe(true);
+    expect(plan.blockedByArchive).toEqual([]);
+    expect(purged.map((entry) => `${entry.season}/${entry.region}`)).toContain('season-legacy/us');
     expect(
       await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: 'season-legacy' }),
-    ).toBe(1);
+    ).toBe(0);
+    expect(logger.of('warn', /Holding back/)).toEqual([]);
   });
-
-  // Confirmed 2026-09-25 ("expected [] to include 'season-legacy/us'"). Remove `.fails`
-  // with the fix.
-  it.fails(
-    'M5.5 [F5] desired: an uncatalogued leftover is retired under the default interlock',
-    async () => {
-      const { purged } = await app.app.get(MplusSeasonTransitionService).run();
-
-      expect(purged.map((entry) => `${entry.season}/${entry.region}`)).toContain(
-        'season-legacy/us',
-      );
-    },
-  );
 });

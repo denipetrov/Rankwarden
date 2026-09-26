@@ -235,7 +235,7 @@ describe('Mythic+ pass over irregular payloads', () => {
     });
   });
 
-  it('M2.6 a board that grows under the pass stores the doubled run once, and prunes only what left', async () => {
+  it('M2.6 a board that grows under the pass stores the doubled run once, and marks only what left', async () => {
     await resetBoard();
     world.seed('us', 100, 1_000, SEASON);
     await pass();
@@ -258,15 +258,18 @@ describe('Mythic+ pass over irregular payloads', () => {
     // Pages 0-2 were read before the insert, 3-4 after: the last run of page 2
     // is served again as the first of page 3, and stored once.
     expect(result.regions[0].runs, 'ranking entries read').toBe(100);
-    expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: SEASON })).toBe(99);
     // The new top run landed on a page already read, so this pass never saw it.
     expect(await run(newTop().keystoneRunId)).toBeNull();
-    // The run pushed from rank 100 to 101 left the window, and only that one.
-    expect(result.regions[0].prunedRuns).toBe(1);
-    expect(await run(world.runs.find((entry) => entry.score === 901)!.keystoneRunId)).toBeNull();
+    // The run pushed from rank 100 to 101 left the window, and only that one:
+    // marked, not yet pruned (the two-pass grace).
+    expect(result.regions[0]).toMatchObject({ missedRuns: 1, prunedRuns: 0 });
+    const pushedOut = world.runs.find((entry) => entry.score === 901)!.keystoneRunId;
+    expect((await run(pushedOut))!.missedSince).toBeInstanceOf(Date);
 
-    // The next pass reads the board as it now is.
-    await pass();
+    // The next pass reads the board as it now is, and prunes the one that left.
+    const next = await pass();
+    expect(next.regions[0].prunedRuns).toBe(1);
+    expect(await run(pushedOut)).toBeNull();
     expect(await run(newTop().keystoneRunId)).not.toBeNull();
     await expectMplusStoredMatchesServed(db, world, {
       season: SEASON,
@@ -275,7 +278,7 @@ describe('Mythic+ pass over irregular payloads', () => {
     });
   });
 
-  it('M2.6 a board that shrinks under the pass prunes a run that is still ranked, until the next pass', async () => {
+  it('M2.6 a board that shrinks under the pass loses nothing still ranked', async () => {
     await resetBoard();
     world.seed('us', 100, 1_000, SEASON);
     await pass();
@@ -294,20 +297,23 @@ describe('Mythic+ pass over irregular payloads', () => {
     const result = await pass();
     expect(world.runs.length).toBe(gone - 1);
 
-    // The run that slid above the read cursor while still ranked: nothing
-    // refreshed it, so it reads as gone. The run that really went was read on
-    // page 0 before it went, so it stays until the next pass.
-    expect(result.regions[0].prunedRuns).toBe(1);
-    expect(await run(skipped.keystoneRunId)).toBeNull();
-    // Its own members, named by no other run, go with it; the regulars on every
-    // run keep that dungeon and lose no score.
-    expect(await character(skipped.roster[0].name, 'us', skipped.roster[0].realmSlug)).toBeNull();
-    const regular = (await character('Regular', 'us', 'illidan'))!;
-    expect(regular.dungeonsCovered).toBe(3);
+    // The run that slid above the read cursor while still ranked was not seen,
+    // so it is marked rather than pruned — and its own members, named by no
+    // other run, stay with it.
+    expect(result.regions[0]).toMatchObject({ missedRuns: 1, prunedRuns: 0, prunedCharacters: 0 });
+    expect((await run(skipped.keystoneRunId))!.missedSince).toBeInstanceOf(Date);
+    expect(
+      await character(skipped.roster[0].name, 'us', skipped.roster[0].realmSlug),
+    ).not.toBeNull();
 
-    // The next pass restores the skipped run and prunes the one that went.
+    // The next pass sees it again, which clears the mark. The run that really
+    // went was read on page 0 before it went, so it is marked only now.
     const next = await pass();
-    expect(next.regions[0].prunedRuns).toBe(1);
+    expect(next.regions[0]).toMatchObject({ missedRuns: 1, prunedRuns: 0 });
+    expect((await run(skipped.keystoneRunId))!.missedSince).toBeUndefined();
+
+    const settled = await pass();
+    expect(settled.regions[0].prunedRuns, 'the run that left, two passes on').toBe(1);
     expect(await run(skipped.keystoneRunId)).not.toBeNull();
     expect(
       await character(skipped.roster[0].name, 'us', skipped.roster[0].realmSlug),
@@ -408,6 +414,9 @@ describe('Mythic+ pass over irregular payloads', () => {
     // Renamed; the dungeon-B run has left the window meanwhile.
     world.removeRuns((entry) => entry.dungeonId === WORLD_DUNGEONS[1].id);
     a.roster[0] = { ...before, name: 'Newname' };
+    await pass();
+    // The dungeon-B run is marked, not yet gone, and it still names Oldname.
+    expect(await character('Oldname')).not.toBeNull();
     await pass();
 
     expect(await character('Oldname')).toBeNull();

@@ -89,7 +89,7 @@ describe('Mythic+ archive edges', () => {
     await app?.close();
   });
 
-  it('M6.3 a region dropped from the configuration does not hold a season open — but the readers disagree', async () => {
+  it('M6.3 a region dropped from the configuration does not hold a season open, and every reader agrees', async () => {
     // What a US+Europe deployment left behind: the US complete, Europe not, and
     // some of Europe's rows. This deployment configures the US alone.
     const archive = (await seasonDoc(DROPPED))!.archive;
@@ -121,26 +121,24 @@ describe('Mythic+ archive edges', () => {
     expect((await seasonDoc(DROPPED))!.archive.status).toBe('incomplete');
     expect((await seasonDoc(DROPPED))!.archive.regions.us).toEqual(archive.regions.us);
 
-    // The readers disagree about it. Representation judges by the regions
-    // owed, so it counts the season as archived and leaves it alone...
-    expect(await app.app.get(MplusSpecRepresentationService).recordLive([DROPPED])).toBe(0);
-    // ...while the cutoffs judge by `status === 'complete'`: a live read would
-    // ask again, and the archive's backfill never looks at it.
+    // Every reader judges "archived" the same way — by the regions owed. With
+    // the US's cutoffs gone, only that rule can keep a live read away...
     await db
       .collection(MPLUS_SEASONS_COLLECTION)
       .updateOne({ slug: DROPPED }, { $unset: { 'cutoffs.us': '' } });
+    expect(await app.app.get(MplusSpecRepresentationService).recordLive([DROPPED])).toBe(0);
+    expect(await app.app.get(MplusCutoffsService).recordLive(new Map([['us', DROPPED]]))).toBe(0);
+    expect(app.raiderIo.countMatching('season-cutoffs')).toBe(0);
+    // ...and the archive's backfill reads the region it still owes.
     await tick();
-    expect(
-      app.raiderIo.countMatching('season-cutoffs'),
-      'the backfill skips a season whose status is not complete',
-    ).toBe(0);
-    expect(await app.app.get(MplusCutoffsService).recordLive(new Map([['us', DROPPED]]))).toBe(1);
+    expect(app.raiderIo.countMatching('season-cutoffs')).toBe(1);
+    expect((await seasonDoc(DROPPED))!.cutoffs.us.status).toBe('ok');
 
     await expectMplusArchiveRowsOwned(db);
     await expectInvariants(db);
   });
 
-  it('M6.4 a season with no runs anywhere is complete, with no figures — recomputed on every tick', async () => {
+  it('M6.4 a season with no runs anywhere is complete, with no figures — and left alone after', async () => {
     const empty = (await seasonDoc(EMPTY))!;
     expect(empty.archive).toMatchObject({ status: 'complete', runs: 0, characters: 0 });
     expect(empty.archive.regions.us).toMatchObject({ status: 'complete', runs: 0 });
@@ -151,13 +149,11 @@ describe('Mythic+ archive edges', () => {
     // Cutoffs are Raider.io's figure, not ours, so they are read regardless.
     expect(empty.cutoffs?.us?.status).toBe('ok');
 
-    // The backfill looks for a per-dungeon document, never finds one, and so
-    // recomputes this season on every tick. Harmless — only the database — but
-    // it never ends. Pinned as it is.
+    // Nothing to count, so the backfill does not keep trying to count it.
     const recordArchived = vi.spyOn(app.app.get(MplusSpecRepresentationService), 'recordArchived');
     await tick();
     await tick();
-    expect(recordArchived.mock.calls.filter(([season]) => season.slug === EMPTY)).toHaveLength(2);
+    expect(recordArchived.mock.calls.filter(([season]) => season.slug === EMPTY)).toHaveLength(0);
     expect(app.raiderIo.countMatching('mythic-plus/runs'), 'and never refetched').toBe(0);
   });
 

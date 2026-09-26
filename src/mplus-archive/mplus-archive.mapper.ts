@@ -36,6 +36,26 @@ export function regionsOwed(
 }
 
 /**
+ * Whether the archive holds a season in every configured region — the one rule
+ * every reader of "is it archived?" uses, so they cannot disagree.
+ *
+ * Judged over the configured regions, not the marker's stored status: a region
+ * dropped from `RAIDERIO_REGIONS` leaves a marker that still says `incomplete`,
+ * and nothing rewrites it. Not `unarchivable`: such a season has no archived
+ * runs, and stays with whatever the live board last showed.
+ */
+export function isArchivedEverywhere(
+  season: Pick<MplusSeasonDocument, 'archive'>,
+  regions: readonly RaiderIoRegion[],
+): boolean {
+  return (
+    season.archive !== undefined &&
+    season.archive.status !== 'unarchivable' &&
+    regionsOwed(season, regions).length === 0
+  );
+}
+
+/**
  * The seasons the archive still owes, newest first.
  *
  * Newest first as the PvP archive does: recent history is what a reader is

@@ -113,6 +113,7 @@ describe('RaiderIoBudget', () => {
       runs: 100_100,
       characters: 40_000,
       durationMs: 400_000,
+      pausedMs: 0,
       requests: 5_005,
       capacityPerMinute: 900,
       feasible: true,

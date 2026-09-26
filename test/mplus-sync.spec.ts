@@ -100,7 +100,7 @@ describe('POST /mplus/characters/sync', () => {
       addedDungeons: number;
       mythicScore: number;
       dungeonsCovered: number;
-    }>(app.url(), '/mplus/characters/sync', payload({ dungeonRuns: [run(40_001, 600)] }));
+    }>(app.url(), '/mplus/characters/sync', payload({ dungeonRuns: [run(9_503, 600)] }));
 
     expect(response.status).toBe(200);
     expect(response.body.addedDungeons).toBe(1);
@@ -120,7 +120,7 @@ describe('POST /mplus/characters/sync', () => {
     const response = await postJson<{ mythicScore: number }>(
       app.url(),
       '/mplus/characters/sync',
-      payload({ dungeonRuns: [run(40_001, 1)] }),
+      payload({ dungeonRuns: [run(9_503, 1)] }),
     );
 
     expect(response.status).toBe(200);
@@ -131,7 +131,7 @@ describe('POST /mplus/characters/sync', () => {
     const response = await postJson<{ mythicScore: number }>(
       app.url(),
       '/mplus/characters/sync',
-      payload({ dungeonRuns: [run(40_001, 900, 424_242)] }),
+      payload({ dungeonRuns: [run(9_503, 900, 424_242)] }),
     );
 
     expect(response.status).toBe(200);
@@ -139,7 +139,7 @@ describe('POST /mplus/characters/sync', () => {
     const stored = await db.collection(MPLUS_CHARACTERS_COLLECTION).findOne({ key: KEY });
     const entry = (
       stored!.dungeonRuns as { dungeon: { id: number }; keystoneRunId: number }[]
-    ).find((item) => item.dungeon.id === 40_001);
+    ).find((item) => item.dungeon.id === 9_503);
 
     expect(entry!.keystoneRunId).toBe(424_242);
   });
@@ -149,7 +149,7 @@ describe('POST /mplus/characters/sync', () => {
 
     // The deliberate difference from the PvP endpoint, where an omitted bracket
     // means "left that ladder". Here omission means nothing new to say.
-    await postJson(app.url(), '/mplus/characters/sync', payload({ dungeonRuns: [run(40_001, 5)] }));
+    await postJson(app.url(), '/mplus/characters/sync', payload({ dungeonRuns: [run(9_503, 5)] }));
 
     const after = await db.collection(MPLUS_CHARACTERS_COLLECTION).findOne({ key: KEY });
     expect(after!.dungeonsCovered).toBe(before!.dungeonsCovered);

@@ -113,7 +113,8 @@ export class MplusRepository implements OnModuleInit {
       const operations = chunk.map<AnyBulkWriteOperation<MplusRunDocument>>((run) => ({
         updateOne: {
           filter: { season: run.season, region: run.region, keystoneRunId: run.keystoneRunId },
-          update: { $set: run },
+          // Seen again, so no longer on its way out (see `missedSince`).
+          update: { $set: run, $unset: { missedSince: '' } },
           upsert: true,
         },
       }));
@@ -250,7 +251,7 @@ export class MplusRepository implements OnModuleInit {
    *
    * | # | Stage                          | Removes                                  |
    * | - | ------------------------------ | ---------------------------------------- |
-   * | 1 | runs this pass did not refresh | a run pushed out of the top 20,020       |
+   * | 1 | runs two clean passes missed   | a run pushed out of the top 20,020       |
    * | 2 | characters left in no run      | a player whose every run has fallen off  |
    *
    * **The order is load-bearing**, the same way steps 3-5 of the PvP sweep
@@ -271,18 +272,42 @@ export class MplusRepository implements OnModuleInit {
     season: string,
     region: RaiderIoRegion,
     before: Date,
-  ): Promise<{ runs: number; characters: number }> {
-    const runs = await this.pruneStaleRuns(season, region, before);
+  ): Promise<{ runs: number; missed: number; characters: number }> {
+    const { removed: runs, missed } = await this.pruneStaleRuns(season, region, before);
     const characters = await this.removeCharactersWithoutRuns(season, region);
 
-    return { runs, characters };
+    return { runs, missed, characters };
   }
 
-  /** Stage 1: runs the latest pass did not refresh. */
-  async pruneStaleRuns(season: string, region: RaiderIoRegion, before: Date): Promise<number> {
-    const removed = await this.runs.deleteMany({ season, region, fetchedAt: { $lt: before } });
+  /**
+   * Stage 1: runs two clean passes in a row did not refresh. The first miss
+   * only marks a run (`missedSince`); the second removes it.
+   *
+   * Refuses outright when the pass refreshed nothing in the region. That is a
+   * failed read, not a board every player left, and without this guard one
+   * empty answer would delete the region — stage 2 has always refused on the
+   * same grounds, and this stage now does too rather than relying on its
+   * caller to check.
+   */
+  async pruneStaleRuns(
+    season: string,
+    region: RaiderIoRegion,
+    before: Date,
+  ): Promise<{ removed: number; missed: number }> {
+    const refreshed = await this.runs.countDocuments(
+      { season, region, fetchedAt: { $gte: before } },
+      { limit: 1 },
+    );
+    if (refreshed === 0) return { removed: 0, missed: 0 };
 
-    return removed.deletedCount;
+    const stale = { season, region, fetchedAt: { $lt: before } };
+    const removed = await this.runs.deleteMany({ ...stale, missedSince: { $exists: true } });
+    const marked = await this.runs.updateMany(
+      { ...stale, missedSince: { $exists: false } },
+      { $set: { missedSince: before } },
+    );
+
+    return { removed: removed.deletedCount, missed: marked.modifiedCount };
   }
 
   /**

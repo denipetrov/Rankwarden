@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
 import { MPLUS_ARCHIVE_RUNS_COLLECTION } from '../mplus-archive/entities/mplus-archive.entity.js';
-import { regionsOwed } from '../mplus-archive/mplus-archive.mapper.js';
+import { isArchivedEverywhere } from '../mplus-archive/mplus-archive.mapper.js';
 import { MPLUS_RUNS_COLLECTION } from '../mplus/entities/mplus-run.entity.js';
 import type { MplusSeasonDocument } from '../mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
@@ -21,6 +21,12 @@ import {
 
 /** The unique index before documents were split by dungeon: one per season and region. */
 const LEGACY_IDENTITY_INDEX = 'mplus_representation_identity';
+
+/** Runs to count: a collection and the rows of it that belong to this computation. */
+interface RunSource {
+  collection: string;
+  match: Record<string, unknown>;
+}
 
 /**
  * Keeps `mplus_spec_representation` in step with the runs stored.
@@ -95,7 +101,7 @@ export class MplusSpecRepresentationService implements OnModuleInit {
     for (const season of new Set(seasons)) {
       const entry = catalogue.get(season);
 
-      if (entry && this.isArchived(entry)) {
+      if (entry && isArchivedEverywhere(entry, this.regions)) {
         this.logger.debug(`Mythic+ spec representation of ${season} is archived; left as it is`);
         continue;
       }
@@ -104,7 +110,7 @@ export class MplusSpecRepresentationService implements OnModuleInit {
         season,
         entry?.blizzardSeasonId ?? null,
         'live',
-        MPLUS_RUNS_COLLECTION,
+        this.liveSources(season, entry),
       );
     }
 
@@ -113,12 +119,43 @@ export class MplusSpecRepresentationService implements OnModuleInit {
 
   /** Writes a finished season's figures from the archive. Called once, on completion. */
   async recordArchived(season: MplusSeasonDocument): Promise<number> {
-    return this.record(
-      season.slug,
-      season.blizzardSeasonId,
-      'archive',
-      MPLUS_ARCHIVE_RUNS_COLLECTION,
-    );
+    return this.record(season.slug, season.blizzardSeasonId, 'archive', [
+      { collection: MPLUS_ARCHIVE_RUNS_COLLECTION, match: { season: season.slug } },
+    ]);
+  }
+
+  /**
+   * Where a live recomputation counts each region from.
+   *
+   * The live board, except for regions the archive already holds in full: a
+   * season stays current in a region until its successor opens there, and the
+   * season transition retires a region's live rows once the archive holds it.
+   * Counted from the live board alone, that window would delete the retired
+   * regions' figures and turn `all` into the regions still playing.
+   *
+   * Runs one clean pass missed (`missedSince`) are left out: they are on their
+   * way off the board.
+   */
+  private liveSources(season: string, entry: MplusSeasonDocument | undefined): RunSource[] {
+    const held =
+      entry?.archive && entry.archive.status !== 'unarchivable'
+        ? this.regions.filter((region) => entry.archive?.regions?.[region]?.status === 'complete')
+        : [];
+    const live: RunSource = {
+      collection: MPLUS_RUNS_COLLECTION,
+      match: {
+        season,
+        missedSince: { $exists: false },
+        ...(held.length > 0 ? { region: { $nin: held } } : {}),
+      },
+    };
+
+    return held.length === 0
+      ? [live]
+      : [
+          live,
+          { collection: MPLUS_ARCHIVE_RUNS_COLLECTION, match: { season, region: { $in: held } } },
+        ];
   }
 
   /**
@@ -142,7 +179,12 @@ export class MplusSpecRepresentationService implements OnModuleInit {
       })) as string[],
     );
     const missing = (await this.catalogue.allSeasons()).filter(
-      (season) => this.isArchived(season) && !recorded.has(season.slug),
+      (season) =>
+        isArchivedEverywhere(season, this.regions) &&
+        !recorded.has(season.slug) &&
+        // A season with no runs anywhere has nothing to count, and would
+        // otherwise be "missing" its figures on every tick for ever.
+        (season.archive?.runs ?? 0) > 0,
     );
 
     for (const season of missing) await this.recordArchived(season);
@@ -150,30 +192,59 @@ export class MplusSpecRepresentationService implements OnModuleInit {
     return missing.map((season) => season.slug);
   }
 
-  /**
-   * Held in every configured region. Not `unarchivable`: such a season has no
-   * archived runs to count, and stays with whatever the live board last showed.
-   */
-  private isArchived(season: MplusSeasonDocument): boolean {
-    return (
-      season.archive !== undefined &&
-      season.archive.status !== 'unarchivable' &&
-      regionsOwed(season, this.regions).length === 0
-    );
-  }
-
   private async record(
     season: string,
     seasonId: number | null,
     source: MplusSpecRepresentationDocument['source'],
-    runsCollection: string,
+    sources: readonly RunSource[],
   ): Promise<number> {
-    const runs = this.mongo.collection(runsCollection);
+    const counted = await Promise.all(sources.map((from) => this.count(from)));
+    const tallies = counted.flatMap((entry) => entry.tallies);
+    const runCounts = counted.flatMap((entry) => entry.runCounts);
+
+    const computedAt = new Date();
+    const documents = representationsOf({
+      season,
+      seasonId,
+      source,
+      runCounts,
+      tallies,
+      computedAt,
+    });
+
+    // Replaced whole, then anything this computation did not write removed — a
+    // region or a dungeon no longer present — so the documents for a season
+    // always describe one computation. `dungeonId: null` also matches a
+    // document from before the split, which has no such field.
+    for (const document of documents) {
+      await this.collection.replaceOne(
+        { season, region: document.region, dungeonId: document.dungeonId },
+        document,
+        { upsert: true },
+      );
+    }
+    await this.collection.deleteMany({ season, computedAt: { $ne: computedAt } });
+
+    this.logger.log(
+      `Mythic+ spec representation of ${season} (${source}): ${documents.length} document(s)` +
+        (documents.length > 0
+          ? `, ${documents.find((document) => document.region === 'all' && document.dungeonId === null)?.slots ?? 0} roster slots`
+          : ''),
+    );
+
+    return documents.length;
+  }
+
+  /** Slots per (region, dungeon, spec), and runs per (region, dungeon), in one source. */
+  private async count(
+    from: RunSource,
+  ): Promise<{ tallies: MplusSpecTally[]; runCounts: MplusRunCount[] }> {
+    const runs = this.mongo.collection(from.collection);
     const [tallies, runCounts] = await Promise.all([
       runs
         .aggregate<MplusSpecTally>(
           [
-            { $match: { season } },
+            { $match: from.match },
             { $unwind: '$roster' },
             {
               $group: {
@@ -208,7 +279,7 @@ export class MplusSpecRepresentationService implements OnModuleInit {
         .toArray(),
       runs
         .aggregate<MplusRunCount>([
-          { $match: { season } },
+          { $match: from.match },
           {
             $group: {
               _id: { region: '$region', dungeonId: '$dungeon.id' },
@@ -221,36 +292,6 @@ export class MplusSpecRepresentationService implements OnModuleInit {
         .toArray(),
     ]);
 
-    const computedAt = new Date();
-    const documents = representationsOf({
-      season,
-      seasonId,
-      source,
-      runCounts,
-      tallies,
-      computedAt,
-    });
-
-    // Replaced whole, then anything this computation did not write removed — a
-    // region or a dungeon no longer present — so the documents for a season
-    // always describe one computation. `dungeonId: null` also matches a
-    // document from before the split, which has no such field.
-    for (const document of documents) {
-      await this.collection.replaceOne(
-        { season, region: document.region, dungeonId: document.dungeonId },
-        document,
-        { upsert: true },
-      );
-    }
-    await this.collection.deleteMany({ season, computedAt: { $ne: computedAt } });
-
-    this.logger.log(
-      `Mythic+ spec representation of ${season} (${source}): ${documents.length} document(s)` +
-        (documents.length > 0
-          ? `, ${documents.find((document) => document.region === 'all' && document.dungeonId === null)?.slots ?? 0} roster slots`
-          : ''),
-    );
-
-    return documents.length;
+    return { tallies, runCounts };
   }
 }

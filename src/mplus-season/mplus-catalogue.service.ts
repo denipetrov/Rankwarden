@@ -106,6 +106,9 @@ export class MplusCatalogueService {
     const expansions: number[] = [];
     let seasons = 0;
     let dungeons = 0;
+    // Whether the walk reached the end of the list, rather than stopping on a
+    // failure or the hard stop: only then is "not listed" known.
+    let complete = false;
 
     for (let offset = 0; offset < MAX_EXPANSIONS_WALKED; offset += 1) {
       const expansionId = this.firstExpansion + offset;
@@ -125,7 +128,10 @@ export class MplusCatalogueService {
       // side events are filtered out. Decided on main seasons alone, an
       // expansion that listed only side events would end the walk and hide
       // every expansion after it.
-      if (data.seasons.length === 0) break;
+      if (data.seasons.length === 0) {
+        complete = true;
+        break;
+      }
 
       const main = mainSeasonsOf(data.seasons);
 
@@ -141,9 +147,13 @@ export class MplusCatalogueService {
       );
     }
 
+    const unlisted =
+      complete && expansions.length > 0 ? await this.repository.markUnlisted(now) : 0;
+
     this.logger.log(
       `Mythic+ catalogue refreshed across expansion(s) ${expansions.join(', ') || 'none'}: ` +
-        `${seasons} season and ${dungeons} dungeon write(s)`,
+        `${seasons} season and ${dungeons} dungeon write(s)` +
+        (unlisted > 0 ? `; ${unlisted} season(s) no longer listed` : ''),
     );
 
     return { refreshed: expansions.length > 0, reason: null, expansions, seasons, dungeons };

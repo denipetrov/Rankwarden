@@ -27,6 +27,7 @@ export class MplusScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(MplusScheduler.name);
   private readonly enabled: boolean;
   private readonly intervalMs: number;
+  private readonly yieldWaitMs: number;
   private readonly pending = new PendingWork();
   private subscription?: Subscription;
   private running = false;
@@ -39,6 +40,7 @@ export class MplusScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   ) {
     this.enabled = config.get('MPLUS_ENABLED', { infer: true });
     this.intervalMs = config.get('MPLUS_INTERVAL_MS', { infer: true });
+    this.yieldWaitMs = config.get('MPLUS_YIELD_WAIT_MS', { infer: true });
   }
 
   onApplicationBootstrap(): void {
@@ -82,17 +84,22 @@ export class MplusScheduler implements OnApplicationBootstrap, OnModuleDestroy {
       return;
     }
 
-    // Skipped rather than queued, like an overlapping sweep: a pass that waited
-    // for the one in front of it would start against a leaderboard the first
-    // pass had already written, and the two would race each other's prunes.
-    if (this.coordinator.isLiveIngestionActive) {
-      this.logger.log('Live PvP ingestion in progress; deferring the Mythic+ pass');
-      return;
-    }
-
     this.running = true;
 
     try {
+      // Waited for rather than skipped: skipped, the pass would come back only
+      // at the next interval, six hours later at the defaults, and an interval
+      // that keeps landing on enrichment would keep losing its pass. Bounded by
+      // the same wait the pass itself pauses for.
+      if (this.coordinator.isLiveIngestionActive) {
+        this.logger.log('Live PvP ingestion in progress; the Mythic+ pass waits for it');
+
+        if (!(await this.coordinator.waitForLiveIngestion(this.yieldWaitMs))) {
+          this.logger.log('Live PvP ingestion still running; deferring the Mythic+ pass');
+          return;
+        }
+      }
+
       // No `withRunId` here: `MplusService.sweep` establishes its own, so a
       // pass is attributed to the M+ consumer however it was started.
       await this.mplus.sweep();

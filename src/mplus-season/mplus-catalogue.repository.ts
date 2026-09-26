@@ -58,7 +58,11 @@ export class MplusCatalogueRepository implements OnModuleInit {
 
     const result = await this.seasons.bulkWrite(
       seasons.map((season) => ({
-        updateOne: { filter: { slug: season.slug }, update: { $set: season }, upsert: true },
+        updateOne: {
+          filter: { slug: season.slug },
+          update: { $set: season, $unset: { unlistedAt: '' } },
+          upsert: true,
+        },
       })),
       { ordered: false },
     );
@@ -110,13 +114,28 @@ export class MplusCatalogueRepository implements OnModuleInit {
    * the oldest, a partial refresh is simply due again on the next tick.
    */
   async catalogueUpdatedAt(): Promise<Date | null> {
+    // Only seasons the last complete walk listed: one it no longer lists is
+    // never stamped again, and would keep the catalogue due for ever.
     const oldest = await this.seasons
-      .find({}, { projection: { catalogueUpdatedAt: 1 } })
+      .find({ unlistedAt: { $exists: false } }, { projection: { catalogueUpdatedAt: 1 } })
       .sort({ catalogueUpdatedAt: 1 })
       .limit(1)
       .next();
 
     return oldest?.catalogueUpdatedAt ?? null;
+  }
+
+  /**
+   * Marks every season a complete walk at `walkedAt` did not stamp as unlisted.
+   * Field-level, like every other write here. Returns how many were marked.
+   */
+  async markUnlisted(walkedAt: Date): Promise<number> {
+    const result = await this.seasons.updateMany(
+      { catalogueUpdatedAt: { $lt: walkedAt }, unlistedAt: { $exists: false } },
+      { $set: { unlistedAt: walkedAt } },
+    );
+
+    return result.modifiedCount;
   }
 
   async recordArchive(slug: string, marker: MplusSeasonArchiveMarker): Promise<void> {

@@ -141,6 +141,12 @@ describe('Mythic+ cleanup over passes', () => {
     const removed = world.removeRuns((run) => run.region === 'us' && run.score <= 480.5);
     expect(removed).toHaveLength(21);
 
+    // The first clean pass to miss them only marks them; nobody is removed yet.
+    const marked = region(await pass(), 'us');
+    expect(marked).toMatchObject({ missedRuns: 21, prunedRuns: 0, prunedCharacters: 0 });
+    expect(await character('us', 'Tank25'), 'kept through the grace pass').not.toBeNull();
+
+    // The second prunes them.
     const result = await pass();
     const us = region(result, 'us');
 
@@ -253,6 +259,8 @@ describe('Mythic+ cleanup over passes', () => {
     expect((await character('us', 'Phoenix'))!.mythicScore).toBe(1_170);
 
     world.removeRuns((run) => own.includes(run));
+    // Two clean passes: the first marks the runs, the second prunes them.
+    await pass();
     await pass();
     expect(await character('us', 'Phoenix'), 'no run names Phoenix any more').toBeNull();
 
@@ -283,13 +291,18 @@ describe('Mythic+ cleanup over passes', () => {
     app.raiderIo.failWith('mythic-plus/runs&region:eu', { status: 500, times: 1 });
 
     const result = await pass();
-    expect(region(result, 'us').prunedRuns).toBe(5);
+    expect(region(result, 'us').missedRuns).toBe(5);
     expect(region(result, 'eu').pagesFailed).toBe(1);
-    expect(region(result, 'eu').prunedRuns).toBe(0);
+    expect(region(result, 'eu')).toMatchObject({ missedRuns: 0, prunedRuns: 0 });
     expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ region: 'eu' })).toBe(30);
 
+    // The US, missed twice, is pruned; Europe's first clean pass only marks.
     const next = await pass();
-    expect(region(next, 'eu').prunedRuns).toBe(5);
+    expect(region(next, 'us').prunedRuns).toBe(5);
+    expect(region(next, 'eu').missedRuns).toBe(5);
+
+    const last = await pass();
+    expect(region(last, 'eu').prunedRuns).toBe(5);
     await expectNoOrphanMplusCharacters(db);
     await expectInvariants(db);
   });
@@ -456,47 +469,42 @@ describe('Mythic+ cleanup over passes', () => {
     return { before, result: await pass() };
   };
 
-  it('M3.1 [F2] today: an empty first page empties the region and strands its characters', async () => {
+  it('M3.1 [F2] a populated region answering an empty board keeps it, and says so', async () => {
     const { before, result } = await emptyEurope();
     const eu = region(result, 'eu');
 
     expect(before.runs).toBe(30);
-    // Reported as clean: an empty page is "the end of the data".
-    expect(eu).toMatchObject({ stoppedEarly: null, pagesFailed: 0, runs: 0 });
-    expect(eu.prunedRuns, 'stage 1 had nothing to stop it').toBe(30);
-    expect(eu.prunedCharacters, 'stage 2 refused, as its own guard says').toBe(0);
-    expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ region: 'eu' })).toBe(0);
+    expect(eu).toMatchObject({
+      stoppedEarly: 'the board came back empty',
+      runs: 0,
+      prunedRuns: 0,
+      missedRuns: 0,
+      prunedCharacters: 0,
+    });
+    // Reported, so readiness degrades rather than calling the pass clean.
+    expect(result.stoppedEarly).toBe('the board came back empty');
+    expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ region: 'eu' })).toBe(
+      before.runs,
+    );
     expect(await db.collection(MPLUS_CHARACTERS_COLLECTION).countDocuments({ region: 'eu' })).toBe(
       before.characters,
     );
-    await expect(expectNoOrphanMplusCharacters(db)).rejects.toThrow(/I18/);
+    // The US read normally and was not held back by Europe.
+    expect(region(result, 'us').stoppedEarly).toBeNull();
+    await expectNoOrphanMplusCharacters(db);
   });
 
-  // Confirmed 2026-09-25 ("expected +0 to be 30"). Remove `.fails` with the fix.
-  it.fails(
-    'M3.1 [F2] desired: a populated region answering an empty first page keeps its board',
-    async () => {
-      const { before } = await emptyEurope();
-
-      expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ region: 'eu' })).toBe(
-        before.runs,
-      );
-    },
-  );
-
-  it('M3.2 [F2] today: stage 1 deletes a whole region when nothing was refreshed', async () => {
+  it('M3.1 [F2] a region that was never populated is simply empty, not short', async () => {
     await resetBoard();
     world.seed('us', 30, 500, SEASON);
-    await pass();
 
-    const pruned = await repository.pruneStale(SEASON, 'us', new Date());
+    const result = await pass();
 
-    expect(pruned).toEqual({ runs: 30, characters: 0 });
-    expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ region: 'us' })).toBe(0);
+    expect(region(result, 'eu')).toMatchObject({ stoppedEarly: null, runs: 0 });
+    expect(result.stoppedEarly).toBeNull();
   });
 
-  // Confirmed 2026-09-25 ("expected 30 to be +0"). Remove `.fails` with the fix.
-  it.fails('M3.2 [F2] desired: stage 1 refuses on its own, as stage 2 does', async () => {
+  it('M3.2 [F2] stage 1 refuses on its own when the pass refreshed nothing', async () => {
     await resetBoard();
     world.seed('us', 30, 500, SEASON);
     await pass();
@@ -504,7 +512,14 @@ describe('Mythic+ cleanup over passes', () => {
     // No run carries a `fetchedAt` at or after `before`: nothing was refreshed.
     const pruned = await repository.pruneStale(SEASON, 'us', new Date());
 
-    expect(pruned.runs).toBe(0);
+    expect(pruned).toEqual({ runs: 0, missed: 0, characters: 0 });
+    expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ region: 'us' })).toBe(30);
+    expect(
+      await db
+        .collection(MPLUS_RUNS_COLLECTION)
+        .countDocuments({ region: 'us', missedSince: { $exists: true } }),
+      'and marks nothing either',
+    ).toBe(0);
   });
 
   it('M3.7 a crash between the two prune stages is healed by the next clean pass', async () => {
@@ -513,7 +528,9 @@ describe('Mythic+ cleanup over passes', () => {
     await pass();
 
     world.removeRuns((run) => run.region === 'us' && run.score <= 480);
-    // Stage 1 runs and deletes the stale runs; the process dies before stage 2.
+    // One clean pass marks the runs that left...
+    await pass();
+    // ...and on the next, stage 1 deletes them and the process dies before stage 2.
     vi.spyOn(repository, 'removeCharactersWithoutRuns').mockRejectedValueOnce(
       new Error('process killed'),
     );

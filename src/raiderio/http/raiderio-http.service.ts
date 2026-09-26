@@ -183,8 +183,17 @@ export class RaiderIoHttpService {
     }
   }
 
-  /** Strips the access key from anything got built rather than this class. */
+  /**
+   * Strips the access key from anything got built rather than this class.
+   *
+   * By parameter as well as by value, so the client does not depend on
+   * `DependencyHealth` having been configured with the same key: got quotes
+   * the url with the key already added, and a message is only as safe as the
+   * weakest of the two.
+   */
   private safe(value: string | undefined): string {
-    return value ? this.health.redact(value) : 'unknown url';
+    if (!value) return 'unknown url';
+
+    return this.health.redact(value).replace(/([?&]access_key=)[^&\s#]*/g, '$1[redacted]');
   }
 }

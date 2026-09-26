@@ -30,10 +30,12 @@ function serviceOver(
   const upsertSeasons = vi.fn(async (seasons: unknown[]) => seasons.length);
   const upsertDungeons = vi.fn(async (dungeons: unknown[]) => dungeons.length);
   const catalogueUpdatedAt = vi.fn(async () => options.updatedAt ?? null);
+  const markUnlisted = vi.fn(async () => 0);
   const repository = {
     upsertSeasons,
     upsertDungeons,
     catalogueUpdatedAt,
+    markUnlisted,
   } as unknown as MplusCatalogueRepository;
   const env: Record<string, unknown> = {
     MPLUS_CATALOGUE_FIRST_EXPANSION: 6,
@@ -46,6 +48,7 @@ function serviceOver(
     upsertSeasons,
     upsertDungeons,
     getStaticData,
+    markUnlisted,
   };
 }
 
@@ -149,6 +152,25 @@ describe('MplusCatalogueService.refresh', () => {
 
     expect((await service.refreshIfDue()).refreshed).toBe(true);
     expect(getStaticData).toHaveBeenCalled();
+  });
+
+  /**
+   * F6. "No longer listed" is only known at the end of the list: a walk that
+   * stopped on a failure has not seen the later expansions, and marking their
+   * seasons unlisted would take them out of the freshness check it relies on.
+   */
+  it('marks unlisted seasons only after a walk that reached the end', async () => {
+    const complete = serviceOver({ 6: [season('season-7.2.0', true, 1)] });
+    const now = new Date('2026-09-25T12:00:00Z');
+    await complete.service.refresh(now);
+    expect(complete.markUnlisted).toHaveBeenCalledWith(now);
+
+    const failed = serviceOver(
+      { 6: [season('season-7.2.0', true, 1)], 7: [season('season-bfa-1', true, 2)] },
+      { failing: [7] },
+    );
+    await failed.service.refresh(now);
+    expect(failed.markUnlisted).not.toHaveBeenCalled();
   });
 
   it('shares one refresh between callers that ask at the same moment', async () => {

@@ -250,17 +250,11 @@ describe('Mythic+ catalogue walk and indexes', () => {
     return staticRequests().filter((request) => request.expansionId === 10).length;
   };
 
-  it('M1.8 [F6] today: one season no walk re-stamps keeps the catalogue due for ever', async () => {
-    expect(await walksWithALeftover(), 'a full walk on every call').toBe(3);
+  it('M1.8 [F6] a season no walk lists any more does not keep the catalogue due', async () => {
+    expect(await walksWithALeftover(), 'one walk marks it unlisted; the TTL then holds').toBe(1);
+    expect(
+      (await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: 'season-gone' }))?.unlistedAt,
+    ).toBeInstanceOf(Date);
     await db.collection(MPLUS_SEASONS_COLLECTION).deleteOne({ slug: 'season-gone' });
-  });
-
-  // Confirmed 2026-09-25 ("expected 3 to be less than or equal to 1"). Remove `.fails`
-  // with the fix.
-  it.fails('M1.8 [F6] desired: a leftover season does not keep the catalogue due', async () => {
-    const walks = await walksWithALeftover();
-    await db.collection(MPLUS_SEASONS_COLLECTION).deleteOne({ slug: 'season-gone' });
-
-    expect(walks).toBeLessThanOrEqual(1);
   });
 });

@@ -5,6 +5,7 @@ import { RunLogger } from '../common/logging/run-context.js';
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
+import { isArchivedEverywhere } from '../mplus-archive/mplus-archive.mapper.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type { MplusSeasonCutoffs } from './entities/mplus-cutoffs.entity.js';
@@ -13,12 +14,12 @@ import { toSeasonCutoffs } from './mplus-cutoffs.mapper.js';
 import { MplusCatalogueRepository } from './mplus-catalogue.repository.js';
 
 /**
- * Tries before a region's cutoffs are given up on.
+ * Final reads before a finished season's region is given up on.
  *
  * Three, because the failure this guards against is not transient: `cn` answers
  * 500 — not 404 — for every season before `season-df-4`, so without a cap the
  * archive would ask again on every tick for ever. Three still absorbs a real
- * outage across three ticks.
+ * outage across three ticks. A live season has no cap: it is read every pass.
  */
 const MAX_ATTEMPTS = 3;
 
@@ -36,9 +37,11 @@ const MAX_ATTEMPTS = 3;
  *   requests, because a running season's cutoffs move as people play.
  * - **The archive** reads a finished season once per region and never again.
  *
- * A region is asked once and then left alone unless it is the live season: a
- * 404 is recorded as `missing` (no season before `season-sl-3` has cutoffs) and
- * repeated failures as `unavailable`.
+ * While a season is live, every pass asks again whatever the last answer was:
+ * a 404 or a failure is recorded and the figures already read are kept. Once
+ * archived, a region is read once more — the final figures, `finalised` — and
+ * then left alone: a 404 is `missing` (no season before `season-sl-3` has
+ * cutoffs) and repeated failures `unavailable`.
  */
 @Injectable()
 export class MplusCutoffsService {
@@ -56,9 +59,10 @@ export class MplusCutoffsService {
   /**
    * Re-reads the cutoffs of the season current in each region.
    *
-   * `ok` is not settled here: a live season's cutoffs change with every run
-   * played, so they are read again on each pass. A season already archived
-   * everywhere is left to the archive's copy, as its representation is.
+   * Nothing is settled here: a live season's cutoffs change with every run
+   * played, and an answer of "none" or a failure is not final either. A season
+   * already archived everywhere is left to the archive's copy, as its
+   * representation is, and so is a region the archive has read for good.
    */
   async recordLive(current: ReadonlyMap<RaiderIoRegion, string>): Promise<number> {
     const catalogue = new Map(
@@ -67,14 +71,14 @@ export class MplusCutoffsService {
     let read = 0;
 
     for (const [region, season] of current) {
+      const entry = catalogue.get(season);
       // Archived everywhere: the figures are final, and the archive read them.
-      if (catalogue.get(season)?.archive?.status === 'complete') continue;
+      if (entry && isArchivedEverywhere(entry, this.regions)) continue;
 
-      const stored = catalogue.get(season)?.cutoffs?.[region];
-      // A region given up on stays given up on, even while the season is live.
-      if (stored?.status === 'missing' || stored?.status === 'unavailable') continue;
+      const stored = entry?.cutoffs?.[region];
+      if (this.isSettled(stored)) continue;
 
-      if (await this.record(season, region, stored)) read += 1;
+      if (await this.record(season, region, stored, false)) read += 1;
     }
 
     return read;
@@ -93,7 +97,7 @@ export class MplusCutoffsService {
       const stored = season.cutoffs?.[region];
       if (this.isSettled(stored)) continue;
 
-      if (await this.record(season.slug, region, stored)) read += 1;
+      if (await this.record(season.slug, region, stored, true)) read += 1;
     }
 
     return read;
@@ -118,31 +122,44 @@ export class MplusCutoffsService {
     return touched;
   }
 
-  /** Read, known absent, or given up on: anything but "ask again". */
+  /**
+   * Finally read, known absent, or given up on: anything but "ask again". Only
+   * the archive's final read settles a region; nothing a live pass wrote does.
+   */
   private isSettled(cutoffs: MplusSeasonCutoffs | undefined): boolean {
-    return cutoffs !== undefined && cutoffs.status !== 'failed';
+    return cutoffs?.finalised === true && cutoffs.status !== 'failed';
   }
 
-  /** One region. Returns whether cutoffs were read; a failure is recorded, never thrown. */
+  /**
+   * One region. Returns whether cutoffs were read; a failure is recorded, never
+   * thrown. `final` is the archive's read of a finished season: the only one
+   * the attempt cap applies to, and the only one that settles the region.
+   */
   private async record(
     season: string,
     region: RaiderIoRegion,
     stored: MplusSeasonCutoffs | undefined,
+    final: boolean,
   ): Promise<boolean> {
     const fetchedAt = new Date();
 
     try {
       const cutoffs = await this.api.getSeasonCutoffs(season, region);
-      await this.repository.recordCutoffs(season, region, toSeasonCutoffs(cutoffs, fetchedAt));
+      await this.repository.recordCutoffs(season, region, {
+        ...toSeasonCutoffs(cutoffs, fetchedAt),
+        finalised: final,
+      });
 
       return true;
     } catch (error) {
       const reason = describeError(error);
       const missing = error instanceof RaiderIoApiError && error.isNotFound;
-      const attempts = (stored?.attempts ?? 0) + 1;
+      // Counted afresh when the archive takes over from the live passes: the
+      // cap is for final reads, and live failures say nothing about them.
+      const attempts = (stored?.finalised === final ? (stored?.attempts ?? 0) : 0) + 1;
       const status = missing
         ? 'missing'
-        : attempts >= MAX_ATTEMPTS
+        : final && attempts >= MAX_ATTEMPTS
           ? 'unavailable'
           : ('failed' as const);
 
@@ -156,6 +173,7 @@ export class MplusCutoffsService {
         fetchedAt,
         attempts,
         lastError: reason,
+        finalised: final,
       });
 
       this.logger[missing ? 'log' : 'warn'](

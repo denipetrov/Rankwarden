@@ -44,7 +44,11 @@ describe('RaiderIoHttpService — against a real listener', () => {
    * relies on that for messages got builds itself (`safe`), which quote the
    * url with the key already added.
    */
-  const clientFor = (settings: Partial<Record<keyof Env, unknown>> = {}, url = baseUrl) => {
+  const clientFor = (
+    settings: Partial<Record<keyof Env, unknown>> = {},
+    url = baseUrl,
+    healthKnowsKey = true,
+  ) => {
     const values: Record<string, unknown> = {
       RAIDERIO_API_BASE_URL: url,
       RAIDER_IO_API_KEY: KEY,
@@ -59,7 +63,13 @@ describe('RaiderIoHttpService — against a real listener', () => {
       ...settings,
     };
     const config = { get: (key: string) => values[key] } as unknown as ConfigService<Env, true>;
-    const health = new DependencyHealth(config);
+    const health = new DependencyHealth(
+      healthKnowsKey
+        ? config
+        : ({
+            get: (key: string) => (key === 'RAIDER_IO_API_KEY' ? '' : values[key]),
+          } as unknown as ConfigService<Env, true>),
+    );
     const budget = new RaiderIoBudget(config);
 
     return { http: new RaiderIoHttpService(config, health, budget), health, budget };
@@ -214,6 +224,26 @@ describe('RaiderIoHttpService — against a real listener', () => {
     expect(timeout.message).toMatch(
       /\(2 attempts for http:\/\/127\.0\.0\.1:\d+\/api\/v1\/mythic-plus\/runs\)/,
     );
+  });
+
+  it('M10.4 keeps the key out without relying on health knowing it', async () => {
+    // Health configured without the key: its redaction cannot help, so only
+    // the client's own stripping stands between got's messages and a reader.
+    const { http, health } = clientFor({}, baseUrl, false);
+    server.handler = answer(503);
+
+    const error = await failureOf(http.get(STATIC, { region: 'us' }));
+
+    const retries = captured.filter((line) => /Retry \d/.test(line.message));
+    expect(retries.length).toBeGreaterThan(0);
+    for (const text of [
+      error.message,
+      error.stack ?? '',
+      ...retries.map((line) => line.message),
+      JSON.stringify(health.byRegion('raiderio')),
+    ]) {
+      expect(text).not.toContain(KEY);
+    }
   });
 
   it('M10.5 an empty 2xx body is a failure, not a success', async () => {

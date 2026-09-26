@@ -336,14 +336,22 @@ export class MplusWorld {
           seasonal_affix: null,
           starts: season.starts,
           ends: season.ends ?? {},
-          dungeons: Array.from({ length: season.dungeons }, (_unused, index) => ({
-            id: (season.firstDungeonId ?? 9_500) + index,
-            challenge_mode_id: 200 + index,
-            slug: `dungeon-${index}`,
-            name: `Dungeon ${index}`,
-            short_name: `D${index}`,
-            keystone_timer_seconds: 1_800,
-          })),
+          dungeons: Array.from({ length: season.dungeons }, (_unused, index) => {
+            // A season with no `firstDungeonId` lists the dungeons `seed` and
+            // `addRun` play runs in, then 9503 onward — as upstream, where a
+            // season lists every dungeon its runs are in. An explicit
+            // `firstDungeonId` numbers the whole list from there instead.
+            const played = season.firstDungeonId === undefined ? WORLD_DUNGEONS[index] : undefined;
+
+            return {
+              id: played?.id ?? (season.firstDungeonId ?? 9_500) + index,
+              challenge_mode_id: 200 + index,
+              slug: played?.slug ?? `dungeon-${index}`,
+              name: played?.name ?? `Dungeon ${index}`,
+              short_name: `D${index}`,
+              keystone_timer_seconds: 1_800,
+            };
+          }),
         })),
       dungeons: [],
     };

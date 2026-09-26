@@ -56,6 +56,9 @@ const BASE_ENV: Record<string, string> = {
   SEASON_TRANSITION_ENABLED: 'false',
   MPLUS_ENABLED: 'false',
   MPLUS_INTERVAL_MS: '3600000',
+  // A pass stops at once for live ingestion rather than waiting ten minutes
+  // for a hold a test may never release. Files about pausing raise it.
+  MPLUS_YIELD_WAIT_MS: '0',
   // A test world is a handful of runs, so a full 1,001-page pass would be a
   // thousand requests to serve twenty. Tests that want the pagination boundary
   // raise this deliberately.

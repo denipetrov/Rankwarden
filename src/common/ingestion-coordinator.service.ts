@@ -36,6 +36,7 @@ export class IngestionCoordinator {
   private enrichmentDone = false;
   private mplusDone = false;
   private mplusIdleWaiters: Array<() => void> = [];
+  private liveIdleWaiters: Array<() => void> = [];
   private readonly warmedUpSubject = new ReplaySubject<void>(1);
   private readonly mplusWarmedUpSubject = new ReplaySubject<void>(1);
 
@@ -109,6 +110,7 @@ export class IngestionCoordinator {
         this.sweepDone = true;
         this.signalWarmedUp();
       }
+      this.releaseLiveIdleWaiters();
     }
   }
 
@@ -151,6 +153,49 @@ export class IngestionCoordinator {
     if (!this.isMplusActive) return Promise.resolve();
 
     return new Promise((resolve) => this.mplusIdleWaiters.push(resolve));
+  }
+
+  /**
+   * Waits for live PvP ingestion — a sweep or enrichment — to finish, for at
+   * most `maxWaitMs`. Resolves true once nothing live is running (at once if
+   * nothing is), false if the wait ran out first.
+   *
+   * For the Mythic+ pass, which pauses for live ingestion rather than giving up
+   * on the rest of its regions: enrichment ticks every few minutes, and a pass
+   * is longer than that, so a pass that stopped instead would leave its
+   * trailing regions for a whole interval, pass after pass.
+   */
+  async waitForLiveIngestion(maxWaitMs: number): Promise<boolean> {
+    if (!this.isLiveIngestionActive) return true;
+    if (maxWaitMs <= 0) return false;
+
+    let timer: NodeJS.Timeout | undefined;
+    let waiter: (() => void) | undefined;
+
+    const idle = new Promise<void>((resolve) => {
+      waiter = resolve;
+      this.liveIdleWaiters.push(resolve);
+    });
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, maxWaitMs);
+    });
+
+    try {
+      await Promise.race([idle, timeout]);
+    } finally {
+      clearTimeout(timer);
+      this.liveIdleWaiters = this.liveIdleWaiters.filter((entry) => entry !== waiter);
+    }
+
+    return !this.isLiveIngestionActive;
+  }
+
+  private releaseLiveIdleWaiters(): void {
+    if (this.isLiveIngestionActive) return;
+
+    const waiters = this.liveIdleWaiters;
+    this.liveIdleWaiters = [];
+    for (const resolve of waiters) resolve();
   }
 
   /**
@@ -213,6 +258,7 @@ export class IngestionCoordinator {
         this.enrichmentDone = true;
         this.signalWarmedUp();
       }
+      this.releaseLiveIdleWaiters();
     }
   }
 

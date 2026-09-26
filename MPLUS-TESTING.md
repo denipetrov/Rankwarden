@@ -70,7 +70,7 @@ starting point for new tests.
 | C3  | Only main seasons are stored; dungeons come from main seasons                               | `mplus-catalogue.service.spec.ts`, `mplus-archive.mapper.spec.ts` |
 | C4  | A failed expansion stops the walk rather than being skipped                                 | — (unit gap)                            |
 | C5  | A refresh never erases `archive` or `cutoffs` on a season                                   | `mplus-archive.spec.ts`                 |
-| C6  | Freshness is judged by the **oldest** `catalogueUpdatedAt`                                  | — (gap)                                 |
+| C6  | Freshness is judged by the **oldest** `catalogueUpdatedAt` of the seasons still listed      | `mplus-catalogue.spec.ts` (M1.7, M1.8)  |
 | C7  | One refresh is shared between simultaneous callers                                          | `mplus-catalogue.service.spec.ts`       |
 | C8  | Current season per region = newest catalogued season **opened in that region**              | `mplus-catalogue.mapper.spec.ts`, `mplus-season-transition.spec.ts` |
 | C9  | An ended season stays current until its successor opens there                               | `mplus-catalogue.mapper.spec.ts`, `mplus-season-transition.spec.ts` |
@@ -87,12 +87,12 @@ starting point for new tests.
 | L2  | Each region ingests its own current season; regions may differ on rollover day          | `mplus-season-transition.spec.ts` |
 | L3  | A region with no opened season is skipped, not failed                                   | — (gap)                       |
 | L4  | `mythicScore` = sum of best run per dungeon, and **never decreases**                    | `mplus-ingestion.spec.ts`, I12 |
-| L5  | Cleanup: stale runs, then characters named by no surviving run                          | `mplus-ingestion.spec.ts`, I18 |
+| L5  | Cleanup: runs two clean passes missed (the first marks `missedSince`), then characters named by no surviving run | `mplus-ingestion.spec.ts`, `mplus-cleanup.spec.ts`, I18 |
 | L6  | No pruning after a pass that stopped early or had a failed page                         | `mplus-failures.spec.ts`      |
-| L7  | `removeCharactersWithoutRuns` refuses a region with no runs at all                      | `mplus-failures.spec.ts`      |
+| L7  | Both prune stages refuse a region the pass refreshed nothing in; an empty board over stored runs is reported short | `mplus-failures.spec.ts`, `mplus-cleanup.spec.ts` (M3.1, M3.2) |
 | L8  | Anonymised roster members stay in the run and out of `mplus_characters`                 | I14, `mplus.mapper.spec.ts`   |
 | L9  | 400 past the last page, and an empty page, both mean "end of board", not failure        | `mplus-ingestion.spec.ts`, `mplus-failures.spec.ts` |
-| L10 | The pass yields to sweep/enrichment                                                     | `mplus-coordination.spec.ts` (before it starts), `mplus-yield.spec.ts` (between batches and regions) |
+| L10 | The pass pauses for sweep/enrichment and resumes (stops only when `MPLUS_YIELD_WAIT_MS` runs out) | `mplus-resume.spec.ts`, `mplus-cadence.spec.ts`, `mplus-yield.spec.ts` (wait 0) |
 | L11 | A window that stays spent past `RAIDERIO_BUDGET_WAIT_MS` stops the region               | `mplus-failures.spec.ts`, `mplus-budget-wait.spec.ts` (the wait itself) |
 | L12 | The pass no longer deletes superseded seasons                                           | `mplus-coordination.spec.ts`  |
 | L13 | An empty 2xx body is a transient failure, not payload drift                             | `mplus-failures.spec.ts`      |
@@ -111,7 +111,7 @@ starting point for new tests.
 | T5  | Abstains while a pass is running; the rollover tick **waits** for it                | `mplus-season-transition.scheduler.spec.ts` |
 | T6  | `MPLUS_PURGE_DRY_RUN` counts and deletes nothing                                    | `mplus-season-transition.service.spec.ts` |
 | T7  | A purge is recorded in `mplus_season_transitions`                                   | `mplus-season-transition.spec.ts`         |
-| T8  | An uncatalogued stored slug counts as superseded                                    | `mplus-season-transition.service.spec.ts` |
+| T8  | An uncatalogued stored slug counts as superseded, and is retired even under the interlock | `mplus-season-transition.service.spec.ts`, `mplus-region-growth.spec.ts` (M5.5) |
 | T9  | Warns at boot when the interlock is on and the archive is off                       | — (gap)                                   |
 
 ### 3.4 Archive (§4.6.1)
@@ -124,7 +124,7 @@ starting point for new tests.
 | A4  | A yield keeps the regions already read (`partial`), and writes nothing if none finished | `mplus-archive.spec.ts`   |
 | A5  | A region is adopted from rows only when they are exactly a full read                    | `mplus-archive.spec.ts`   |
 | A6  | A `world`-era marker (no `regions`) is re-read region by region                         | `mplus-archive.spec.ts`   |
-| A7  | 404 marks the **season** unarchivable; an empty region board is `complete` with 0 runs  | `mplus-archive.spec.ts`   |
+| A7  | 404 on a first read with nothing held marks the **season** unarchivable; after anything is read it fails the region; an empty region board is `complete` with 0 runs | `mplus-archive.spec.ts`, `mplus-region-growth.spec.ts` (M6.1) |
 | A8  | The marker is written **after** the rows                                                | I19                       |
 | A9  | Every affix on an archived run reaches `mplus_affixes`                                  | `mplus-archive.spec.ts`, I13 |
 | A10 | Archived rows are never touched by the live pass                                        | `mplus-archive.spec.ts`   |
@@ -152,10 +152,10 @@ starting point for new tests.
 | K2  | Alliance, horde and both together are kept apart                          | `mplus-cutoffs.mapper.spec.ts`, `mplus-cutoffs.spec.ts` |
 | K3  | A tier the season did not award is left out, not stored null              | both                          |
 | K4  | Live season re-read every pass; archived read once                        | `mplus-cutoffs.spec.ts`       |
-| K5  | 404 → `missing`, never asked again                                        | same                          |
-| K6  | Repeated failure → `failed`, then `unavailable` after 3 attempts          | same                          |
+| K5  | 404 → `missing`; asked again while live, never again once finalised       | same, `mplus-figures.spec.ts` (M8.1) |
+| K6  | Repeated failure → `failed`; `unavailable` after 3 **final** attempts; never while live | same, `mplus-figures.spec.ts` (M8.2) |
 | K7  | A region left outstanding is picked up by the archive's backfill          | same                          |
-| K8  | A cutoffs failure never fails the pass or the archive tick                | — (gap: only the happy path and recorded failures are asserted) |
+| K8  | A cutoffs failure never fails the pass or the archive tick                | `mplus-figures.spec.ts` (M8.4)  |
 
 ### 3.7 Sync endpoint (§7)
 
@@ -290,52 +290,56 @@ maxPages, before? })` — stored data against what the fake served — with
 **Every new safeguard was proven by a break**: 22 deliberate breaks, each caught by the case
 written for it.
 
-### 7.1 Confirmed defects
+### 7.1 Defects found, and fixed (2026-09-26)
 
-Each is pinned twice: a "today" case that passes and describes what happens, and a "desired"
-case marked `it.fails`. When a fix lands, both flip: remove `.fails`, delete or rewrite the
-"today" case.
+Every one was first confirmed by a failing "desired" case, then fixed; each case now asserts
+the fixed behaviour, and each fix was proven by reverting it and watching its case fail.
 
-| Id | Defect                                                                                   | Cases                                   |
-| -- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
-| F1 | A full pass (358s at the defaults) outlasts the 300s enrichment interval; an enrichment start mid-pass ends it for every later region with no resume, a tick landing during enrichment waits a whole interval, and readiness still calls the cadence feasible | `src/mplus/mplus-cadence.spec.ts` (M4.1, M4.4), `mplus-yield.spec.ts` (M4.2), `mplus-cadence.spec.ts` (M4.3) |
-| F2 | A populated region answering an empty first page is reported clean, its runs are pruned, and its characters are left named by no run; stage 1 of the prune has no guard of its own | `mplus-cleanup.spec.ts` (M3.1, M3.2)    |
-| F3 | A live season's cutoffs are given up on for good: one 404 turns even an `ok` region into `missing`, three failing passes into `unavailable`, and neither is read again | `mplus-figures.spec.ts` (M8.1, M8.2)    |
-| F4 | A 404 after some regions were read writes `unarchivable` with `regions: {}`: their rows are owned by nothing, and the transition then treats the season as held | `mplus-region-growth.spec.ts` (M6.1)    |
-| F5 | Under the default interlock, a leftover season the catalogue does not list is blocked and warned about on every run, and never retired | `mplus-region-growth.spec.ts` (M5.5)    |
-| F6 | One season no walk re-stamps keeps the catalogue due, so every `refreshIfDue` is a full walk | `mplus-catalogue.spec.ts` (M1.8)        |
-| F7 | While a season is partly archived, the live pass rewrites its representation from the regions it read and deletes the others' documents | `mplus-figures.spec.ts` (M7.2)          |
+| Id | Was                                                                                       | Now                                                                  | Cases |
+| -- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----- |
+| F1 | An enrichment start mid-pass ended it for every later region, with no resume; a tick during enrichment waited a whole interval | The pass pauses (`MPLUS_YIELD_WAIT_MS`, 10 min) and resumes where it was; the scheduler waits the same way; `pausedMs` is reported | `src/mplus/mplus-cadence.spec.ts`, `mplus-resume.spec.ts`, `mplus-cadence.spec.ts` |
+| F2 | An empty first page from a populated region pruned it and stranded its characters        | Reported as `stoppedEarly: 'the board came back empty'`, not pruned; stage 1 refuses on its own too | `mplus-cleanup.spec.ts` (M3.1, M3.2) |
+| F3 | One 404 or three failures gave up on a live season's cutoffs for good                    | A live season is read every pass; only the archive's final read (`finalised`) settles or caps | `mplus-figures.spec.ts` (M8.1, M8.2), `mplus-cutoffs.spec.ts` |
+| F4 | A 404 after a region was read wrote `unarchivable` over it, orphaning its rows           | Only a first read with nothing held is `unarchivable`; otherwise the region is `incomplete` and retried | `mplus-region-growth.spec.ts` (M6.1 ×2) |
+| F5 | An uncatalogued leftover was blocked and warned about for ever under the interlock      | Retired: the archive can never hold what the catalogue does not list | `mplus-region-growth.spec.ts` (M5.5) |
+| F6 | One unlisted season kept the catalogue due, so every check walked                         | A complete walk marks it `unlistedAt`; freshness ignores it          | `mplus-catalogue.spec.ts` (M1.8), unit |
+| F7 | The live pass rewrote a partly archived season from its live regions only                | Held regions are counted from the archive; `all` sums every region   | `mplus-figures.spec.ts` (M7.2) |
+
+Fixed with them, from §7.2's list:
+
+- **M2.6** — two-pass prune grace: a run is marked `missedSince` by the first clean pass that
+  misses it and deleted only by a second, so a run that slid mid-pass never takes its members
+  with it. (`mplus-payloads.spec.ts`, `mplus-cleanup.spec.ts`)
+- **M9.1–M9.3** — sync lowercases the realm slug and NFC-normalises names at every key site,
+  and refuses dungeons the season does not list with a 400. (`mplus-sync-edges.spec.ts`)
+- **M1.11** — a region resolving back to an earlier season is logged as a correction and
+  emits no rollover. (`mplus-season-resolution.spec.ts`)
+- **M6.3** — one "archived everywhere" rule (`isArchivedEverywhere`) for every reader.
+- **M6.4** — a season archived with no runs is not recomputed every tick.
+- **M11.3** — the Raider.io minute is persisted (`quota_windows`) across a restart.
+- The archive names what failed ("cutoffs" or "spec representation") in its error line.
+- The client strips `access_key` from got's messages itself rather than relying on
+  `DependencyHealth` knowing the key. (`raiderio-http.spec.ts`, M10.4)
+
+**Harness default:** `MPLUS_YIELD_WAIT_MS=0`, so a held job stops a pass at once rather than
+waiting ten minutes for a hold a test may never release. `mplus-resume.spec.ts` and
+`mplus-cadence.spec.ts` raise it.
 
 ### 7.2 Pinned as they are, for a decision
 
-Behaviour a case now records without judging it; each is the owner's call.
-
-- **M1.11** — a current season whose start moves into the future is announced as a rollover
-  *backwards* (mn-2 → mn-1).
-- **M2.6** — a run that slides above the read cursor mid-pass is pruned while still ranked, and
-  its members who appear in no other run are deleted with it until the next pass.
 - **M2.10** — a roster member from another region is filed under the board's region but keyed
   under its own (I17 and I24 both fail). X5 decides whether this happens live.
 - **M3.10** — `mergedCharacters` counts every character currently holding a dungeon outside
-  the window, on every pass, not only those newly merged.
-- **M6.3** — with a region dropped from the configuration, representation treats the season as
-  archived (by regions owed) while the cutoffs do not (by `status === 'complete'`).
-- **M6.4** — a season with no runs anywhere has its representation recomputed on every tick.
-- **M6.7** — raising `MPLUS_ARCHIVE_PAGES` never deepens a completed season.
-- **M9.1–M9.3** — sync is case-sensitive on the realm slug, not Unicode-normalised, and accepts
-  dungeons the season does not list.
-- **M11.3** — the Raider.io budget window is forgotten on restart.
-- The archive logs a cutoffs failure as "Could not record Mythic+ spec representation" (it
-  reuses the representation wrapper).
-- The client keeps the access key out of the URLs it builds, but for messages got builds itself
-  it relies on `DependencyHealth.redact`, which works because both read one config.
+  the window, on every pass, not only those newly merged. Kept (owner, 2026-09-26).
+- **M6.7** — raising `MPLUS_ARCHIVE_PAGES` never deepens a completed season; clear the marker
+  by hand. Kept (owner, 2026-09-26).
 
 ### 7.3 Still open
 
 The live cross-check (X1–X8) has not been run: it needs the real key, a throwaway database and,
-for X7, enrichment running against real Blizzard. X5 (another region's character on a board)
-and X8 (do cutoffs 404 for a season that has just opened?) are the cheap ones, and each decides
-something above.
+for X7, enrichment running against real Blizzard. X5 (another region's character on a board) is
+the cheap one that still decides something (M2.10). X8 no longer decides anything — a live
+season is re-read whatever it answered — but is worth recording as an upstream fact.
 
 ---
 

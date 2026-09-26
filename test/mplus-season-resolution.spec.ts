@@ -172,11 +172,12 @@ describe('Mythic+ season resolution', () => {
     await app.app.get(MplusCatalogueService).refresh();
     await app.app.get(MplusSeasonService).observe();
 
-    // What happens today, pinned: the US resolves back to mn-1, and that is
-    // announced as a rollover — backwards. Recorded rather than judged here.
+    // Followed — the US resolves back to mn-1 — but as a correction, not a
+    // rollover: nothing is announced, so nothing reacts as if a season began.
+    expect(events).toEqual([]);
     expect(
-      events.map((event) => [event.kind, event.region, event.previousSeason, event.season]),
-    ).toEqual([['rollover', 'us', 'season-mn-2', 'season-mn-1']]);
+      logger.of('warn', /Mythic\+ season correction in us: season-mn-2 .* back to season-mn-1/),
+    ).toHaveLength(1);
 
     const counts = async () => ({
       mn1: await db

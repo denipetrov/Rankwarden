@@ -15,6 +15,7 @@ import { ARCHIVE_ENTRIES_COLLECTION } from '../../src/archive/entities/archive.e
 import {
   MPLUS_CHARACTERS_COLLECTION,
   mplusCharacterKey,
+  mplusNameKey,
 } from '../../src/mplus/entities/mplus-character.entity.js';
 import { MPLUS_RUNS_COLLECTION } from '../../src/mplus/entities/mplus-run.entity.js';
 import { MPLUS_AFFIXES_COLLECTION } from '../../src/mplus/entities/mplus-affix.entity.js';
@@ -458,8 +459,8 @@ export async function expectMplusCharacterKeysWellFormed(db: Db): Promise<void> 
     expect(character.key, `I17: ${character.key} must match its identity fields`).toBe(
       mplusCharacterKey(character.region, character.realmSlug, character.characterName),
     );
-    expect(character.nameKey, `I17: ${character.key} nameKey is the lowercased name`).toBe(
-      character.characterName.toLowerCase(),
+    expect(character.nameKey, `I17: ${character.key} nameKey is the NFC, lowercased name`).toBe(
+      mplusNameKey(character.characterName),
     );
   }
 }
@@ -787,7 +788,12 @@ export async function expectMplusStoredMatchesServed(
     served.push(...rankings);
   }
 
-  const stored = await db.collection(runsCollection).find({ season, region }).toArray();
+  // A run one clean pass missed stays for one more (`missedSince`), so it is
+  // on its way out rather than stored as served.
+  const stored = await db
+    .collection(runsCollection)
+    .find({ season, region, missedSince: { $exists: false } })
+    .toArray();
   const storedById = new Map(stored.map((run) => [run.keystoneRunId as number, run]));
   const servedById = new Map(served.map((ranking) => [ranking.run.keystone_run_id, ranking]));
 

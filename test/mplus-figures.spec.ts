@@ -51,6 +51,8 @@ describe('Mythic+ figures: representation and cutoffs', () => {
       ...(await db.collection(MPLUS_RUNS_COLLECTION).findOne({ season: LIVE, region: 'us' })),
       keystoneRunId: 1,
       fetchedAt: new Date(0),
+      // Missed by one clean pass already, so the next one prunes it.
+      missedSince: new Date(0),
     };
     delete run._id;
     await db.collection(MPLUS_RUNS_COLLECTION).insertOne(run);
@@ -295,51 +297,39 @@ describe('Mythic+ figures: representation and cutoffs', () => {
         request.season === LIVE,
     );
 
-  it('M8.2 [F3] today: three failing passes give up on a live season for good', async () => {
+  it('M8.2 [F3] a live season that keeps failing is read again once Raider.io recovers', async () => {
     app.raiderIo.failWith('season-cutoffs&region:eu', { status: 503 });
     for (let pass = 0; pass < 3; pass += 1) await app.app.get(MplusService).sweep();
-    expect(await cutoffsOf(LIVE, 'eu')).toMatchObject({ status: 'unavailable', attempts: 3 });
+    // Recorded, never given up on while live: the cap is for a finished
+    // season's final read.
+    expect(await cutoffsOf(LIVE, 'eu')).toMatchObject({ status: 'failed', attempts: 3 });
 
-    // Raider.io recovers; the live season is never asked again.
     app.raiderIo.reset();
     await pass();
-    expect(cutoffRequests('eu')).toEqual([]);
-    expect((await cutoffsOf(LIVE, 'eu'))?.status).toBe('unavailable');
-  });
-
-  // Confirmed 2026-09-25 ("expected 'unavailable' to be 'ok'"). Remove `.fails` with the fix.
-  it.fails('M8.2 [F3] desired: the live season is read again once Raider.io recovers', async () => {
-    await pass();
-
+    expect(cutoffRequests('eu')).toHaveLength(1);
     expect((await cutoffsOf(LIVE, 'eu'))?.status).toBe('ok');
   });
 
-  it('M8.1 [F3] today: one 404 downgrades a live season to missing, and it is never read again', async () => {
-    expect((await cutoffsOf(LIVE, 'us'))?.status, 'read fine until now').toBe('ok');
+  it('M8.1 [F3] a 404 on a live season keeps its figures and is asked again next pass', async () => {
+    const before = await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: LIVE });
+    expect(before?.cutoffs?.us?.status).toBe('ok');
 
-    // A day Raider.io has no cutoffs for the season — the first days of a new
-    // one, say. The figures read before are replaced by "missing".
+    // A day Raider.io has no cutoffs for the season.
     world.seasonsWithoutCutoffs.add(LIVE);
     await pass();
-    const missing = await cutoffsOf(LIVE, 'us');
-    expect(missing).toMatchObject({ status: 'missing', attempts: 1 });
+    const missing = (await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: LIVE }))!.cutoffs
+      .us;
+    expect(missing).toMatchObject({ status: 'missing', finalised: false });
+    expect(missing.keystones, 'the figures read before are kept').toEqual(
+      before!.cutoffs.us.keystones,
+    );
 
     world.seasonsWithoutCutoffs.delete(LIVE);
     app.raiderIo.reset();
     await pass();
-    expect(cutoffRequests('us'), 'never asked again while live').toEqual([]);
-    expect((await cutoffsOf(LIVE, 'us'))?.status).toBe('missing');
+    expect(cutoffRequests('us')).toHaveLength(1);
+    expect((await cutoffsOf(LIVE, 'us'))?.status).toBe('ok');
   });
-
-  // Confirmed 2026-09-25 ("expected 'missing' to be 'ok'"). Remove `.fails` with the fix.
-  it.fails(
-    'M8.1 [F3] desired: a live season recorded missing is asked again on the next pass',
-    async () => {
-      await pass();
-
-      expect((await cutoffsOf(LIVE, 'us'))?.status).toBe('ok');
-    },
-  );
 
   /**
    * The partial-archive window of F7: the season has ended everywhere, the US
@@ -391,6 +381,15 @@ describe('Mythic+ figures: representation and cutoffs', () => {
         },
       },
     );
+    // What the archive read for the US, then the live rows the transition retired.
+    const usRuns = await db
+      .collection(MPLUS_RUNS_COLLECTION)
+      .find(
+        { season: LIVE, region: 'us', missedSince: { $exists: false } },
+        { projection: { _id: 0 } },
+      )
+      .toArray();
+    await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).insertMany(usRuns);
     await db.collection(MPLUS_RUNS_COLLECTION).deleteMany({ season: LIVE, region: 'us' });
     await db.collection(MPLUS_CHARACTERS_COLLECTION).deleteMany({ season: LIVE, region: 'us' });
 
@@ -404,28 +403,19 @@ describe('Mythic+ figures: representation and cutoffs', () => {
   let window: Awaited<ReturnType<typeof partialWindow>> | undefined;
   const partial = async () => (window ??= await partialWindow());
 
-  it('M7.2 [F7] today: the live pass rewrites a partly archived season from one region', async () => {
+  it('M7.2 [F7] the regions the archive holds keep their figures, and "all" still counts them', async () => {
     const { before, after } = await partial();
 
     expect(before.us).toBeGreaterThan(0);
-    expect(after.us, 'the US documents are deleted').toBe(0);
+    expect(after.us, 'counted from the archive now').toBe(before.us);
     expect(after.eu).toBe(before.eu);
-    const all = await db
-      .collection(MPLUS_SPEC_REPRESENTATION_COLLECTION)
-      .findOne({ season: LIVE, region: 'all', dungeonId: null });
-    const eu = await db
-      .collection(MPLUS_SPEC_REPRESENTATION_COLLECTION)
-      .findOne({ season: LIVE, region: 'eu', dungeonId: null });
-    expect(all!.runs, '"all" is now Europe alone').toBe(eu!.runs);
+
+    const doc = (region: string) =>
+      db
+        .collection(MPLUS_SPEC_REPRESENTATION_COLLECTION)
+        .findOne({ season: LIVE, region, dungeonId: null });
+    const [all, us, eu] = [await doc('all'), await doc('us'), await doc('eu')];
+    expect(all!.runs, '"all" is both regions').toBe(us!.runs + eu!.runs);
+    await expectInvariants(db);
   });
-
-  // Confirmed 2026-09-25 ("expected +0 to be 3"). Remove `.fails` with the fix.
-  it.fails(
-    'M7.2 [F7] desired: the regions the live pass did not read keep their figures',
-    async () => {
-      const { before, after } = await partial();
-
-      expect(after.us).toBe(before.us);
-    },
-  );
 });

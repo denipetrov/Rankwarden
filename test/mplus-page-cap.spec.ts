@@ -122,7 +122,9 @@ describe('Mythic+ pass at the real page cap', () => {
     const us = result!.regions[0];
     expect(us.pagesFailed).toBe(0);
     expect(us.stoppedEarly).toBeNull();
-    expect(us.prunedRuns, 'the thirty that left the board').toBe(30);
+    expect(us.missedRuns, 'the thirty that left the board, marked').toBe(30);
+    const next = await app.app.get(MplusService).sweep();
+    expect(next!.regions[0].prunedRuns, 'and pruned on the next pass').toBe(30);
     expect(await db.collection(MPLUS_RUNS_COLLECTION).countDocuments({ season: SEASON })).toBe(
       FULL * RUNS_PER_PAGE - 30,
     );

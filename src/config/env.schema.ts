@@ -391,6 +391,14 @@ export const envSchema = z.object({
    * and how much Mongo churn is reasonable, not for the quota.
    */
   MPLUS_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
+  /**
+   * How long a Mythic+ pass waits for live PvP ingestion (a sweep or
+   * enrichment) before giving up on its remaining regions. The pass pauses at
+   * its next batch boundary and resumes where it was; a scheduled pass that
+   * finds live ingestion running waits the same way before starting. 0 makes
+   * the pass stop at once, as it did before pausing existed.
+   */
+  MPLUS_YIELD_WAIT_MS: z.coerce.number().int().nonnegative().default(600_000),
 
   // Mythic+ archive of finished seasons.
   /**

@@ -56,6 +56,8 @@ export interface MplusOutlook {
   characters: number;
   /** How long the pass took, and what it would take to keep the cadence. */
   durationMs: number;
+  /** Of that, time spent paused for live PvP ingestion. */
+  pausedMs: number;
   requests: number;
   /** Requests a minute the budget permits, and what a full pass needs. */
   capacityPerMinute: number;
@@ -135,6 +137,25 @@ export class RaiderIoBudget {
   /** Charges `count` requests to a consumer. Called once per real attempt. */
   record(consumer: RaiderIoConsumer, count = 1): void {
     this.window.record(consumer, count);
+    this.changed = true;
+  }
+
+  /** Whether anything was charged since the window was last taken for saving. */
+  private changed = false;
+
+  /** The minute's buckets, for `RaiderIoBudgetStore`. Clears the changed flag. */
+  takeSnapshot(): { index: number; counts: Record<RaiderIoConsumer, number> }[] | null {
+    if (!this.changed) return null;
+    this.changed = false;
+
+    return this.window.snapshot();
+  }
+
+  /** Puts a saved minute back, after a restart. */
+  restoreSnapshot(
+    saved: readonly { index: number; counts: Partial<Record<RaiderIoConsumer, number>> }[],
+  ): void {
+    this.window.restore(saved);
   }
 
   /** Requests spent in the rolling minute, by one consumer or in total. */

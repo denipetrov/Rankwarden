@@ -31,6 +31,9 @@ const PAGES = 10;
  *
  * Two batches a region (ten pages, five a batch), because with one batch the
  * inside-a-region check is never reached.
+ *
+ * With the harness's `MPLUS_YIELD_WAIT_MS=0` a pass stops at those checks, which
+ * is what these pin; pausing and resuming is `mplus-resume.spec.ts`.
  */
 describe('Mythic+ pass yielding mid-pass', () => {
   let app: TestApp;
@@ -130,6 +133,8 @@ describe('Mythic+ pass yielding mid-pass', () => {
       ...(await db.collection(MPLUS_RUNS_COLLECTION).findOne({ region: 'us' })),
       keystoneRunId: 1,
       fetchedAt: new Date(0),
+      // Missed by one clean pass already, so the next one prunes it.
+      missedSince: new Date(0),
     };
     delete stale._id;
     await db.collection(MPLUS_RUNS_COLLECTION).insertOne(stale);
@@ -190,7 +195,7 @@ describe('Mythic+ pass yielding mid-pass', () => {
     return result!;
   };
 
-  it('M4.2 [F1] today: enrichment starting mid-pass ends it for every region after, and nothing resumes', async () => {
+  it('M4.2 with MPLUS_YIELD_WAIT_MS=0, enrichment starting mid-pass ends it for every region after', async () => {
     const result = await enrichmentFromEuPage2();
 
     const us = result.regions.find((region) => region.region === 'us')!;
@@ -215,16 +220,4 @@ describe('Mythic+ pass yielding mid-pass', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(app.raiderIo.requests.length).toBe(before);
   });
-
-  // Confirmed 2026-09-25 ("expected 0 to be greater than 0"): Korea gets no
-  // request at all once enrichment ends. Remove `.fails` with the fix.
-  it.fails(
-    'M4.2 [F1] desired: the regions after a yield are read once the job that caused it is done',
-    async () => {
-      await enrichmentFromEuPage2();
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      expect(runsRequests('kr').length).toBeGreaterThan(0);
-    },
-  );
 });

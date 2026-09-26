@@ -79,6 +79,14 @@ export interface MplusSeasonArchiveMarker {
  * season has ended.
  */
 export interface MplusSeasonDocument {
+  /**
+   * Set when a complete catalogue walk no longer lists the season — renamed or
+   * dropped upstream, or below a raised `MPLUS_CATALOGUE_FIRST_EXPANSION` — and
+   * cleared if a later walk lists it again. Such a season is never re-stamped,
+   * so it is left out of the catalogue's freshness; everything else about it is
+   * kept, archive included.
+   */
+  unlistedAt?: Date;
   slug: string;
   name: string;
   shortName: string | null;

@@ -116,6 +116,7 @@ describe('Mythic+ admin routes and health', () => {
       [
         'characters',
         'durationMs',
+        'pausedMs',
         'regions',
         'requests',
         'runs',

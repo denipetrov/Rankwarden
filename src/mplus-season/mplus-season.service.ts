@@ -190,6 +190,19 @@ export class MplusSeasonService implements OnModuleInit {
       return;
     }
 
+    // Back to a season that started earlier than the one it replaces: Raider.io
+    // corrected a date (typically moving the newer season's start into the
+    // future), not a new season opening. Followed — the dates decide — but not
+    // announced as a rollover, so nothing retires a season because of it.
+    if (previous.season !== next.season && next.startsAt < previous.startsAt) {
+      this.logger.warn(
+        `Mythic+ season correction in ${region}: ${previous.season} (started ` +
+          `${previous.startsAt.toISOString()}) is no longer current; back to ${next.season}. ` +
+          'Not treated as a rollover.',
+      );
+      return;
+    }
+
     if (previous.season !== next.season) {
       this.logger.warn(
         `Mythic+ season rollover in ${region}: ${previous.season} replaced by ${next.season} ` +
