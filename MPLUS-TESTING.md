@@ -92,8 +92,8 @@ starting point for new tests.
 | L7  | `removeCharactersWithoutRuns` refuses a region with no runs at all                      | `mplus-failures.spec.ts`      |
 | L8  | Anonymised roster members stay in the run and out of `mplus_characters`                 | I14, `mplus.mapper.spec.ts`   |
 | L9  | 400 past the last page, and an empty page, both mean "end of board", not failure        | `mplus-ingestion.spec.ts`, `mplus-failures.spec.ts` |
-| L10 | The pass yields to sweep/enrichment                                                     | `mplus-coordination.spec.ts` — **only before it starts**; the between-regions and between-batches checks are unpinned |
-| L11 | A window that stays spent past `RAIDERIO_BUDGET_WAIT_MS` stops the region               | `mplus-failures.spec.ts` (harness sets the wait to 0, so the **waiting** path itself is unpinned) |
+| L10 | The pass yields to sweep/enrichment                                                     | `mplus-coordination.spec.ts` (before it starts), `mplus-yield.spec.ts` (between batches and regions) |
+| L11 | A window that stays spent past `RAIDERIO_BUDGET_WAIT_MS` stops the region               | `mplus-failures.spec.ts`, `mplus-budget-wait.spec.ts` (the wait itself) |
 | L12 | The pass no longer deletes superseded seasons                                           | `mplus-coordination.spec.ts`  |
 | L13 | An empty 2xx body is a transient failure, not payload drift                             | `mplus-failures.spec.ts`      |
 | L14 | An outage is recorded on Raider.io health, and forgotten when traffic succeeds          | `mplus-failures.spec.ts`, `mplus-coordination.spec.ts` |
@@ -247,31 +247,95 @@ Rules the harness enforces, and that a plan must design around:
 
 ---
 
-## 7. What is not covered yet
+## 7. Coverage added from the test plan, and what it found
 
-Candidates for the plan, in rough order of value:
+The test plan (2026-09-25) closed the ten gaps this section used to list. Where each is now
+pinned:
 
-1. **The five `POST /admin/mplus*` routes** — `mplus`, `mplus-season`, `mplus-season-transition`,
-   `mplus-archive`, `mplus-catalogue` — have no test at all. Their 404-outside-development
-   guard is only covered generically.
-2. **`MplusSeasonScheduler`** has no unit spec: the "idle unless a Mythic+ job is enabled"
-   rule and the boot tick are unpinned (compare `mplus-archive.scheduler.spec.ts`).
-3. **Catalogue walk on failure** (C4) and **freshness by oldest stamp** (C6).
-4. **Failures in representation and cutoffs must never fail their caller** (K8): the
-   try/catch paths in `MplusService.recordRepresentation` / `recordCutoffs` and the archive's
-   equivalents are unexercised.
-5. **Health and readiness for M+**: `mplusSeasons` on `/health`, `mplus` on `/health/seasons`,
-   `jobs.mplusArchive` and the `mplus` outlook on `/health/ready` are only lightly asserted.
-6. **`RAIDERIO_ARCHIVE_SHARE` under contention**: the archive's cap is unit-tested on the
-   budget, but no integration case has a live pass and an archive competing for one minute.
-7. **A region added to `RAIDERIO_REGIONS` later** — `regionsOwed` covers it in unit; no
-   integration case grows the region list (the one-config-per-file rule makes this its own file).
-8. **`mplus_season_transitions` once-only behaviour** when rows reappear after a purge.
-9. **The budget wait itself** (L11): every file sets `RAIDERIO_BUDGET_WAIT_MS=0`, so the
-   "wait for the window to roll, then carry on" path — and the archive's `abandon` callback
-   releasing that wait when a higher-priority job starts — has no test.
-10. **The live pass yielding mid-pass** (L10): the between-regions and between-batches
-    coordinator checks. `FakeRaiderIo.beforeServe` is the tool, as the archive spec uses it.
+| Former gap                                   | Now covered by                                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| 1. The five `POST /admin/mplus*` routes      | `mplus-admin.spec.ts` (M12.1–M12.5), `mplus-admin-production.spec.ts` (M12.6, the first production-guard integration test) |
+| 2. `MplusSeasonScheduler`                    | `src/mplus-season/mplus-season.scheduler.spec.ts` (M1.3), `mplus-disabled.spec.ts` (M1.2) |
+| 3. C4 walk on failure, C6 oldest stamp       | `mplus-catalogue.service.spec.ts` (unit), `mplus-catalogue.spec.ts` (M1.6, M1.7) |
+| 4. K8, representation and cutoffs never fail the caller | `mplus-figures.spec.ts` (M7.1, M8.4)                          |
+| 5. M+ health and readiness                   | `mplus-admin.spec.ts` (M12.7, M12.8), `mplus-infeasible.spec.ts`, `mplus-lifecycle.spec.ts` (M5.9) |
+| 6. Archive share under contention            | `mplus-archive-share.spec.ts` (M4.10)                                    |
+| 7. A region added later                      | `mplus-region-growth.spec.ts` (M6.2, M6.6)                               |
+| 8. Transitions when rows reappear            | `mplus-season-resolution.spec.ts` (M5.6)                                 |
+| 9. The budget wait                           | `mplus-budget-wait.spec.ts` (M4.7–M4.9)                                  |
+| 10. Mid-pass yielding                        | `mplus-yield.spec.ts` (M4.5, M4.6)                                       |
+
+Other new files: `raiderio-http.spec.ts` (the real `RaiderIoHttpService` against a listener,
+M10.1–M10.6, M10.8), `mplus-payloads.spec.ts` (M2.x, M7.3, M10.7, M10.10),
+`mplus-cleanup.spec.ts` (M3.x), `mplus-lifecycle.spec.ts` (M5.x), `mplus-archive-edges.spec.ts`
+(M6.3–M6.7), `mplus-sync-edges.spec.ts` (M9.x), `mplus-restart.spec.ts` (M11.x),
+`mplus-page-cap.spec.ts` (M2.5, the real 1,001-page cap), `mplus-first-pass.spec.ts` (M1.4),
+`mplus-season-resolution.spec.ts` (M1.10–M1.12, M8.6), `mplus-cadence.spec.ts` and
+`src/mplus/mplus-cadence.spec.ts` (F1), `mplus-invariants.spec.ts` (negative controls for
+I21–I25), and M+ cases in `src/config/env.schema.spec.ts` (M1.5, M10.9).
+
+**New harness pieces.** `FakeRaiderIo.failWith`/`corrupt` take matchers — a path fragment or
+`page:`, `region:`, `season:`, `expansion:`, joined with `&` — and every request records its
+`params`. `MplusWorld` has `addRun`, `removeRuns`, `member()`, `WORLD_DUNGEONS`, per-member
+`specPlaceholder`, `wowRealmId: null` and `region`, and an opt-in `cacheRankings` for deep boards.
+`holdActive(app, job)` / `releaseAllHolds()` in `support/hold.ts`, `CapturingLogger` in
+`support/logger.ts`, and `RaiderIoServer` in `support/raiderio-server.ts`.
+
+**New invariants.** Always on in `expectInvariants`: I21 (representation arithmetic), I23
+(cutoff records well formed), I24 (region coherent, live and archive), I25 (archived rows owned
+by their marker). Opt-in: I22 `expectMplusStoredMatchesServed(db, world, { season, region,
+maxPages, before? })` — stored data against what the fake served — with
+`snapshotMplusCharacters` for `before`.
+
+**Every new safeguard was proven by a break**: 22 deliberate breaks, each caught by the case
+written for it.
+
+### 7.1 Confirmed defects
+
+Each is pinned twice: a "today" case that passes and describes what happens, and a "desired"
+case marked `it.fails`. When a fix lands, both flip: remove `.fails`, delete or rewrite the
+"today" case.
+
+| Id | Defect                                                                                   | Cases                                   |
+| -- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
+| F1 | A full pass (358s at the defaults) outlasts the 300s enrichment interval; an enrichment start mid-pass ends it for every later region with no resume, a tick landing during enrichment waits a whole interval, and readiness still calls the cadence feasible | `src/mplus/mplus-cadence.spec.ts` (M4.1, M4.4), `mplus-yield.spec.ts` (M4.2), `mplus-cadence.spec.ts` (M4.3) |
+| F2 | A populated region answering an empty first page is reported clean, its runs are pruned, and its characters are left named by no run; stage 1 of the prune has no guard of its own | `mplus-cleanup.spec.ts` (M3.1, M3.2)    |
+| F3 | A live season's cutoffs are given up on for good: one 404 turns even an `ok` region into `missing`, three failing passes into `unavailable`, and neither is read again | `mplus-figures.spec.ts` (M8.1, M8.2)    |
+| F4 | A 404 after some regions were read writes `unarchivable` with `regions: {}`: their rows are owned by nothing, and the transition then treats the season as held | `mplus-region-growth.spec.ts` (M6.1)    |
+| F5 | Under the default interlock, a leftover season the catalogue does not list is blocked and warned about on every run, and never retired | `mplus-region-growth.spec.ts` (M5.5)    |
+| F6 | One season no walk re-stamps keeps the catalogue due, so every `refreshIfDue` is a full walk | `mplus-catalogue.spec.ts` (M1.8)        |
+| F7 | While a season is partly archived, the live pass rewrites its representation from the regions it read and deletes the others' documents | `mplus-figures.spec.ts` (M7.2)          |
+
+### 7.2 Pinned as they are, for a decision
+
+Behaviour a case now records without judging it; each is the owner's call.
+
+- **M1.11** — a current season whose start moves into the future is announced as a rollover
+  *backwards* (mn-2 → mn-1).
+- **M2.6** — a run that slides above the read cursor mid-pass is pruned while still ranked, and
+  its members who appear in no other run are deleted with it until the next pass.
+- **M2.10** — a roster member from another region is filed under the board's region but keyed
+  under its own (I17 and I24 both fail). X5 decides whether this happens live.
+- **M3.10** — `mergedCharacters` counts every character currently holding a dungeon outside
+  the window, on every pass, not only those newly merged.
+- **M6.3** — with a region dropped from the configuration, representation treats the season as
+  archived (by regions owed) while the cutoffs do not (by `status === 'complete'`).
+- **M6.4** — a season with no runs anywhere has its representation recomputed on every tick.
+- **M6.7** — raising `MPLUS_ARCHIVE_PAGES` never deepens a completed season.
+- **M9.1–M9.3** — sync is case-sensitive on the realm slug, not Unicode-normalised, and accepts
+  dungeons the season does not list.
+- **M11.3** — the Raider.io budget window is forgotten on restart.
+- The archive logs a cutoffs failure as "Could not record Mythic+ spec representation" (it
+  reuses the representation wrapper).
+- The client keeps the access key out of the URLs it builds, but for messages got builds itself
+  it relies on `DependencyHealth.redact`, which works because both read one config.
+
+### 7.3 Still open
+
+The live cross-check (X1–X8) has not been run: it needs the real key, a throwaway database and,
+for X7, enrichment running against real Blizzard. X5 (another region's character on a board)
+and X8 (do cutoffs 404 for a season that has just opened?) are the cheap ones, and each decides
+something above.
 
 ---
 

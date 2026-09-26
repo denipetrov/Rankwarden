@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import type { SchedulerRegistry } from '@nestjs/schedule';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -112,5 +113,89 @@ describe('MplusSeasonTransitionScheduler', () => {
     await scheduler.whenSettled();
 
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * M5.3 — the interlock's one boot warning (T9).
+ *
+ * With the interlock on and the archive off, a superseded season is never
+ * retired, and a plan nobody reads is the only other sign of it. So it is said
+ * once at boot, under exactly that combination, and never repeated per tick.
+ */
+describe('MplusSeasonTransitionScheduler boot warning', () => {
+  const INTERLOCK = /MPLUS_PURGE_REQUIRE_ARCHIVE is on but MPLUS_ARCHIVE_ENABLED is off/;
+  let active: MplusSeasonTransitionScheduler | undefined;
+
+  afterEach(() => {
+    active?.onModuleDestroy();
+    active = undefined;
+    vi.restoreAllMocks();
+  });
+
+  const boot = (settings: { enabled: boolean; archive: boolean; interlock: boolean }) => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    let tick: (() => void) | undefined;
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void) => {
+      tick = callback;
+
+      return 0 as unknown as NodeJS.Timeout;
+    }) as typeof setInterval);
+
+    const env: Record<string, unknown> = {
+      MPLUS_TRANSITION_ENABLED: settings.enabled,
+      MPLUS_ARCHIVE_ENABLED: settings.archive,
+      MPLUS_TRANSITION_CHECK_INTERVAL_MS: 3_600_000,
+    };
+    const transitions = {
+      isDryRun: false,
+      requiresArchive: settings.interlock,
+      run: vi.fn(async () => ({ plan: { dryRun: false }, purged: [] })),
+    } as unknown as MplusSeasonTransitionService;
+    const registry = {
+      addInterval: vi.fn(),
+      doesExist: vi.fn().mockReturnValue(false),
+      deleteInterval: vi.fn(),
+    } as unknown as SchedulerRegistry;
+    const scheduler = new MplusSeasonTransitionScheduler(
+      { get: (key: string) => env[key] } as unknown as ConfigService<never, true>,
+      transitions,
+      new MplusSeasonEvents(),
+      registry,
+      new IngestionCoordinator(),
+    );
+    scheduler.onApplicationBootstrap();
+    active = scheduler;
+
+    return {
+      scheduler,
+      tick: () => tick?.(),
+      interlockWarnings: () =>
+        warn.mock.calls.filter(([message]) => INTERLOCK.test(String(message))),
+    };
+  };
+
+  it('warns once, naming both variables, when the interlock waits on an archive that is off', async () => {
+    const { scheduler, tick, interlockWarnings } = boot({
+      enabled: true,
+      archive: false,
+      interlock: true,
+    });
+
+    expect(interlockWarnings()).toHaveLength(1);
+    expect(String(interlockWarnings()[0][0])).toMatch(/superseded Mythic\+ seasons will stay/);
+
+    tick();
+    await scheduler.whenSettled();
+    expect(interlockWarnings(), 'not repeated on a later tick').toHaveLength(1);
+  });
+
+  it.each([
+    ['the archive on', { enabled: true, archive: true, interlock: true }],
+    ['the interlock off', { enabled: true, archive: false, interlock: false }],
+    ['transitions off', { enabled: false, archive: false, interlock: true }],
+  ])('says nothing with %s', (_name, settings) => {
+    expect(boot(settings).interlockWarnings()).toHaveLength(0);
   });
 });

@@ -17,7 +17,47 @@ export interface RecordedRaiderIoRequest {
   region: string;
   season: string | null;
   page: number | null;
+  /** The `expansion_id` a static-data request named, else null. */
+  expansionId: number | null;
+  /** Every query parameter the request carried, for asserting what was asked. */
+  params: Record<string, string | number>;
   at: number;
+}
+
+/**
+ * Which requests a failure or a corruption applies to.
+ *
+ * One condition, or several joined with `&`, all of which must hold:
+ *
+ * - a fragment of the path, `mythic-plus/runs`;
+ * - `page:<n>`, `region:<r>`, `season:<slug>`, `expansion:<id>`.
+ *
+ * The keyed forms exist because a path alone cannot tell requests apart: every
+ * static-data call has the same path, so "expansion 11 fails" has no other way
+ * to be said, and a region-specific outage would otherwise have to be staged by
+ * giving the region no board.
+ */
+export type RequestMatcher = string;
+
+function matches(matcher: RequestMatcher, request: RecordedRaiderIoRequest): boolean {
+  return matcher.split('&').every((condition) => {
+    const [key, value] = condition.split(':');
+
+    if (value === undefined) return request.path.includes(condition);
+
+    switch (key) {
+      case 'page':
+        return request.page === Number(value);
+      case 'region':
+        return request.region === value;
+      case 'season':
+        return request.season === value;
+      case 'expansion':
+        return request.expansionId === Number(value);
+      default:
+        return request.path.includes(condition);
+    }
+  });
 }
 
 /**
@@ -46,8 +86,13 @@ export class FakeRaiderIo {
    * by `bootTestApp`.
    */
   budget?: RaiderIoBudget;
-  /** Paths set to fail, and how. Keyed by a fragment of the path. */
-  readonly failures = new Map<string, { status?: number; empty?: boolean; times?: number }>();
+  /** Requests set to fail, and how. Keyed by a `RequestMatcher`. */
+  readonly failures = new Map<
+    RequestMatcher,
+    { status?: number; empty?: boolean; times?: number }
+  >();
+  /** Requests answered with an arbitrary body instead of the world's. */
+  readonly corruptions = new Map<RequestMatcher, { payload: unknown; times?: number }>();
   /**
    * Called as each request is served, before its payload is built. Lets a test
    * change the world mid-job — start a higher-priority job partway through a
@@ -63,6 +108,8 @@ export class FakeRaiderIo {
     this.beforeServe = undefined;
     this.requests.length = 0;
     this.failures.clear();
+    this.corruptions.clear();
+    this.delayMs = 0;
     this.peakInFlight = 0;
   }
 
@@ -72,8 +119,20 @@ export class FakeRaiderIo {
   }
 
   /** Makes the next `times` matching requests fail with a status, or an empty body. */
-  failWith(fragment: string, options: { status?: number; empty?: boolean; times?: number }): void {
-    this.failures.set(fragment, options);
+  failWith(
+    matcher: RequestMatcher,
+    options: { status?: number; empty?: boolean; times?: number },
+  ): void {
+    this.failures.set(matcher, options);
+  }
+
+  /**
+   * Answers the next `times` matching requests with `payload` instead of the
+   * world's. A 200 carrying the wrong shape, which is schema drift: the one
+   * failure a status cannot express, and the one the zod boundary exists for.
+   */
+  corrupt(matcher: RequestMatcher, payload: unknown, times?: number): void {
+    this.corruptions.set(matcher, { payload, times });
   }
 
   async get(path: string, options: RaiderIoGetOptions = {}): Promise<unknown> {
@@ -83,7 +142,16 @@ export class FakeRaiderIo {
     const page = params.page === undefined ? null : Number(params.page);
     const expansionId = params.expansion_id === undefined ? undefined : Number(params.expansion_id);
 
-    this.requests.push({ path, region, season, page, at: Date.now() });
+    const request: RecordedRaiderIoRequest = {
+      path,
+      region,
+      season,
+      page,
+      expansionId: expansionId ?? null,
+      params: { ...params },
+      at: Date.now(),
+    };
+    this.requests.push(request);
 
     this.inFlight += 1;
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
@@ -97,9 +165,9 @@ export class FakeRaiderIo {
     try {
       if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
 
-      this.beforeServe?.(this.requests[this.requests.length - 1]);
+      this.beforeServe?.(request);
 
-      const failure = this.nextFailure(path, page);
+      const failure = this.next(this.failures, request);
 
       if (failure?.empty) throw new RaiderIoEmptyResponseError(url);
       if (failure?.status) {
@@ -110,7 +178,10 @@ export class FakeRaiderIo {
         );
       }
 
-      const payload = this.route(path, region, season, page, url, expansionId);
+      const corruption = this.next(this.corruptions, request);
+      const payload = corruption
+        ? corruption.payload
+        : this.route(path, region, season, page, url, expansionId);
 
       // Mirrors the real client, which rejects an empty body as a transport
       // failure rather than letting `''` reach the zod boundary and be misread
@@ -133,13 +204,13 @@ export class FakeRaiderIo {
     }
   }
 
-  private nextFailure(
-    path: string,
-    page: number | null,
-  ): { status?: number; empty?: boolean } | null {
-    for (const [fragment, options] of this.failures) {
-      const matches = path.includes(fragment) || (page !== null && fragment === `page:${page}`);
-      if (!matches) continue;
+  /** The first entry matching the request with uses left, spending one of them. */
+  private next<T extends { times?: number }>(
+    entries: Map<RequestMatcher, T>,
+    request: RecordedRaiderIoRequest,
+  ): T | null {
+    for (const [matcher, options] of entries) {
+      if (!matches(matcher, request)) continue;
 
       if (options.times !== undefined) {
         if (options.times <= 0) continue;

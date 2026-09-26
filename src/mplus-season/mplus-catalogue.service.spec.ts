@@ -17,14 +17,24 @@ function season(slug: string, main: boolean, dungeonId: number): StaticSeason {
   };
 }
 
-function serviceOver(byExpansion: Record<number, StaticSeason[]>) {
-  const getStaticData = vi.fn(async (expansionId: number): Promise<StaticData> => ({
-    seasons: byExpansion[expansionId] ?? [],
-  }));
+function serviceOver(
+  byExpansion: Record<number, StaticSeason[]>,
+  options: { failing?: number[]; updatedAt?: Date | null } = {},
+) {
+  const getStaticData = vi.fn(async (expansionId: number): Promise<StaticData> => {
+    if (options.failing?.includes(expansionId)) throw new Error(`expansion ${expansionId} down`);
+
+    return { seasons: byExpansion[expansionId] ?? [] };
+  });
   const api = { getStaticData } as unknown as MythicPlusApi;
   const upsertSeasons = vi.fn(async (seasons: unknown[]) => seasons.length);
   const upsertDungeons = vi.fn(async (dungeons: unknown[]) => dungeons.length);
-  const repository = { upsertSeasons, upsertDungeons } as unknown as MplusCatalogueRepository;
+  const catalogueUpdatedAt = vi.fn(async () => options.updatedAt ?? null);
+  const repository = {
+    upsertSeasons,
+    upsertDungeons,
+    catalogueUpdatedAt,
+  } as unknown as MplusCatalogueRepository;
   const env: Record<string, unknown> = {
     MPLUS_CATALOGUE_FIRST_EXPANSION: 6,
     MPLUS_CATALOGUE_TTL_MS: 86_400_000,
@@ -81,6 +91,64 @@ describe('MplusCatalogueService.refresh', () => {
     const result = await service.refresh();
 
     expect(result.expansions).toEqual([6]);
+  });
+
+  /**
+   * C4. A failure skipped would read the next id as "the one after", and a
+   * transient outage on one expansion would then look exactly like the end of
+   * the list: everything after it would silently go unrefreshed.
+   */
+  it('stops the walk at an expansion that fails, keeping what was written', async () => {
+    const { service, getStaticData, upsertSeasons } = serviceOver(
+      {
+        6: [season('season-7.2.0', true, 1)],
+        7: [season('season-bfa-1', true, 2)],
+        8: [season('season-sl-1', true, 3)],
+      },
+      { failing: [7] },
+    );
+
+    const result = await service.refresh();
+
+    expect(result.expansions).toEqual([6]);
+    expect(result.refreshed).toBe(true);
+    expect(
+      getStaticData.mock.calls.map(([id]) => id),
+      'never asks for 8',
+    ).toEqual([6, 7]);
+    expect(upsertSeasons).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * C6. Judged by the newest stamp, a walk that failed partway would read as
+   * fresh for a whole TTL, and the expansions it never reached would stay stale
+   * that long. The repository answers with the oldest; this is what the
+   * service does with it.
+   */
+  it('walks when the oldest stamp is past the TTL, however fresh the rest are', async () => {
+    const day = 86_400_000;
+    const now = new Date('2026-09-25T12:00:00Z');
+    const stale = serviceOver(
+      { 6: [season('season-7.2.0', true, 1)] },
+      { updatedAt: new Date(now.getTime() - day - 1) },
+    );
+    const fresh = serviceOver(
+      { 6: [season('season-7.2.0', true, 1)] },
+      { updatedAt: new Date(now.getTime() - day + 60_000) },
+    );
+
+    expect((await stale.service.refreshIfDue(now)).refreshed).toBe(true);
+    const skipped = await fresh.service.refreshIfDue(now);
+    expect(skipped.refreshed).toBe(false);
+    expect(skipped.reason).toMatch(/catalogue is fresh/);
+    expect(fresh.getStaticData).not.toHaveBeenCalled();
+  });
+
+  it('refreshes an empty catalogue whatever the TTL', async () => {
+    const { service, getStaticData } = serviceOver({ 6: [season('season-7.2.0', true, 1)] });
+
+    expect((await service.refreshIfDue()).refreshed).toBe(true);
+    expect(getStaticData).toHaveBeenCalled();
   });
 
   it('shares one refresh between callers that ask at the same moment', async () => {

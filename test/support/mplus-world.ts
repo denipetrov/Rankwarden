@@ -35,12 +35,27 @@ export interface MplusWorldMember {
   id: number;
   name: string;
   realmSlug: string;
-  /** Blizzard's realm id. Absent for an anonymised realm, as upstream. */
-  wowRealmId?: number;
+  /**
+   * Blizzard's realm id. Absent for an anonymised realm, as upstream; `null` for
+   * a realm Blizzard does not list as live, such as a tournament realm (§9.14).
+   */
+  wowRealmId?: number | null;
   classId: number;
   specId: number | null;
   role: string;
   anonymised?: boolean;
+  /**
+   * Serve Legion's spec placeholder, `{"name": "", "slug": ""}` with no id,
+   * instead of a spec — what Raider.io sends for a run whose specs were never
+   * recorded (§9.14). Overrides `specId`.
+   */
+  specPlaceholder?: boolean;
+  /**
+   * The region the character itself belongs to, served as
+   * `character.region.slug`. Absent means the board's region, which is what
+   * upstream is assumed to do and what I24 checks the fold relies on.
+   */
+  region?: string;
 }
 
 export interface MplusWorldSeason {
@@ -57,6 +72,35 @@ export interface MplusWorldSeason {
   dungeons: number;
   /** First dungeon id this season lists, so seasons can share dungeons or not. */
   firstDungeonId?: number;
+}
+
+/** The three dungeons `seed` cycles through, for runs built by hand. */
+export const WORLD_DUNGEONS = [
+  { id: 9527, name: 'Temple of Sethraliss', slug: 'temple-of-sethraliss' },
+  { id: 9526, name: "Kings' Rest", slug: 'kings-rest' },
+  { id: 16368, name: 'Den of Nalorakk', slug: 'den-of-nalorakk' },
+] as const;
+
+/**
+ * A named member on an ordinary realm, for runs built by hand. The same `id`
+ * and `name` always make the same character, which is what lets one appear in
+ * several runs.
+ */
+export function member(
+  id: number,
+  name: string,
+  overrides: Partial<MplusWorldMember> = {},
+): MplusWorldMember {
+  return {
+    id,
+    name,
+    realmSlug: 'stormrage',
+    wowRealmId: 60,
+    classId: 5,
+    specId: 258,
+    role: 'dps',
+    ...overrides,
+  };
 }
 
 /**
@@ -121,6 +165,61 @@ export class MplusWorld {
 
   /** The p999 score a season's cutoffs start from; each region adds its own offset. */
   cutoffBase: Record<string, number> = {};
+
+  private nextRunId = 500_000;
+
+  /**
+   * Keep each board's ranking between requests rather than sorting every run
+   * again for every page. Opt-in, for boards of thousands of runs, where a full
+   * pass would otherwise sort the whole board a thousand times; call
+   * `invalidate()` after changing `runs`, since nothing here can see an edit.
+   */
+  cacheRankings = false;
+  private readonly rankings = new Map<string, MplusWorldRun[]>();
+
+  /** Forgets cached rankings. Needed only with `cacheRankings` on. */
+  invalidate(): void {
+    this.rankings.clear();
+  }
+
+  /**
+   * Adds one run built by hand: any roster, any score, one of `WORLD_DUNGEONS`.
+   * For the cases `seed` cannot say — a tie, a roster of four, a character in
+   * exactly the dungeons a case needs.
+   */
+  addRun(run: {
+    region: string;
+    score: number;
+    members: MplusWorldMember[];
+    dungeon?: number;
+    season?: string;
+    mythicLevel?: number;
+    keystoneRunId?: number;
+  }): MplusWorldRun {
+    const dungeon = WORLD_DUNGEONS[run.dungeon ?? 0];
+    const added: MplusWorldRun = {
+      keystoneRunId: run.keystoneRunId ?? (this.nextRunId += 1),
+      dungeonId: dungeon.id,
+      dungeonName: dungeon.name,
+      dungeonSlug: dungeon.slug,
+      score: run.score,
+      mythicLevel: run.mythicLevel ?? 20,
+      region: run.region,
+      ...(run.season ? { season: run.season } : {}),
+      roster: run.members,
+    };
+    this.runs.push(added);
+
+    return added;
+  }
+
+  /** Takes runs off the board, as runs falling out of the top do. */
+  removeRuns(predicate: (run: MplusWorldRun) => boolean): MplusWorldRun[] {
+    const removed = this.runs.filter(predicate);
+    this.runs = this.runs.filter((run) => !predicate(run));
+
+    return removed;
+  }
 
   /**
    * Adds `count` runs to a region, scored descending from `topScore`, served for
@@ -303,10 +402,14 @@ export class MplusWorld {
 
   /** One page of `/mythic-plus/runs`, in the API's own shape. */
   runsPage(season: string, region: string, page: number): unknown {
-    const ranked = this.runs
-      .filter((run) => run.region === region)
-      .filter((run) => run.season === undefined || run.season === season)
-      .sort((left, right) => right.score - left.score);
+    const board = `${season}|${region}`;
+    const ranked =
+      (this.cacheRankings ? this.rankings.get(board) : undefined) ??
+      this.runs
+        .filter((run) => run.region === region)
+        .filter((run) => run.season === undefined || run.season === season)
+        .sort((left, right) => right.score - left.score);
+    if (this.cacheRankings) this.rankings.set(board, ranked);
     const start = page * RUNS_PER_PAGE;
 
     return {
@@ -365,8 +468,9 @@ export class MplusWorld {
                 slug: `class-${member.classId}`,
               },
               race: { id: 3, name: 'Dwarf', slug: 'dwarf', faction: 'alliance' },
-              spec:
-                member.specId === null
+              spec: member.specPlaceholder
+                ? { name: '', slug: '' }
+                : member.specId === null
                   ? null
                   : {
                       id: member.specId,
@@ -377,7 +481,7 @@ export class MplusWorld {
               level: 90,
               path: member.anonymised
                 ? ''
-                : `/characters/${run.region}/${member.realmSlug}/${member.name}`,
+                : `/characters/${member.region ?? run.region}/${member.realmSlug}/${member.name}`,
               // The anonymised realm really does omit wowRealmId, altName,
               // locale and realmType. Reproduced deliberately: a schema that
               // required any of them would fail every page carrying one.
@@ -406,9 +510,9 @@ export class MplusWorld {
                     realmType: 'live',
                   },
               region: {
-                name: run.region.toUpperCase(),
-                slug: run.region,
-                short_name: run.region.toUpperCase(),
+                name: (member.region ?? run.region).toUpperCase(),
+                slug: member.region ?? run.region,
+                short_name: (member.region ?? run.region).toUpperCase(),
               },
               stream: null,
               recruitmentProfiles: [],

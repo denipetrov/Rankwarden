@@ -26,6 +26,7 @@ import {
   MPLUS_DUNGEONS_COLLECTION,
   MPLUS_SEASONS_COLLECTION,
 } from '../../src/mplus-season/entities/mplus-season.entity.js';
+import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../../src/mplus-representation/entities/mplus-spec-representation.entity.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
@@ -64,6 +65,14 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectNoAnonymisedMplusCharacters(db, MPLUS_ARCHIVE_CHARACTERS_COLLECTION);
   await expectMplusArchiveMarkersMatchRows(db);
   await expectMplusSeasonsReferenceKnownDungeons(db);
+  await expectMplusRepresentationCoherent(db);
+  await expectMplusCutoffsWellFormed(db);
+  await expectMplusRegionsCoherent(db);
+  await expectMplusRegionsCoherent(db, {
+    runs: MPLUS_ARCHIVE_RUNS_COLLECTION,
+    characters: MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
+  });
+  await expectMplusArchiveRowsOwned(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -601,4 +610,408 @@ export async function expectMplusSeasonsReferenceKnownDungeons(db: Db): Promise<
     referenced.filter((id) => !known.has(id)),
     'I20: every dungeon a season lists must be catalogued',
   ).toEqual([]);
+}
+
+/**
+ * I21 - the arithmetic inside Mythic+ spec representation is coherent.
+ *
+ * The Mythic+ counterpart of I9. Each document on its own: specs add up to the
+ * classified slots and so do the roles, and the percentages add up to 100. And
+ * each document against its neighbours: the per-dungeon documents of a region
+ * add up to its all-dungeon one, and `all` adds up the regions.
+ *
+ * `slots` is counted rather than derived from runs: a roster is not always
+ * five (§9.15), so nothing here multiplies by five.
+ */
+export async function expectMplusRepresentationCoherent(db: Db): Promise<void> {
+  interface Doc {
+    season: string;
+    region: string;
+    dungeonId: number | null;
+    runs: number;
+    slots: number;
+    classified: number;
+    roles: Record<string, number>;
+    specs: { count: number; role: string; percent: number; rolePercent: number }[];
+  }
+  const docs = (await db
+    .collection(MPLUS_SPEC_REPRESENTATION_COLLECTION)
+    .find({})
+    .toArray()) as unknown as Doc[];
+  const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+  // Stored at two decimals, so each spec can be off by half a hundredth.
+  const within = (total: number, count: number) => Math.abs(total - 100) <= count * 0.005 + 1e-9;
+
+  for (const doc of docs) {
+    const label = `I21: ${doc.season} ${doc.region} dungeon ${doc.dungeonId ?? 'all'}`;
+
+    expect(doc.classified, `${label} classified <= slots`).toBeLessThanOrEqual(doc.slots);
+    expect(sum(doc.specs.map((spec) => spec.count)), `${label} specs sum to classified`).toBe(
+      doc.classified,
+    );
+    expect(sum(Object.values(doc.roles)), `${label} roles sum to classified`).toBe(doc.classified);
+
+    if (doc.classified > 0) {
+      const percents = doc.specs.map((spec) => spec.percent);
+      expect(within(sum(percents), percents.length), `${label} percent sums to 100`).toBe(true);
+
+      for (const role of Object.keys(doc.roles)) {
+        const inRole = doc.specs.filter((spec) => spec.role === role);
+        expect(
+          within(sum(inRole.map((spec) => spec.rolePercent)), inRole.length),
+          `${label} rolePercent sums to 100 within ${role}`,
+        ).toBe(true);
+      }
+    }
+  }
+
+  const totals = (group: Doc[]) => ({
+    runs: sum(group.map((doc) => doc.runs)),
+    slots: sum(group.map((doc) => doc.slots)),
+    classified: sum(group.map((doc) => doc.classified)),
+  });
+  const pick = (doc: Doc | undefined) =>
+    doc && { runs: doc.runs, slots: doc.slots, classified: doc.classified };
+
+  for (const season of new Set(docs.map((doc) => doc.season))) {
+    const ofSeason = docs.filter((doc) => doc.season === season);
+    const regions = [...new Set(ofSeason.map((doc) => doc.region))].filter((r) => r !== 'all');
+
+    for (const region of [...regions, 'all']) {
+      const ofRegion = ofSeason.filter((doc) => doc.region === region);
+      const whole = ofRegion.find((doc) => doc.dungeonId === null);
+      const perDungeon = ofRegion.filter((doc) => doc.dungeonId !== null);
+
+      if (perDungeon.length > 0) {
+        expect(pick(whole), `I21: ${season} ${region} dungeons add up to the whole`).toEqual(
+          totals(perDungeon),
+        );
+      }
+    }
+
+    if (regions.length === 0) continue;
+
+    for (const dungeonId of new Set(ofSeason.map((doc) => doc.dungeonId))) {
+      const all = ofSeason.find((doc) => doc.region === 'all' && doc.dungeonId === dungeonId);
+      const parts = ofSeason.filter((doc) => doc.region !== 'all' && doc.dungeonId === dungeonId);
+
+      expect(pick(all), `I21: ${season} all = the regions, dungeon ${dungeonId ?? 'all'}`).toEqual(
+        totals(parts),
+      );
+    }
+  }
+}
+
+/** A stored character's score per dungeon id, by key, for I22's `before`. */
+export type MplusCharacterSnapshot = Map<string, Map<number, number>>;
+
+/** Snapshot of `mplus_characters` for one season and region, taken before a pass. */
+export async function snapshotMplusCharacters(
+  db: Db,
+  season: string,
+  region: string,
+): Promise<MplusCharacterSnapshot> {
+  const rows = await db
+    .collection(MPLUS_CHARACTERS_COLLECTION)
+    .find({ season, region }, { projection: { key: 1, dungeonRuns: 1 } })
+    .toArray();
+
+  return new Map(
+    rows.map((row) => [
+      row.key as string,
+      new Map(
+        (row.dungeonRuns as { dungeon: { id: number }; score: number }[]).map((entry) => [
+          entry.dungeon.id,
+          entry.score,
+        ]),
+      ),
+    ]),
+  );
+}
+
+interface ServedRanking {
+  score: number;
+  run: {
+    keystone_run_id: number;
+    mythic_level: number;
+    dungeon: { id: number };
+    roster: {
+      character: {
+        id: number;
+        name: string;
+        realm: { slug: string };
+        region: { slug: string };
+        anonymized?: boolean;
+      };
+    }[];
+  };
+}
+
+/**
+ * I22 - what is stored for a (season, region) is what the fake served.
+ *
+ * The Mythic+ counterpart of I7, and the only Mythic+ invariant that looks
+ * outward: I11-I21 all hold just as well over data that is consistently wrong.
+ * A fold that picked the second-best run in every dungeon passes I12 perfectly.
+ *
+ * The window is what a pass reads: pages `0..maxPages-1`. Every run served in
+ * it is stored, exactly, and no other. Every named member served has a
+ * character whose score in each dungeon is the best it was served there,
+ * unless `before` shows it already held a better one (the monotonic merge). A
+ * dungeon stored that the window did not serve must be one `before` held.
+ *
+ * Opt-in, as I4 is: after a pass that stopped early it is legitimately false.
+ * Omit `before` on a first pass, which makes every comparison exact.
+ */
+export async function expectMplusStoredMatchesServed(
+  db: Db,
+  world: { runsPage(season: string, region: string, page: number): unknown },
+  scope: {
+    season: string;
+    region: string;
+    maxPages: number;
+    before?: MplusCharacterSnapshot;
+    collections?: { runs: string; characters: string };
+  },
+): Promise<void> {
+  const { season, region, maxPages } = scope;
+  const before = scope.before ?? new Map<string, Map<number, number>>();
+  const runsCollection = scope.collections?.runs ?? MPLUS_RUNS_COLLECTION;
+  const charactersCollection = scope.collections?.characters ?? MPLUS_CHARACTERS_COLLECTION;
+  const label = `I22: ${season} ${region}`;
+
+  const served: ServedRanking[] = [];
+  for (let page = 0; page < maxPages; page += 1) {
+    const { rankings } = world.runsPage(season, region, page) as { rankings: ServedRanking[] };
+    if (rankings.length === 0) break;
+    served.push(...rankings);
+  }
+
+  const stored = await db.collection(runsCollection).find({ season, region }).toArray();
+  const storedById = new Map(stored.map((run) => [run.keystoneRunId as number, run]));
+  const servedById = new Map(served.map((ranking) => [ranking.run.keystone_run_id, ranking]));
+
+  expect(
+    [...storedById.keys()].sort((a, b) => a - b),
+    `${label} stores exactly the runs served`,
+  ).toEqual([...servedById.keys()].sort((a, b) => a - b));
+
+  const named = (ranking: ServedRanking) =>
+    ranking.run.roster
+      .map((slot) => slot.character)
+      .filter((character) => !character.anonymized && character.id !== 0);
+  const keyOf = (character: ReturnType<typeof named>[number]) =>
+    mplusCharacterKey(character.region.slug, character.realm.slug, character.name);
+
+  for (const [id, ranking] of servedById) {
+    const run = storedById.get(id);
+    if (!run) continue;
+
+    expect(
+      {
+        score: run.score,
+        level: run.mythicLevel,
+        dungeon: run.dungeon.id,
+        roster: [...(run.rosterKeys as string[])].sort(),
+      },
+      `${label} run ${id} is stored as served`,
+    ).toEqual({
+      score: ranking.score,
+      level: ranking.run.mythic_level,
+      dungeon: ranking.run.dungeon.id,
+      roster: named(ranking).map(keyOf).sort(),
+    });
+  }
+
+  // Each named member's best score per dungeon across the window.
+  const best = new Map<string, Map<number, number>>();
+  for (const ranking of served) {
+    for (const character of named(ranking)) {
+      const key = keyOf(character);
+      const dungeons = best.get(key) ?? new Map<number, number>();
+      const dungeonId = ranking.run.dungeon.id;
+      dungeons.set(dungeonId, Math.max(dungeons.get(dungeonId) ?? -Infinity, ranking.score));
+      best.set(key, dungeons);
+    }
+  }
+
+  const characters = await db
+    .collection(charactersCollection)
+    .find({ season, key: { $in: [...best.keys()] } })
+    .toArray();
+  const byKey = new Map(characters.map((character) => [character.key as string, character]));
+
+  for (const [key, dungeons] of best) {
+    const character = byKey.get(key);
+    expect(character, `${label} ${key} was served and must be stored`).toBeDefined();
+    if (!character) continue;
+
+    const storedScores = new Map(
+      (character.dungeonRuns as { dungeon: { id: number }; score: number }[]).map((entry) => [
+        entry.dungeon.id,
+        entry.score,
+      ]),
+    );
+    const held = before.get(key) ?? new Map<number, number>();
+
+    for (const [dungeonId, score] of dungeons) {
+      const heldScore = held.get(dungeonId);
+      const expected = heldScore === undefined ? score : Math.max(score, heldScore);
+
+      expect(
+        storedScores.get(dungeonId),
+        `${label} ${key} dungeon ${dungeonId} is the best served or held`,
+      ).toBe(expected);
+    }
+
+    for (const dungeonId of storedScores.keys()) {
+      if (dungeons.has(dungeonId)) continue;
+      expect(
+        held.has(dungeonId),
+        `${label} ${key} dungeon ${dungeonId} was not served, so it must have been held before`,
+      ).toBe(true);
+    }
+  }
+}
+
+/**
+ * I23 - every cutoffs record is well formed.
+ *
+ * The status decides whether a region is asked again, so a record whose
+ * attempts and status disagree is one that is either asked for ever or never.
+ * Pass `regions` to also require every region recorded to be a configured one.
+ */
+export async function expectMplusCutoffsWellFormed(db: Db, regions?: string[]): Promise<void> {
+  const seasons = await db
+    .collection(MPLUS_SEASONS_COLLECTION)
+    .find({ cutoffs: { $exists: true } })
+    .toArray();
+
+  for (const season of seasons) {
+    expect(
+      season.catalogueUpdatedAt,
+      `I23: ${season.slug} has cutoffs, so it must be a catalogued season`,
+    ).toBeInstanceOf(Date);
+
+    const records = season.cutoffs as Record<
+      string,
+      {
+        status: string;
+        attempts: number;
+        lastError?: string;
+        keystones: Record<string, unknown>;
+        quantiles: Record<string, unknown>;
+      }
+    >;
+
+    for (const [region, record] of Object.entries(records)) {
+      const label = `I23: ${season.slug} ${region}`;
+
+      if (regions) expect(regions, `${label} is a configured region`).toContain(region);
+      expect(['ok', 'missing', 'failed', 'unavailable'], `${label} status`).toContain(
+        record.status,
+      );
+
+      if (record.status === 'ok') {
+        expect(record.attempts, `${label} ok has no failed attempts`).toBe(0);
+        expect(record.lastError, `${label} ok carries no error`).toBeUndefined();
+        for (const [tier, cutoff] of Object.entries({ ...record.keystones, ...record.quantiles })) {
+          expect(cutoff, `${label} ${tier} is stored only when awarded`).not.toBeNull();
+        }
+      } else {
+        expect(record.lastError, `${label} ${record.status} says why`).toBeTruthy();
+        expect(record.attempts, `${label} ${record.status} counts its attempt`).toBeGreaterThan(0);
+      }
+
+      if (record.status === 'failed') {
+        expect(record.attempts, `${label} failed is below the cap`).toBeLessThan(3);
+      }
+      if (record.status === 'unavailable') {
+        expect(record.attempts, `${label} unavailable reached the cap`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  }
+}
+
+/**
+ * I24 - a character and its runs agree on the region.
+ *
+ * I17 assumes this. The fold files a character under the board's region but
+ * builds its key from `character.region.slug`, so the two agree only as long as
+ * Raider.io never puts another region's character on a board — and the sync
+ * endpoint, which looks a character up by region, finds it by neither if they
+ * ever do not.
+ */
+export async function expectMplusRegionsCoherent(
+  db: Db,
+  collections: { runs: string; characters: string } = {
+    runs: MPLUS_RUNS_COLLECTION,
+    characters: MPLUS_CHARACTERS_COLLECTION,
+  },
+): Promise<void> {
+  const characters = await db
+    .collection(collections.characters)
+    .find({}, { projection: { key: 1, region: 1 } })
+    .toArray();
+  expect(
+    characters
+      .filter((character) => !String(character.key).startsWith(`${character.region}/`))
+      .map((character) => `${character.region}: ${character.key}`),
+    `I24: every character in ${collections.characters} is keyed in its own region`,
+  ).toEqual([]);
+
+  const runs = await db
+    .collection(collections.runs)
+    .find({}, { projection: { keystoneRunId: 1, region: 1, rosterKeys: 1 } })
+    .toArray();
+  expect(
+    runs.flatMap((run) =>
+      ((run.rosterKeys ?? []) as string[])
+        .filter((key) => !key.startsWith(`${run.region}/`))
+        .map((key) => `${run.region} run ${run.keystoneRunId}: ${key}`),
+    ),
+    `I24: every roster key in ${collections.runs} is in the run's region`,
+  ).toEqual([]);
+}
+
+/**
+ * I25 - no archived row without a marker that owns it.
+ *
+ * The reverse of I19, which checks only that a `complete` marker's rows are
+ * there. Rows a marker does not name are rows nothing will ever read again, and
+ * representation is never computed from them. A season with no marker at all
+ * is allowed: that is rows written before a crash, awaiting adoption.
+ */
+export async function expectMplusArchiveRowsOwned(db: Db): Promise<void> {
+  const pairs = new Set<string>();
+
+  for (const collection of [MPLUS_ARCHIVE_RUNS_COLLECTION, MPLUS_ARCHIVE_CHARACTERS_COLLECTION]) {
+    const rows = await db
+      .collection(collection)
+      .aggregate<{ _id: { season: string; region: string } }>([
+        { $group: { _id: { season: '$season', region: '$region' } } },
+      ])
+      .toArray();
+    for (const row of rows) pairs.add(`${row._id.season}|${row._id.region}`);
+  }
+
+  if (pairs.size === 0) return;
+
+  const markers = new Map(
+    (
+      await db
+        .collection(MPLUS_SEASONS_COLLECTION)
+        .find({}, { projection: { slug: 1, archive: 1 } })
+        .toArray()
+    ).map((season) => [season.slug as string, season.archive as { regions?: object } | undefined]),
+  );
+
+  const unowned = [...pairs].filter((pair) => {
+    const [season, region] = pair.split('|');
+    const marker = markers.get(season);
+
+    return marker !== undefined && !(region in (marker.regions ?? {}));
+  });
+
+  expect(unowned, 'I25: every archived (season, region) is named by its marker').toEqual([]);
 }
