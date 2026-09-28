@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { IngestionCoordinator } from './ingestion-coordinator.service.js';
@@ -100,6 +101,39 @@ describe('IngestionCoordinator', () => {
       await coordinator.duringEnrichment(async () => {});
 
       expect(warmed).toHaveBeenCalledOnce();
+    });
+
+    it('announces warm-up in the log once, not after every later pass', async () => {
+      const coordinator = new IngestionCoordinator();
+      const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+
+      try {
+        for (let pass = 0; pass < 3; pass += 1) {
+          await coordinator.duringSweep(async () => {});
+          await coordinator.duringEnrichment(async () => {});
+        }
+        coordinator.markEnrichmentDisabled();
+
+        const announced = log.mock.calls.filter(([message]) =>
+          String(message).includes('Live ingestion warmed up'),
+        );
+        expect(announced).toHaveLength(1);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('signals Mythic+ warm-up once, however many passes follow', async () => {
+      const coordinator = new IngestionCoordinator();
+      const warmed = vi.fn();
+      coordinator.mplusWarmedUp$.subscribe(warmed);
+
+      await coordinator.duringMplus(async () => {});
+      await coordinator.duringMplus(async () => {});
+      coordinator.markMplusDisabled();
+
+      expect(warmed).toHaveBeenCalledOnce();
+      expect(coordinator.isMplusWarmedUp).toBe(true);
     });
 
     it('reaches a subscriber that arrives after warm-up', async () => {

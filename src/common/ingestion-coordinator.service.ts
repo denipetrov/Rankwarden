@@ -239,7 +239,7 @@ export class IngestionCoordinator {
   private markMplusWarmedUp(): void {
     this.mplusDone = true;
 
-    if (!this.mplusWarmedUpSubject.closed) {
+    if (!this.mplusWarmedUpSubject.isStopped) {
       this.mplusWarmedUpSubject.next();
       this.mplusWarmedUpSubject.complete();
     }
@@ -274,8 +274,9 @@ export class IngestionCoordinator {
   private signalWarmedUp(): void {
     if (!this.isWarmedUp) return;
 
-    // ReplaySubject only forwards the first completion; later passes are no-ops.
-    if (!this.warmedUpSubject.closed) {
+    // Once only. `isStopped`, not `closed`: a Subject stays open (`closed` false)
+    // after `complete()`, so a `closed` guard let every later pass log this again.
+    if (!this.warmedUpSubject.isStopped) {
       this.logger.log('Live ingestion warmed up; lower-priority work may start');
       this.warmedUpSubject.next();
       this.warmedUpSubject.complete();

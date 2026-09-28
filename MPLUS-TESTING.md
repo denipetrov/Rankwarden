@@ -206,6 +206,16 @@ Verified against the live API; dates are when each was last confirmed.
   onward for cn. Older seasons answer **404**; cn before df-4 answers **500, consistently**.
   Tiers appear as titles were introduced, and a tier absent in a season is reported `null`.
 - No rate-limit headers are exposed; a 300-request burst drew no 429 (2026-09-14).
+- **No roster carries another region's character** (2026-09-28): 0 of 497,281 named roster
+  members across all five full boards had `character.region.slug` other than the board's.
+- **The board moves under a pass, a little** (2026-09-28): a full pass stored 20,015–20,020
+  distinct runs of 20,020 rows read per region (1, 0, 1, 0 and 5 duplicates across pages in
+  us/eu/kr/tw/cn); re-reading the top 1,000 per region minutes later found none skipped.
+- A full pass reads about **8 pages a second** at `RAIDERIO_CONCURRENCY=12` — latency-bound, well
+  under the 14/s bucket — so five regions take ~10 minutes before any pause (2026-09-28).
+- `cn` boards carry rosters of **3 and 4** (9 of 20,020 runs, 2026-09-28).
+- `season-cutoffs` answers 200 with all six tiers for the running `season-mn-2`; no listed
+  season was yet to open, so a brand-new season's first answer is still unobserved (2026-09-28).
 
 ---
 
@@ -328,18 +338,35 @@ waiting ten minutes for a hold a test may never release. `mplus-resume.spec.ts` 
 ### 7.2 Pinned as they are, for a decision
 
 - **M2.10** — a roster member from another region is filed under the board's region but keyed
-  under its own (I17 and I24 both fail). X5 decides whether this happens live.
+  under its own (I17 and I24 both fail). X5 found none in ~497,000 live members, so it stays a
+  guard pinning that assumption rather than a fix (2026-09-28).
 - **M3.10** — `mergedCharacters` counts every character currently holding a dungeon outside
   the window, on every pass, not only those newly merged. Kept (owner, 2026-09-26).
 - **M6.7** — raising `MPLUS_ARCHIVE_PAGES` never deepens a completed season; clear the marker
   by hand. Kept (owner, 2026-09-26).
 
-### 7.3 Still open
+### 7.3 Live cross-check (X1–X8), run 2026-09-28
 
-The live cross-check (X1–X8) has not been run: it needs the real key, a throwaway database and,
-for X7, enrichment running against real Blizzard. X5 (another region's character on a board) is
-the cheap one that still decides something (M2.10). X8 no longer decides anything — a live
-season is re-read whatever it answered — but is worth recording as an upstream fact.
+Nothing is open. The whole binary ran against real Blizzard and Raider.io into a throwaway
+`rankwarden_check_mplus_20260928` (sweep, enrichment every 5 minutes at batch 2,000, both
+archives off), then `scripts/live-mplus-crosscheck.mjs` compared it with Raider.io. The
+development database was byte-for-byte unchanged and the check database was dropped.
+
+| Check | Result |
+| ----- | ------ |
+| X1 / X7 pass at the checked-in cadence | 5 regions × 1,001 pages, 100,100 rows, 58,521 characters in 877s; paused for enrichment 3× (~95s each) and resumed each time (F1 confirmed fixed) |
+| Invariants on live data | all 21 non-destructive ones pass (`scripts/live-invariants.live.ts`) |
+| X2 per-dungeon boards | 6 region × dungeon pairs, ~3,570 runs: every run matched on id, score, level and roster; the one extra upstream run was completed after our pass |
+| X3 character profiles | 40 characters, 180 dungeon entries: none above Raider.io, none with an in-window best not kept |
+| X4 cutoffs | 5 regions × 24 figures: all equal |
+| X5 region census | 0 foreign-region members (M2.10 stays a guard) |
+| X6 board movement | 0–5 duplicate rows per region; nothing skipped in the top 1,000 |
+| X8 new-season cutoffs | no season yet to open; the running one answers 200 |
+
+Rerun: boot `node dist/main.js` with `MONGODB_DB=rankwarden_check_mplus_<date>` and
+`ARCHIVE_ENABLED=false MPLUS_ARCHIVE_ENABLED=false`, wait for "Mythic+ pass for … finished",
+stop it, then `LIVE_DB=… npx vitest run --config scripts/vitest.live.config.ts` and
+`node --env-file=.env scripts/live-mplus-crosscheck.mjs all --db … --log <app log>`.
 
 ---
 
