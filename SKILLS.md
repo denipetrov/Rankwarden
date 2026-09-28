@@ -173,7 +173,23 @@ The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
 > not. Enrichment spends Blizzard quota and M+ spends none, so making enrichment yield
 > would cost the PvP profiles freshness to protect a job it is not competing with.
 
-> **It pauses; it does not stop.** A full pass (~6 minutes at the defaults) is longer than
+> **No job waits without a bound, and no job skips a tick because a higher one is running.**
+> The waits only ever point up the priority order (sweep → enrichment → M+ pass → PvP archive
+> → M+ archive), so there is no cycle to deadlock on; what remains is starvation, and two
+> things caused it. Every hourly job starts its interval at boot, and Node fires timers of
+> one length together, in the order they were set, for the life of the process — so the
+> archives' hourly ticks landed on the hourly sweep every time, and the 6-hour pass on it
+> every sixth time. A tick that *skipped* whenever something above it ran therefore never
+> ran after warm-up (the M+ archive not even then: its warm-up tick lands on the PvP
+> archive's). Each now *waits*, via `IngestionCoordinator.waitFor(condition, maxWaitMs)`,
+> which re-checks whenever any job ends: the archives for `ARCHIVE_WAIT_FOR_IDLE_MS` (20
+> min), the M+ pass for `MPLUS_YIELD_WAIT_MS`, the M+ transition for one check interval. A
+> job that never ends therefore costs a waiter one tick, not every tick after it — and the
+> Mongo client's `socketTimeoutMS` (`MONGODB_SOCKET_TIMEOUT_MS`, 5 min) keeps a query on a
+> dead connection from being that job. `scheduler-phase-lock-*.spec.ts` run the real
+> schedulers on deliberately equal intervals.
+
+> **It pauses; it does not stop.** A full pass (~10 minutes at the defaults, ~8 pages a second) is longer than
 > the 5-minute enrichment interval, so it always meets an enrichment start. At every batch
 > boundary and between regions the pass waits for live ingestion to end
 > (`waitForLiveIngestion`, at most `MPLUS_YIELD_WAIT_MS`, 10 minutes) and then resumes where
@@ -1614,6 +1630,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep                         |
 | `MONGODB_URI`                         | —                                   | **Required**                                               |
 | `MONGODB_DB`                          | `rankwarden`                        |                                                            |
+| `MONGODB_SOCKET_TIMEOUT_MS`           | `300000`                            | Longest wait on one socket read; the driver's default is none |
 | `INGEST_INTERVAL_MS`                  | `3600000`                           |                                                            |
 | `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                            |
 | `PROFILE_ENRICHMENT_ENABLED`          | `true`                              | `false` releases the archive warm-up gate                  |
@@ -1635,6 +1652,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `REPRESENTATION_MIN_RATINGS`          | `1500,1800,2100,2300,2700`          | Cutoffs to track                                           |
 | `ARCHIVE_ENABLED`                     | `true`                              |                                                            |
 | `ARCHIVE_CHECK_INTERVAL_MS`           | `3600000`                           |                                                            |
+| `ARCHIVE_WAIT_FOR_IDLE_MS`            | `1200000`                           | An archive tick's wait for the jobs above it (PvP and M+); 0 = skip |
 | `ARCHIVE_SEASON_PAUSE_MS`             | `5000`                              | Breather between seasons                                   |
 | `ARCHIVE_CONCURRENCY`                 | `4`                                 |                                                            |
 | `ARCHIVE_REQUESTS_PER_SECOND`         | `10`                                |                                                            |

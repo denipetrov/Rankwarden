@@ -335,6 +335,27 @@ Fixed with them, from §7.2's list:
 waiting ten minutes for a hold a test may never release. `mplus-resume.spec.ts` and
 `mplus-cadence.spec.ts` raise it.
 
+### 7.1.1 Scheduler starvation (fixed 2026-09-28)
+
+Found after the live run showed the pass stopping for sweeps. There is no deadlock — every
+wait points up the priority order — but there was starvation. Every hourly job starts at
+boot, and timers of one length fire together for the life of the process, so each archive
+tick landed on a sweep start and skipped: the archives ran only at warm-up, the Mythic+
+archive not even then, and the 6-hour pass met a sweep on every scheduled tick.
+
+- Archive ticks now **wait** for the jobs above them (`ARCHIVE_WAIT_FOR_IDLE_MS`, 20 min),
+  through `IngestionCoordinator.waitFor`, re-checked whenever any job ends.
+  `scheduler-phase-lock-mplus.spec.ts` and `-pvp.spec.ts` run the real schedulers on equal
+  intervals; with the wait at 0 (the old skip) both reach the backlog once, at warm-up.
+- The M+ transition's wait for a pass is bounded by one interval, so a pass that never ends
+  costs one check, not every check after it (`mplus-season-transition.scheduler.spec.ts`).
+- The Mongo client has a socket timeout (`MONGODB_SOCKET_TIMEOUT_MS`, 5 min), so a query on a
+  dead connection fails rather than holding its job, and everything below it, for good.
+- Harness default `ARCHIVE_WAIT_FOR_IDLE_MS=0`, so existing files keep "skip at once".
+
+Measured on the live run (2026-09-17): enrichment starts every 5 min and runs 1.6–3.3 min; a
+sweep ~0.6 min; a full pass ~10 min unpaused (~8 pages/s), about 15–18 min with pauses.
+
 ### 7.2 Pinned as they are, for a decision
 
 - **M2.10** — a roster member from another region is filed under the board's region but keyed

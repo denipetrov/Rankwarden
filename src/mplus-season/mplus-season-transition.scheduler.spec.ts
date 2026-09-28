@@ -199,3 +199,60 @@ describe('MplusSeasonTransitionScheduler boot warning', () => {
     expect(boot(settings).interlockWarnings()).toHaveLength(0);
   });
 });
+
+/**
+ * The wait for a pass is bounded by one interval. Unbounded, a pass that never
+ * ended held the tick — and, through `running`, every tick after it — for good.
+ */
+describe('MplusSeasonTransitionScheduler bounded wait', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('gives up a tick when the pass outlasts an interval, and runs the next one', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const coordinator = new IngestionCoordinator();
+    const events = new MplusSeasonEvents();
+    const run = vi.fn(async () => ({ plan: { dryRun: false }, purged: [] }));
+    const env: Record<string, unknown> = {
+      MPLUS_TRANSITION_ENABLED: true,
+      MPLUS_ARCHIVE_ENABLED: true,
+      MPLUS_TRANSITION_CHECK_INTERVAL_MS: 40,
+    };
+    const scheduler = new MplusSeasonTransitionScheduler(
+      { get: (key: string) => env[key] } as unknown as ConfigService<never, true>,
+      { isDryRun: false, requiresArchive: true, run } as unknown as MplusSeasonTransitionService,
+      events,
+      {
+        addInterval: vi.fn(),
+        doesExist: vi.fn().mockReturnValue(false),
+        deleteInterval: vi.fn(),
+      } as unknown as SchedulerRegistry,
+      coordinator,
+    );
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(
+      (() => 0) as unknown as typeof setInterval,
+    );
+    scheduler.onApplicationBootstrap();
+
+    // A pass that never finishes.
+    let finish!: () => void;
+    const stuck = coordinator.duringMplus(() => new Promise<void>((resolve) => (finish = resolve)));
+
+    events.emit({ ...rollover });
+    await scheduler.whenSettled();
+    expect(run, 'not run while the pass holds the season').not.toHaveBeenCalled();
+    expect(warn.mock.calls.map(([message]) => String(message))).toContainEqual(
+      expect.stringMatching(/running for a whole transition interval/),
+    );
+
+    // Not stuck: the next rollover gets a tick of its own once the pass ends.
+    finish();
+    await stuck;
+    events.emit({ ...rollover });
+    await scheduler.whenSettled();
+    expect(run).toHaveBeenCalledTimes(1);
+    scheduler.onModuleDestroy();
+  });
+});

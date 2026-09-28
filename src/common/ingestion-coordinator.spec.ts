@@ -238,3 +238,61 @@ describe('IngestionCoordinator', () => {
     });
   });
 });
+
+/**
+ * The bounded wait lower-priority jobs use instead of skipping a tick. Skipping
+ * starved the archives: their hourly tick lands on the hourly sweep every time.
+ */
+describe('IngestionCoordinator.waitFor', () => {
+  it('resolves true at once when the condition already holds', async () => {
+    const coordinator = new IngestionCoordinator();
+
+    await expect(coordinator.waitFor(() => !coordinator.isSweepActive, 0)).resolves.toBe(true);
+  });
+
+  it('resolves true as soon as the job it waits on ends, not at the deadline', async () => {
+    const coordinator = new IngestionCoordinator();
+    let finish!: () => void;
+    const sweep = coordinator.duringSweep(() => new Promise<void>((resolve) => (finish = resolve)));
+
+    const startedAt = Date.now();
+    const waited = coordinator.waitFor(() => !coordinator.isLiveIngestionActive, 10_000);
+    setTimeout(() => finish(), 30);
+
+    await expect(waited).resolves.toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    await sweep;
+  });
+
+  it('re-checks on every job ending, so an unrelated job ending does not release it', async () => {
+    const coordinator = new IngestionCoordinator();
+    let finishSweep!: () => void;
+    const sweep = coordinator.duringSweep(
+      () => new Promise<void>((resolve) => (finishSweep = resolve)),
+    );
+    let released = false;
+    const waited = coordinator
+      .waitFor(() => !coordinator.isSweepActive, 10_000)
+      .then((value) => (released = value));
+
+    await coordinator.duringArchive(async () => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(released, 'the archive ending is not the sweep ending').toBe(false);
+
+    finishSweep();
+    await waited;
+    expect(released).toBe(true);
+    await sweep;
+  });
+
+  it('resolves false when the job outlasts the wait, so the waiter can give up the tick', async () => {
+    const coordinator = new IngestionCoordinator();
+    let finish!: () => void;
+    const mplus = coordinator.duringMplus(() => new Promise<void>((resolve) => (finish = resolve)));
+
+    await expect(coordinator.waitFor(() => !coordinator.isMplusActive, 30)).resolves.toBe(false);
+
+    finish();
+    await mplus;
+  });
+});

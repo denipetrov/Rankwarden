@@ -28,7 +28,10 @@ export class MplusArchiveScheduler implements OnApplicationBootstrap, OnModuleDe
   private readonly logger = new Logger(MplusArchiveScheduler.name);
   private readonly enabled: boolean;
   private readonly intervalMs: number;
+  private readonly waitForIdleMs: number;
   private readonly pending = new PendingWork();
+  /** A tick in progress, waiting included, so ticks never stack while one waits. */
+  private running = false;
   private readonly subscriptions: Subscription[] = [];
 
   constructor(
@@ -39,6 +42,7 @@ export class MplusArchiveScheduler implements OnApplicationBootstrap, OnModuleDe
   ) {
     this.enabled = config.get('MPLUS_ARCHIVE_ENABLED', { infer: true });
     this.intervalMs = config.get('MPLUS_ARCHIVE_CHECK_INTERVAL_MS', { infer: true });
+    this.waitForIdleMs = config.get('ARCHIVE_WAIT_FOR_IDLE_MS', { infer: true }) ?? 0;
   }
 
   onApplicationBootstrap(): void {
@@ -74,21 +78,35 @@ export class MplusArchiveScheduler implements OnApplicationBootstrap, OnModuleDe
   }
 
   private async tick(): Promise<void> {
-    if (this.archive.isRunning) return;
+    if (this.running || this.archive.isRunning) return;
 
     // Both gates, checked at every tick rather than trusted from whichever
     // signal fired: the two arrive in either order.
     if (!this.coordinator.isWarmedUp || !this.coordinator.isMplusWarmedUp) return;
 
-    if (this.coordinator.isAboveMplusArchiveActive) {
-      this.logger.debug('Another job is running; the Mythic+ archive waits for the next tick');
-      return;
-    }
+    this.running = true;
 
     try {
+      // Waited for, not skipped: the hourly tick lands on the hourly sweep every
+      // time, and the warm-up tick on the PvP archive's, so a tick that skipped
+      // while anything above ran would never archive anything. Bounded, so a
+      // job that never ends costs one tick.
+      const idle = await this.coordinator.waitFor(
+        () => !this.coordinator.isAboveMplusArchiveActive,
+        this.waitForIdleMs,
+      );
+      if (!idle) {
+        this.logger.debug(
+          'Another job is still running; the Mythic+ archive waits for the next tick',
+        );
+        return;
+      }
+
       await this.archive.archiveBacklog();
     } catch (error) {
       this.logger.error('Mythic+ archiving failed', errorStack(error));
+    } finally {
+      this.running = false;
     }
   }
 }

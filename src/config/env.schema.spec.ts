@@ -255,3 +255,19 @@ describe('validateEnv — Mythic+', () => {
     expect(issues(tooShort), 'nothing to keep a cadence for').toEqual([]);
   });
 });
+
+describe('validateEnv — bounded waits', () => {
+  it('bounds every wait a job can be held in by default', () => {
+    const env = validateEnv({ ...base });
+
+    // A socket read that never answers fails instead of holding its job, and
+    // every job below it, for good.
+    expect(env.MONGODB_SOCKET_TIMEOUT_MS).toBe(300_000);
+    // An archive tick waits for the jobs above it, but for less than the hour
+    // until the next tick.
+    expect(env.ARCHIVE_WAIT_FOR_IDLE_MS).toBe(1_200_000);
+    expect(env.ARCHIVE_WAIT_FOR_IDLE_MS).toBeLessThan(env.ARCHIVE_CHECK_INTERVAL_MS);
+    expect(env.ARCHIVE_WAIT_FOR_IDLE_MS).toBeLessThan(env.MPLUS_ARCHIVE_CHECK_INTERVAL_MS);
+    expect(env.MPLUS_YIELD_WAIT_MS).toBe(600_000);
+  });
+});

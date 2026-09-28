@@ -184,6 +184,14 @@ export const envSchema = z.object({
   // MongoDB.
   MONGODB_URI: z.string().min(1),
   MONGODB_DB: z.string().min(1).default('rankwarden'),
+  /**
+   * How long one socket read may wait before the driver gives up on it. The
+   * driver's own default is no limit, which lets a query on a half-open
+   * connection hang for good — and a hung query holds its job "running", which
+   * blocks every job below it in priority for as long. Five minutes is far
+   * above the slowest aggregation here (representation over a full board).
+   */
+  MONGODB_SOCKET_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
 
   // Ingestion cadence.
   INGEST_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
@@ -265,6 +273,15 @@ export const envSchema = z.object({
     .default('true')
     .transform((value) => value === 'true'),
   ARCHIVE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /**
+   * How long an archive tick — PvP or Mythic+ — waits for the jobs above it to
+   * finish before giving up on the tick. Waited for rather than skipped: every
+   * hourly job starts at boot, so an archive tick lands on the hourly sweep
+   * every time, and skipping it meant the archives ran only at warm-up. Below
+   * the hourly interval, so a tick that gives up never overlaps the next.
+   * 0 skips at once.
+   */
+  ARCHIVE_WAIT_FOR_IDLE_MS: z.coerce.number().int().nonnegative().default(1_200_000),
   /** Breather between seasons so a backfill does not monopolise the quota. */
   ARCHIVE_SEASON_PAUSE_MS: z.coerce.number().int().nonnegative().default(5_000),
   ARCHIVE_CONCURRENCY: z.coerce.number().int().positive().default(4),

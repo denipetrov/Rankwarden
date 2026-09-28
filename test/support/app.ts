@@ -68,6 +68,9 @@ const BASE_ENV: Record<string, string> = {
   // without a sixty-second sleep, so a spent budget stops at once.
   RAIDERIO_BUDGET_WAIT_MS: '0',
   MPLUS_ARCHIVE_ENABLED: 'false',
+  // An archive tick skips at once when anything above it runs, rather than
+  // waiting twenty minutes; the phase-lock files raise it.
+  ARCHIVE_WAIT_FOR_IDLE_MS: '0',
   MPLUS_ARCHIVE_CHECK_INTERVAL_MS: '3600000',
   MPLUS_ARCHIVE_PAGES: '3',
   // The fake world lists its seasons under Midnight, and the catalogue walk

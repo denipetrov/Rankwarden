@@ -29,6 +29,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private readonly pauseMs: number;
+  private readonly waitForIdleMs: number;
   private subscription?: Subscription;
   private readonly pending = new PendingWork();
   private running = false;
@@ -43,6 +44,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
     this.enabled = config.get('ARCHIVE_ENABLED', { infer: true });
     this.intervalMs = config.get('ARCHIVE_CHECK_INTERVAL_MS', { infer: true });
     this.pauseMs = config.get('ARCHIVE_SEASON_PAUSE_MS', { infer: true });
+    this.waitForIdleMs = config.get('ARCHIVE_WAIT_FOR_IDLE_MS', { infer: true }) ?? 0;
   }
 
   onApplicationBootstrap(): void {
@@ -88,6 +90,22 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
     }
 
     this.running = true;
+
+    // Waited for, not skipped: the hourly tick lands on the hourly sweep every
+    // time, so a tick that skipped while it ran would never archive anything
+    // after warm-up. Bounded, so a job that never ends costs one tick.
+    const idle = await this.coordinator.waitFor(
+      () => !this.coordinator.isLiveIngestionActive && !this.coordinator.isMplusActive,
+      this.waitForIdleMs,
+    );
+    if (!idle) {
+      this.logger.log(
+        'Higher-priority ingestion still running; the archive waits for the next tick',
+      );
+      this.running = false;
+      return;
+    }
+
     // Seasons that failed during this tick. Without it a season that throws is
     // handed straight back by `nextPending` on the next iteration, and every
     // season behind it in the ordering is unreachable for as long as it keeps

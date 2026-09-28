@@ -36,7 +36,8 @@ export class IngestionCoordinator {
   private enrichmentDone = false;
   private mplusDone = false;
   private mplusIdleWaiters: Array<() => void> = [];
-  private liveIdleWaiters: Array<() => void> = [];
+  /** Woken whenever any job ends, so a bounded wait re-checks its condition. */
+  private changeWaiters: Array<() => void> = [];
   private readonly warmedUpSubject = new ReplaySubject<void>(1);
   private readonly mplusWarmedUpSubject = new ReplaySubject<void>(1);
 
@@ -110,7 +111,7 @@ export class IngestionCoordinator {
         this.sweepDone = true;
         this.signalWarmedUp();
       }
-      this.releaseLiveIdleWaiters();
+      this.notifyChange();
     }
   }
 
@@ -138,6 +139,7 @@ export class IngestionCoordinator {
         this.mplusIdleWaiters = [];
         for (const resolve of waiters) resolve();
       }
+      this.notifyChange();
     }
   }
 
@@ -166,35 +168,47 @@ export class IngestionCoordinator {
    * trailing regions for a whole interval, pass after pass.
    */
   async waitForLiveIngestion(maxWaitMs: number): Promise<boolean> {
-    if (!this.isLiveIngestionActive) return true;
-    if (maxWaitMs <= 0) return false;
-
-    let timer: NodeJS.Timeout | undefined;
-    let waiter: (() => void) | undefined;
-
-    const idle = new Promise<void>((resolve) => {
-      waiter = resolve;
-      this.liveIdleWaiters.push(resolve);
-    });
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, maxWaitMs);
-    });
-
-    try {
-      await Promise.race([idle, timeout]);
-    } finally {
-      clearTimeout(timer);
-      this.liveIdleWaiters = this.liveIdleWaiters.filter((entry) => entry !== waiter);
-    }
-
-    return !this.isLiveIngestionActive;
+    return this.waitFor(() => !this.isLiveIngestionActive, maxWaitMs);
   }
 
-  private releaseLiveIdleWaiters(): void {
-    if (this.isLiveIngestionActive) return;
+  /**
+   * Waits until `condition` holds, for at most `maxWaitMs`. Resolves true once
+   * it does (at once if it already does), false if the wait ran out first.
+   *
+   * What a lower-priority job does when its tick finds a higher one running,
+   * instead of skipping the tick. Skipping looks harmless and is not: every
+   * hourly job is started at boot, so jobs sharing an interval fire together
+   * for the life of the process, and a job that skips whenever the sweep is
+   * running skips every single tick — the archives did, and ran only at
+   * warm-up. Re-checked whenever any job ends, and bounded, so a job that
+   * never ends costs the waiter one tick rather than every tick after it.
+   */
+  async waitFor(condition: () => boolean, maxWaitMs: number): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, maxWaitMs);
 
-    const waiters = this.liveIdleWaiters;
-    this.liveIdleWaiters = [];
+    while (!condition()) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+
+      let timer: NodeJS.Timeout | undefined;
+      let waiter: (() => void) | undefined;
+
+      await new Promise<void>((resolve) => {
+        waiter = resolve;
+        this.changeWaiters.push(resolve);
+        timer = setTimeout(resolve, remaining);
+      });
+
+      clearTimeout(timer);
+      this.changeWaiters = this.changeWaiters.filter((entry) => entry !== waiter);
+    }
+
+    return true;
+  }
+
+  private notifyChange(): void {
+    const waiters = this.changeWaiters;
+    this.changeWaiters = [];
     for (const resolve of waiters) resolve();
   }
 
@@ -213,6 +227,7 @@ export class IngestionCoordinator {
       return await work();
     } finally {
       this.archiveDepth -= 1;
+      this.notifyChange();
     }
   }
 
@@ -224,6 +239,7 @@ export class IngestionCoordinator {
       return await work();
     } finally {
       this.mplusArchiveDepth -= 1;
+      this.notifyChange();
     }
   }
 
@@ -258,7 +274,7 @@ export class IngestionCoordinator {
         this.enrichmentDone = true;
         this.signalWarmedUp();
       }
-      this.releaseLiveIdleWaiters();
+      this.notifyChange();
     }
   }
 

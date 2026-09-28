@@ -23,7 +23,9 @@ export class MongoService implements OnModuleInit, OnApplicationShutdown {
   private cachedPing: { at: number; result: PingResult } | null = null;
 
   constructor(config: ConfigService<Env, true>) {
-    this.client = new MongoClient(config.get('MONGODB_URI', { infer: true }));
+    this.client = new MongoClient(config.get('MONGODB_URI', { infer: true }), {
+      socketTimeoutMS: config.get('MONGODB_SOCKET_TIMEOUT_MS', { infer: true }),
+    });
     this.dbName = config.get('MONGODB_DB', { infer: true });
   }
 
