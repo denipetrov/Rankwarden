@@ -266,8 +266,10 @@ export class MplusArchiveService {
 
       // A 404 names the season only while nothing of it has been read. Once a
       // region is held — this tick or an earlier one — Raider.io evidently
-      // serves the season, so the 404 is a failed read of this region: it is
-      // left incomplete and retried, and what is held stays owned.
+      // serves the season, so the 404 names this region's board alone. Either
+      // way it is final: a 404 does not change with time, so the region is
+      // settled like a region with no board — complete, no runs — and never
+      // asked again. What is held stays owned.
       const holdsAnything = progressed || Object.keys(season.archive?.regions ?? {}).length > 0;
 
       if (outcome.kind === 'unarchivable' && !holdsAnything) {
@@ -275,22 +277,25 @@ export class MplusArchiveService {
       }
 
       if (outcome.kind === 'unarchivable') {
+        const reason = describeError(outcome.error);
+
         this.logger.warn(
-          `Mythic+ archive of ${season.slug} in ${region} answered 404 after other regions ` +
-            `were read (${describeError(outcome.error)}); keeping them and retrying ${region}`,
+          `Raider.io does not serve the Mythic+ board of ${season.slug} in ${region} (${reason}); ` +
+            'recording it with no runs and not asking again',
         );
         held[region] = {
-          status: 'incomplete',
+          status: 'complete',
           pagesFetched: 0,
-          failedPages: [0],
+          failedPages: [],
           runs: 0,
           characters: 0,
           archivedAt: new Date(),
           source: 'fetched',
+          unserved: true,
+          lastError: reason,
         };
         fetched = true;
         progressed = true;
-        result.failedPages.push(`${region}:0`);
         continue;
       }
 
@@ -432,7 +437,13 @@ export class MplusArchiveService {
           return { page, data: await this.api.getRunsPage(season.slug, region, page) };
         } catch (error) {
           if (error instanceof RaiderIoApiError && error.isBadRequest) return { page, data: null };
-          if (error instanceof RaiderIoApiError && error.isNotFound) notFound = error;
+          // A 404 is final, so it is never a page to retry: on the region's
+          // first batch with nothing read it names the board (judged below);
+          // after pages were read it is where the board ends, like a 400.
+          if (error instanceof RaiderIoApiError && error.isNotFound) {
+            notFound = error;
+            return { page, data: null };
+          }
 
           this.logger.warn(
             `Mythic+ archive page ${page} of ${season.slug} in ${region} failed: ` +
@@ -446,8 +457,8 @@ export class MplusArchiveService {
       // A 404 on a region's first batch, with nothing of it read, names the
       // season: Raider.io will never serve it (whether anything else is held
       // is the caller's to judge). A region with no board answers 200 with no
-      // rankings instead. A 404 after pages were read is a failed page, and is
-      // recorded as one below.
+      // rankings instead. A 404 after pages were read ends the board below,
+      // exactly as a 400 does: asking again would get the same answer.
       if (notFound && first === 0 && fetched.every(({ data }) => !data)) {
         return { kind: 'unarchivable', error: notFound };
       }
@@ -456,12 +467,13 @@ export class MplusArchiveService {
       const affixes = new Map<number, MplusAffixDocument>();
 
       for (const { page, data } of fetched) {
-        // 400 past the last page the endpoint serves, or an empty page: the
-        // board is shallower than the page limit. The end of the data, not a
-        // failure.
+        // 400 past the last page the endpoint serves, a 404, or an empty page:
+        // the board ends here. The end of the data, not a failure — and nothing
+        // after it in the batch counts, so a board a 404 cut short is the pages
+        // before it and not a gap with more pages beyond.
         if (data === null) {
           exhausted = true;
-          continue;
+          break;
         }
         if (data === undefined) {
           entry.failedPages.push(page);

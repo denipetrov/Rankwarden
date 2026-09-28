@@ -391,8 +391,11 @@ give. Each region now contributes its own top 2,000: **~500 requests and up to 1
 season** at five regions, against 100 and 2,000 before.
 
 A region with no board for a season answers **`200` with no rankings**, not an error —
-Legion and BfA have none in `cn` — so it is `complete` with 0 runs. `404` still names the
-whole season as unarchivable.
+Legion and BfA have none in `cn` — so it is `complete` with 0 runs. **A `404` is never retried**:
+it does not change with time. On a first read with nothing held it names the whole season
+`unarchivable`; once any region is held it names that region's board, which is recorded the way a
+region with no board is — `complete`, 0 runs, flagged `unserved` with the 404 in `lastError`; and
+partway through a region it ends the board there, as a `400` does.
 
 Observed live (2026-09-16), at the defaults, when the archive still read the `world` board: 6 expansions and 56 seasons listed, of which the
 21 main seasons and their 74 dungeons are catalogued; **all 20 finished main seasons archived** — 39,997 runs, 31,837 characters, in
@@ -412,7 +415,8 @@ the US is adopted and Europe, with a shallower board, is read again.
 | every page read, or the board ended first | region `complete`                        | never                    |
 | a page failed (5xx, timeout, schema)      | region `incomplete`, season `incomplete` | that region, **in full** |
 | 404 on a first read, nothing held yet     | season `unarchivable`                    | never                    |
-| 404 once any region is held, or mid-region | region `incomplete` (a failed page)     | that region, **in full** |
+| 404 on a region's board, another held     | region `complete`, 0 runs, `unserved`    | never                    |
+| 404 partway through a region              | the board ends there; region `complete`  | never                    |
 | a higher-priority job started mid-region  | regions already read kept; season `partial` | the rest, next tick   |
 
 The season's `status` is judged over the configured regions: `complete` when every one is.
@@ -1094,7 +1098,8 @@ of `mplus_runs` should skip runs carrying `missedSince`; spec representation doe
     regions: {                          // one per region read
       us: { status: 'complete',         // | 'incomplete'
             pagesFetched: 100, failedPages: [], runs: 2000, characters: 1200,
-            archivedAt: Date, source: 'fetched' },   // | 'adopted'
+            archivedAt: Date, source: 'fetched',     // | 'adopted'
+            unserved?: true, lastError? },            // board answered 404: settled, 0 runs
       eu: { … }, kr: { … }, tw: { … }, cn: { … } },
     archivedAt: Date, source: 'fetched', // 'adopted' only when every region was
     lastError? } }

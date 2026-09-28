@@ -16,6 +16,11 @@ export interface MplusRegionArchive {
    * page 0 and is complete with no runs.
    * `incomplete` — at least one page failed; the region is read again, in full,
    * on a later tick, because the character fold needs every page at once.
+   *
+   * A region whose board answers 404 while the season's other regions are
+   * served is `complete` with no runs and `unserved` set: a 404 does not change
+   * with time, so it is settled exactly like a region with no board, and never
+   * asked again.
    */
   status: 'complete' | 'incomplete';
   pagesFetched: number;
@@ -25,6 +30,10 @@ export interface MplusRegionArchive {
   archivedAt: Date;
   /** How it was written: by fetching, or recovered from stored rows. */
   source: 'fetched' | 'adopted';
+  /** Raider.io answered 404 for this region's board. Settled; never retried. */
+  unserved?: true;
+  /** The 404, when `unserved`. */
+  lastError?: string;
 }
 
 /**

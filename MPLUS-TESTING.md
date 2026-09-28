@@ -124,7 +124,7 @@ starting point for new tests.
 | A4  | A yield keeps the regions already read (`partial`), and writes nothing if none finished | `mplus-archive.spec.ts`   |
 | A5  | A region is adopted from rows only when they are exactly a full read                    | `mplus-archive.spec.ts`   |
 | A6  | A `world`-era marker (no `regions`) is re-read region by region                         | `mplus-archive.spec.ts`   |
-| A7  | 404 on a first read with nothing held marks the **season** unarchivable; after anything is read it fails the region; an empty region board is `complete` with 0 runs | `mplus-archive.spec.ts`, `mplus-region-growth.spec.ts` (M6.1) |
+| A7  | A 404 is never retried: on a first read with nothing held it marks the **season** unarchivable; once a region is held it settles that region `complete` with 0 runs and `unserved`; partway through a region it ends the board; an empty region board is `complete` with 0 runs | `mplus-archive.spec.ts`, `mplus-region-growth.spec.ts` (M6.1) |
 | A8  | The marker is written **after** the rows                                                | I19                       |
 | A9  | Every affix on an archived run reaches `mplus_affixes`                                  | `mplus-archive.spec.ts`, I13 |
 | A10 | Archived rows are never touched by the live pass                                        | `mplus-archive.spec.ts`   |
@@ -300,7 +300,7 @@ the fixed behaviour, and each fix was proven by reverting it and watching its ca
 | F1 | An enrichment start mid-pass ended it for every later region, with no resume; a tick during enrichment waited a whole interval | The pass pauses (`MPLUS_YIELD_WAIT_MS`, 10 min) and resumes where it was; the scheduler waits the same way; `pausedMs` is reported | `src/mplus/mplus-cadence.spec.ts`, `mplus-resume.spec.ts`, `mplus-cadence.spec.ts` |
 | F2 | An empty first page from a populated region pruned it and stranded its characters        | Reported as `stoppedEarly: 'the board came back empty'`, not pruned; stage 1 refuses on its own too | `mplus-cleanup.spec.ts` (M3.1, M3.2) |
 | F3 | One 404 or three failures gave up on a live season's cutoffs for good                    | A live season is read every pass; only the archive's final read (`finalised`) settles or caps | `mplus-figures.spec.ts` (M8.1, M8.2), `mplus-cutoffs.spec.ts` |
-| F4 | A 404 after a region was read wrote `unarchivable` over it, orphaning its rows           | Only a first read with nothing held is `unarchivable`; otherwise the region is `incomplete` and retried | `mplus-region-growth.spec.ts` (M6.1 ×2) |
+| F4 | A 404 after a region was read wrote `unarchivable` over it, orphaning its rows           | Only a first read with nothing held is `unarchivable`; otherwise the 404 settles the region (`complete`, `unserved`) or ends its board. Never retried (owner, 2026-09-28) | `mplus-region-growth.spec.ts` (M6.1 ×2) |
 | F5 | An uncatalogued leftover was blocked and warned about for ever under the interlock      | Retired: the archive can never hold what the catalogue does not list | `mplus-region-growth.spec.ts` (M5.5) |
 | F6 | One unlisted season kept the catalogue due, so every check walked                         | A complete walk marks it `unlistedAt`; freshness ignores it          | `mplus-catalogue.spec.ts` (M1.8), unit |
 | F7 | The live pass rewrote a partly archived season from its live regions only                | Held regions are counted from the archive; `all` sums every region   | `mplus-figures.spec.ts` (M7.2) |

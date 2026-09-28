@@ -42,10 +42,23 @@ describe('Mythic+ archive across region changes', () => {
   const world = new MplusWorld();
   const logger = new CapturingLogger();
 
-  type RegionMarker = { status: string; runs: number; archivedAt: Date; source: string };
+  type RegionMarker = {
+    status: string;
+    runs: number;
+    archivedAt: Date;
+    source: string;
+    unserved?: true;
+    lastError?: string;
+  };
   const marker = async (slug: string) =>
     (await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug }))?.archive as
-      | { status: string; runs: number; characters: number; regions: Record<string, RegionMarker> }
+      | {
+          status: string;
+          runs: number;
+          characters: number;
+          failedPages: string[];
+          regions: Record<string, RegionMarker>;
+        }
       | undefined;
   const runsRequests = (season: string) =>
     app.raiderIo.requests.filter(
@@ -234,29 +247,33 @@ describe('Mythic+ archive across region changes', () => {
     return deadEnd;
   };
 
-  it('M6.1 [F4] a 404 after a region was read keeps it, and leaves only the failing region to retry', async () => {
+  it('M6.1 [F4] a 404 partway through a region ends its board there, and is never retried', async () => {
     const { usRows, marker: after } = await reachDeadEnd();
 
-    expect(after!.status).toBe('incomplete');
+    // A 404 does not change with time: Europe's board ends at the page that
+    // answered it, exactly as it would at a 400, and nothing is left to retry.
+    expect(after!.status).toBe('complete');
     expect(after!.regions.us, 'the US read earlier is kept').toMatchObject({
       status: 'complete',
       runs: 60,
     });
-    expect(after!.regions.eu).toMatchObject({ status: 'incomplete', failedPages: [1] });
+    expect(after!.regions.eu).toMatchObject({
+      status: 'complete',
+      pagesFetched: 1,
+      failedPages: [],
+      runs: 20,
+    });
+    expect(after!.failedPages).toEqual([]);
     expect(usRows).toBe(60);
-    await expectMplusArchiveRowsOwned(db);
-
-    // Not settled in Europe, so the transition does not treat it as held there;
-    // and the next tick reads Europe again rather than giving up on the season.
-    app.raiderIo.reset();
-    await app.app.get(MplusArchiveService).archiveBacklog();
-    expect((await marker(DEAD))!.status).toBe('complete');
-    expect(runsRequests(DEAD).every((request) => request.region === 'eu')).toBe(true);
     await expectMplusArchiveMarkersMatchRows(db);
     await expectMplusArchiveRowsOwned(db);
+
+    app.raiderIo.reset();
+    await app.app.get(MplusArchiveService).archiveBacklog();
+    expect(runsRequests(DEAD), 'the season is settled: no request asks again').toHaveLength(0);
   });
 
-  it('M6.1 [F4] a region whose first page 404s is incomplete, not the season, once another is held', async () => {
+  it('M6.1 [F4] a region whose whole board 404s is settled with no runs, not retried, once another is held', async () => {
     // Back to "the US held, Europe owed", and this time Europe's whole board 404s.
     await forgetRegion(DEAD, 'eu', 'partial');
     await db.collection(MPLUS_ARCHIVE_RUNS_COLLECTION).deleteMany({ season: DEAD, region: 'eu' });
@@ -268,18 +285,30 @@ describe('Mythic+ archive across region changes', () => {
     await app.app.get(MplusArchiveService).archiveBacklog();
 
     const after = (await marker(DEAD))!;
-    expect(after.status).toBe('incomplete');
+    // The season, not unarchivable: the US is served and kept. Europe is
+    // settled the way a region with no board is — complete, no runs — and
+    // flagged, so the 404 stays visible.
+    expect(after.status).toBe('complete');
     expect(after.regions.us.status).toBe('complete');
-    expect(after.regions.eu).toMatchObject({ status: 'incomplete', runs: 0 });
+    expect(after.regions.eu).toMatchObject({
+      status: 'complete',
+      runs: 0,
+      failedPages: [],
+      unserved: true,
+    });
+    expect(after.regions.eu.lastError).toMatch(/404/);
     expect(
-      logger.of('warn', /answered 404 after other regions were read/),
-      'said, rather than calling the season unarchivable',
+      logger.of('warn', /does not serve the Mythic\+ board of season-sl-4 in eu/),
+      'said once, rather than calling the season unarchivable',
     ).toHaveLength(1);
+    await expectMplusArchiveMarkersMatchRows(db);
     await expectMplusArchiveRowsOwned(db);
 
+    // Settled: later ticks never ask Europe again, whatever it would answer.
     app.raiderIo.reset();
     await app.app.get(MplusArchiveService).archiveBacklog();
-    expect((await marker(DEAD))!.status).toBe('complete');
+    await app.app.get(MplusArchiveService).archiveBacklog();
+    expect(runsRequests(DEAD), 'a 404 is final: nothing asks again').toHaveLength(0);
   });
 
   /** Rows for a season no expansion lists, as a renamed or dropped slug leaves them. */
