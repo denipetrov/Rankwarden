@@ -176,7 +176,11 @@ export class MplusSeasonTransitionService {
           archiveStatus: entry?.archive?.status ?? null,
         };
 
-        if (candidate.archived || !this.requireArchive) candidates.push(candidate);
+        // The interlock waits for the archive to hold a season. A season the
+        // catalogue does not list can never be held — the archive reads only
+        // what the catalogue lists — so waiting would be for ever; it is
+        // retired like any other superseded season.
+        if (!entry || candidate.archived || !this.requireArchive) candidates.push(candidate);
         else blockedByArchive.push(candidate);
       }
     }

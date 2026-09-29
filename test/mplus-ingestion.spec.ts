@@ -183,6 +183,15 @@ describe('Mythic+ ingestion', () => {
     ).toBe(strandedKeys.length);
 
     mplusWorld.runs = mplusWorld.runs.filter((run) => !doomedIds.includes(run.keystoneRunId));
+    // A run is pruned by the second clean pass to miss it; the first only marks
+    // it, which is what keeps a run that merely slid mid-pass (§5.7).
+    await mplus.sweep();
+    expect(
+      await db
+        .collection(MPLUS_RUNS_COLLECTION)
+        .countDocuments({ keystoneRunId: { $in: doomedIds }, missedSince: { $exists: true } }),
+      'marked on the first pass',
+    ).toBe(doomedIds.length);
     await mplus.sweep();
 
     expect(

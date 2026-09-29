@@ -192,39 +192,82 @@ describe('Mythic+ season cutoffs', () => {
       );
     });
 
-    it('is never asked again, though the season is live', async () => {
+    it('is asked again on the next pass while the season is live', async () => {
+      // A live season's "none" is not final: Raider.io computes cutoffs some
+      // days into a season, and a 404 then says nothing about the figures the
+      // season will end with.
+      world.seasonsWithoutCutoffs.delete('season-mn-2');
       app.raiderIo.reset();
 
       await app.app.get(MplusService).sweep();
 
-      expect(requests('season-mn-2')).toEqual([]);
+      expect(
+        requests('season-mn-2')
+          .map((request) => request.region)
+          .sort(),
+      ).toEqual(['eu', 'us']);
+      expect((await cutoffsFor('season-mn-2', 'us'))?.status).toBe('ok');
+    });
+
+    it('is settled once the archive reads a finished season as having none', async () => {
+      world.seasonsWithoutCutoffs.add('season-mn-1');
+      await db
+        .collection(MPLUS_SEASONS_COLLECTION)
+        .updateOne({ slug: 'season-mn-1' }, { $unset: { cutoffs: '' } });
+      app.raiderIo.reset();
+
+      await app.app.get(MplusArchiveService).archiveBacklog();
+      const us = (await cutoffsFor('season-mn-1', 'us'))!;
+      expect(us).toMatchObject({ status: 'missing', finalised: true });
+
+      app.raiderIo.reset();
+      await app.app.get(MplusArchiveService).archiveBacklog();
+      expect(requests('season-mn-1'), 'never asked again').toEqual([]);
+      world.seasonsWithoutCutoffs.delete('season-mn-1');
     });
   });
 
   describe('a region that keeps failing', () => {
-    beforeAll(async () => {
+    it('is retried on every pass while its season is live, and never given up on', async () => {
       await db
         .collection(MPLUS_SEASONS_COLLECTION)
         .updateOne({ slug: 'season-mn-2' }, { $unset: { cutoffs: '' } });
-    });
 
-    it('is retried, then given up on, so it cannot be asked for ever', async () => {
-      // China answers 500 — not 404 — for every season before `season-df-4`,
-      // which without a cap would be asked again on every pass.
-      const statuses: (string | undefined)[] = [];
-
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
         app.raiderIo.failWith('season-cutoffs', { status: 500 });
         await app.app.get(MplusService).sweep();
         app.raiderIo.reset();
-        statuses.push((await cutoffsFor('season-mn-2', 'us'))?.status);
+      }
+      expect(await cutoffsFor('season-mn-2', 'us')).toMatchObject({
+        status: 'failed',
+        attempts: 4,
+      });
+
+      await app.app.get(MplusService).sweep();
+      expect((await cutoffsFor('season-mn-2', 'us'))?.status, 'read once it recovers').toBe('ok');
+    });
+
+    it('is given up on after three final reads of a finished season', async () => {
+      // China answers 500 — not 404 — for every season before `season-df-4`,
+      // which without a cap would be asked again on every tick.
+      await db
+        .collection(MPLUS_SEASONS_COLLECTION)
+        .updateOne({ slug: 'season-mn-1' }, { $unset: { cutoffs: '' } });
+      const statuses: (string | undefined)[] = [];
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        app.raiderIo.failWith('season-cutoffs', { status: 500, times: 2 });
+        // Once for the backfill, which reads each region that owes a read.
+        await app.app.get(MplusArchiveService).archiveBacklog();
+        app.raiderIo.reset();
+        statuses.push((await cutoffsFor('season-mn-1', 'us'))?.status);
       }
 
       expect(statuses).toEqual(['failed', 'failed', 'unavailable']);
 
-      await app.app.get(MplusService).sweep();
-      expect(requests('season-mn-2'), 'given up on, so no longer asked').toEqual([]);
-      expect((await cutoffsFor('season-mn-2', 'us'))?.attempts).toBe(3);
+      await app.app.get(MplusArchiveService).archiveBacklog();
+      expect(requests('season-mn-1'), 'given up on, so no longer asked').toEqual([]);
+      expect((await cutoffsFor('season-mn-1', 'us'))?.attempts).toBe(3);
     });
   });
 });

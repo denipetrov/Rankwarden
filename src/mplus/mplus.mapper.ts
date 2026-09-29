@@ -6,6 +6,7 @@ import type {
 import type { MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import {
   mplusCharacterKey,
+  mplusNameKey,
   type MplusCharacterDocument,
   type MplusDungeonRun,
 } from './entities/mplus-character.entity.js';
@@ -242,7 +243,7 @@ export class MplusCharacterAccumulator {
             region: this.region,
             key,
             realmSlug: character.realm.slug,
-            nameKey: character.name.toLowerCase(),
+            nameKey: mplusNameKey(character.name),
             characterName: character.name,
             characterType: 'M+',
             rioCharacterId: character.id || null,

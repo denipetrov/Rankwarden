@@ -135,5 +135,15 @@ export const MPLUS_CHARACTERS_COLLECTION = 'mplus_characters';
 
 /** Identity key for a character, independent of either upstream's ids. */
 export function mplusCharacterKey(region: string, realmSlug: string, name: string): string {
-  return `${region}/${realmSlug}/${name.toLowerCase()}`;
+  return `${region}/${realmSlug.toLowerCase()}/${mplusNameKey(name)}`;
+}
+
+/**
+ * A name as it is looked up: NFC, then lowercased. NFC first, because the same
+ * name can arrive precomposed (`ë`) or decomposed (`e` + combining `¨`), and
+ * the two lowercase to different strings. Every key-building site goes through
+ * this, so a name that finds a character in one place finds it everywhere.
+ */
+export function mplusNameKey(name: string): string {
+  return name.normalize('NFC').toLowerCase();
 }

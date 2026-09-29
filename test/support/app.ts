@@ -56,6 +56,9 @@ const BASE_ENV: Record<string, string> = {
   SEASON_TRANSITION_ENABLED: 'false',
   MPLUS_ENABLED: 'false',
   MPLUS_INTERVAL_MS: '3600000',
+  // A pass stops at once for live ingestion rather than waiting ten minutes
+  // for a hold a test may never release. Files about pausing raise it.
+  MPLUS_YIELD_WAIT_MS: '0',
   // A test world is a handful of runs, so a full 1,001-page pass would be a
   // thousand requests to serve twenty. Tests that want the pagination boundary
   // raise this deliberately.
@@ -65,6 +68,9 @@ const BASE_ENV: Record<string, string> = {
   // without a sixty-second sleep, so a spent budget stops at once.
   RAIDERIO_BUDGET_WAIT_MS: '0',
   MPLUS_ARCHIVE_ENABLED: 'false',
+  // An archive tick skips at once when anything above it runs, rather than
+  // waiting twenty minutes; the phase-lock files raise it.
+  ARCHIVE_WAIT_FOR_IDLE_MS: '0',
   MPLUS_ARCHIVE_CHECK_INTERVAL_MS: '3600000',
   MPLUS_ARCHIVE_PAGES: '3',
   // The fake world lists its seasons under Midnight, and the catalogue walk

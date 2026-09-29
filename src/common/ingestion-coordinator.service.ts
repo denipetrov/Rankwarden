@@ -36,6 +36,8 @@ export class IngestionCoordinator {
   private enrichmentDone = false;
   private mplusDone = false;
   private mplusIdleWaiters: Array<() => void> = [];
+  /** Woken whenever any job ends, so a bounded wait re-checks its condition. */
+  private changeWaiters: Array<() => void> = [];
   private readonly warmedUpSubject = new ReplaySubject<void>(1);
   private readonly mplusWarmedUpSubject = new ReplaySubject<void>(1);
 
@@ -109,6 +111,7 @@ export class IngestionCoordinator {
         this.sweepDone = true;
         this.signalWarmedUp();
       }
+      this.notifyChange();
     }
   }
 
@@ -136,6 +139,7 @@ export class IngestionCoordinator {
         this.mplusIdleWaiters = [];
         for (const resolve of waiters) resolve();
       }
+      this.notifyChange();
     }
   }
 
@@ -154,6 +158,61 @@ export class IngestionCoordinator {
   }
 
   /**
+   * Waits for live PvP ingestion — a sweep or enrichment — to finish, for at
+   * most `maxWaitMs`. Resolves true once nothing live is running (at once if
+   * nothing is), false if the wait ran out first.
+   *
+   * For the Mythic+ pass, which pauses for live ingestion rather than giving up
+   * on the rest of its regions: enrichment ticks every few minutes, and a pass
+   * is longer than that, so a pass that stopped instead would leave its
+   * trailing regions for a whole interval, pass after pass.
+   */
+  async waitForLiveIngestion(maxWaitMs: number): Promise<boolean> {
+    return this.waitFor(() => !this.isLiveIngestionActive, maxWaitMs);
+  }
+
+  /**
+   * Waits until `condition` holds, for at most `maxWaitMs`. Resolves true once
+   * it does (at once if it already does), false if the wait ran out first.
+   *
+   * What a lower-priority job does when its tick finds a higher one running,
+   * instead of skipping the tick. Skipping looks harmless and is not: every
+   * hourly job is started at boot, so jobs sharing an interval fire together
+   * for the life of the process, and a job that skips whenever the sweep is
+   * running skips every single tick — the archives did, and ran only at
+   * warm-up. Re-checked whenever any job ends, and bounded, so a job that
+   * never ends costs the waiter one tick rather than every tick after it.
+   */
+  async waitFor(condition: () => boolean, maxWaitMs: number): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, maxWaitMs);
+
+    while (!condition()) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+
+      let timer: NodeJS.Timeout | undefined;
+      let waiter: (() => void) | undefined;
+
+      await new Promise<void>((resolve) => {
+        waiter = resolve;
+        this.changeWaiters.push(resolve);
+        timer = setTimeout(resolve, remaining);
+      });
+
+      clearTimeout(timer);
+      this.changeWaiters = this.changeWaiters.filter((entry) => entry !== waiter);
+    }
+
+    return true;
+  }
+
+  private notifyChange(): void {
+    const waiters = this.changeWaiters;
+    this.changeWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  /**
    * Marks a PvP archive tick as active for the duration of `work`.
    *
    * Nothing above the archive waits on this; it exists so the Mythic+ archive
@@ -168,6 +227,7 @@ export class IngestionCoordinator {
       return await work();
     } finally {
       this.archiveDepth -= 1;
+      this.notifyChange();
     }
   }
 
@@ -179,6 +239,7 @@ export class IngestionCoordinator {
       return await work();
     } finally {
       this.mplusArchiveDepth -= 1;
+      this.notifyChange();
     }
   }
 
@@ -194,7 +255,7 @@ export class IngestionCoordinator {
   private markMplusWarmedUp(): void {
     this.mplusDone = true;
 
-    if (!this.mplusWarmedUpSubject.closed) {
+    if (!this.mplusWarmedUpSubject.isStopped) {
       this.mplusWarmedUpSubject.next();
       this.mplusWarmedUpSubject.complete();
     }
@@ -213,6 +274,7 @@ export class IngestionCoordinator {
         this.enrichmentDone = true;
         this.signalWarmedUp();
       }
+      this.notifyChange();
     }
   }
 
@@ -228,8 +290,9 @@ export class IngestionCoordinator {
   private signalWarmedUp(): void {
     if (!this.isWarmedUp) return;
 
-    // ReplaySubject only forwards the first completion; later passes are no-ops.
-    if (!this.warmedUpSubject.closed) {
+    // Once only. `isStopped`, not `closed`: a Subject stays open (`closed` false)
+    // after `complete()`, so a `closed` guard let every later pass log this again.
+    if (!this.warmedUpSubject.isStopped) {
       this.logger.log('Live ingestion warmed up; lower-priority work may start');
       this.warmedUpSubject.next();
       this.warmedUpSubject.complete();

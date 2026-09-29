@@ -84,4 +84,13 @@ export interface MplusSeasonCutoffs {
   /** Failed attempts so far; 0 once read. */
   attempts: number;
   lastError?: string;
+  /**
+   * Written by the archive's final read of a finished season, as opposed to a
+   * live pass. Only a finalised record is ever "settled": a live season's
+   * cutoffs are read again on every pass whatever the last answer was, because
+   * a 404 in a season's first days or a run of 503s says nothing about the
+   * figures that season will end with. The attempt cap applies to final reads
+   * only.
+   */
+  finalised?: boolean;
 }

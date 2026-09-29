@@ -14,9 +14,10 @@
  * right direction for a quota: spending slightly less than allowed costs a
  * little throughput, spending more costs a ban.
  *
- * In memory, per process. A restart forgets the window — a deliberate trade,
- * since persisting every request would cost more than the overrun it guards
- * against, and both upstreams answer 429 as the backstop.
+ * In memory, per process. `snapshot` and `restore` let an owner carry the
+ * window across a restart; the Raider.io budget does (`RaiderIoBudgetStore`),
+ * because its window is a minute and a quick restart would otherwise hand a
+ * pass a whole fresh minute on top of the one just spent.
  */
 export class RollingWindow<K extends string> {
   /** Injectable clock, so the window can be tested without waiting for it. */
@@ -67,6 +68,35 @@ export class RollingWindow<K extends string> {
     }
 
     return total;
+  }
+
+  /** The buckets still inside the window, for persisting it. */
+  snapshot(): { index: number; counts: Record<K, number> }[] {
+    const current = Math.floor(this.now() / this.bucketMs);
+
+    return this.buckets
+      .filter((bucket) => bucket.index >= current - this.windowBuckets && bucket.index <= current)
+      .map((bucket) => ({ index: bucket.index, counts: { ...bucket.counts } }));
+  }
+
+  /**
+   * Adds persisted buckets back. Bucket indices are absolute (time over
+   * `bucketMs`), so a bucket from before a restart lands in its own slot and
+   * ages out on schedule; anything already outside the window is ignored.
+   */
+  restore(saved: readonly { index: number; counts: Partial<Record<K, number>> }[]): void {
+    const current = Math.floor(this.now() / this.bucketMs);
+
+    for (const entry of saved) {
+      if (entry.index < current - this.windowBuckets || entry.index > current) continue;
+
+      const bucket = this.buckets[entry.index % this.buckets.length];
+      if (bucket.index !== entry.index) {
+        bucket.index = entry.index;
+        bucket.counts = this.emptyCounts();
+      }
+      for (const key of this.keys) bucket.counts[key] += entry.counts[key] ?? 0;
+    }
   }
 
   private emptyCounts(): Record<K, number> {

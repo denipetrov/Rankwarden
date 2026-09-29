@@ -38,6 +38,11 @@ export interface MplusRegionResult {
    */
   mergedCharacters: number;
   prunedRuns: number;
+  /**
+   * Runs this pass did not see, marked rather than removed: the second clean
+   * pass in a row to miss one prunes it (see `MplusRunDocument.missedSince`).
+   */
+  missedRuns: number;
   prunedCharacters: number;
   /** Null when the region finished cleanly; otherwise why it stopped early. */
   stoppedEarly: string | null;
@@ -56,6 +61,12 @@ export interface MplusSweepResult {
   runs: number;
   characters: number;
   requests: number;
+  /**
+   * Time the pass spent paused for live PvP ingestion. Part of `durationMs`:
+   * a pass pauses for a sweep or enrichment rather than giving up on the
+   * regions after it (`MPLUS_YIELD_WAIT_MS`).
+   */
+  pausedMs: number;
   stoppedEarly: string | null;
 }
 
@@ -83,7 +94,10 @@ export class MplusService {
   private readonly maxPages: number;
   private readonly intervalMs: number;
   private readonly budgetWaitMs: number;
+  private readonly yieldWaitMs: number;
   private running = false;
+  /** Paused time in the pass in progress; reset at its start. */
+  private pausedMs = 0;
 
   constructor(
     config: ConfigService<Env, true>,
@@ -101,6 +115,7 @@ export class MplusService {
     this.maxPages = config.get('RAIDERIO_MAX_PAGES', { infer: true });
     this.intervalMs = config.get('MPLUS_INTERVAL_MS', { infer: true });
     this.budgetWaitMs = config.get('RAIDERIO_BUDGET_WAIT_MS', { infer: true });
+    this.yieldWaitMs = config.get('MPLUS_YIELD_WAIT_MS', { infer: true });
   }
 
   get isRunning(): boolean {
@@ -139,7 +154,29 @@ export class MplusService {
     }
   }
 
+  /**
+   * Pauses while live PvP ingestion runs, for at most `MPLUS_YIELD_WAIT_MS`.
+   * Returns false when the wait ran out, which is the only thing that stops a
+   * pass for live ingestion now.
+   */
+  private async yieldToLiveIngestion(where: string): Promise<boolean> {
+    if (!this.coordinator.isLiveIngestionActive) return true;
+
+    const pausedAt = Date.now();
+    this.logger.log(`Live PvP ingestion in progress; pausing the Mythic+ pass ${where}`);
+    const resumed = await this.coordinator.waitForLiveIngestion(this.yieldWaitMs);
+    this.pausedMs += Date.now() - pausedAt;
+
+    if (resumed) {
+      this.logger.log(`Resuming the Mythic+ pass ${where} after ${Date.now() - pausedAt}ms`);
+    }
+
+    return resumed;
+  }
+
   private async runSweep(startedAt: Date, requestsBefore: number): Promise<MplusSweepResult> {
+    this.pausedMs = 0;
+
     // The catalogue before any runs request: the season each region is on is
     // read from it, and a pass that could not resolve one has nothing it could
     // correctly fetch. Usually already fresh — the season check reads it at
@@ -167,10 +204,9 @@ export class MplusService {
       // is minutes long, so a sweep or enrichment pass beginning in the middle
       // of it would otherwise be competing for Mongo until it finished. The
       // request budgets are independent — this is purely about the database and
-      // the process.
-      if (this.coordinator.isLiveIngestionActive) {
+      // the process. It pauses rather than stopping, so every region is read.
+      if (!(await this.yieldToLiveIngestion(`before ${region}`))) {
         stoppedEarly = 'live PvP ingestion started';
-        this.logger.log('Live PvP ingestion in progress; pausing the Mythic+ pass');
         break;
       }
 
@@ -200,6 +236,7 @@ export class MplusService {
       runs: results.reduce((sum, result) => sum + result.runs, 0),
       characters: results.reduce((sum, result) => sum + result.characters, 0),
       requests: Math.max(0, requests),
+      pausedMs: this.pausedMs,
       stoppedEarly,
     };
 
@@ -235,6 +272,7 @@ export class MplusService {
       characters: 0,
       mergedCharacters: 0,
       prunedRuns: 0,
+      missedRuns: 0,
       prunedCharacters: 0,
       stoppedEarly: null,
     };
@@ -256,7 +294,7 @@ export class MplusService {
         break;
       }
 
-      if (this.coordinator.isLiveIngestionActive) {
+      if (!(await this.yieldToLiveIngestion(`in ${region} at page ${first}`))) {
         result.stoppedEarly = 'live PvP ingestion started';
         break;
       }
@@ -322,6 +360,23 @@ export class MplusService {
     result.characters = characters.length;
     result.mergedCharacters = merged;
 
+    // A region that answered with an empty board while runs are stored for it
+    // is a read that went wrong, not a ladder every player left: an empty page
+    // is also how the data ends, so nothing else would tell the two apart, and
+    // the prune below would empty the region and strand its characters.
+    if (
+      !result.stoppedEarly &&
+      result.runs === 0 &&
+      result.pagesFailed === 0 &&
+      (await this.repository.countRuns(season, region)) > 0
+    ) {
+      result.stoppedEarly = 'the board came back empty';
+      this.logger.warn(
+        `Mythic+ ${region} answered an empty board for ${season} while runs are stored for it; ` +
+          'keeping them and skipping the prune',
+      );
+    }
+
     // Pruning only after a clean pass. A pass that stopped early — a spent
     // budget, a yielded coordinator, a run of failed pages — looks exactly like
     // a leaderboard that lost most of its runs, and pruning on that basis would
@@ -330,6 +385,7 @@ export class MplusService {
     if (!result.stoppedEarly && result.pagesFailed === 0 && result.pagesFetched > 0) {
       const pruned = await this.repository.pruneStale(season, region, fetchedAt);
       result.prunedRuns = pruned.runs;
+      result.missedRuns = pruned.missed;
       result.prunedCharacters = pruned.characters;
     } else if (result.pagesFailed > 0) {
       this.logger.warn(
@@ -410,6 +466,7 @@ export class MplusService {
       runs: summary.runs,
       characters: summary.characters,
       durationMs: summary.durationMs,
+      pausedMs: summary.pausedMs,
       requests: summary.requests,
       capacityPerMinute,
       feasible: minutesNeeded * 60_000 <= this.intervalMs,

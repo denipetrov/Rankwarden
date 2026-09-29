@@ -89,6 +89,17 @@ export interface MplusRunDocument {
    */
   rosterKeys: string[];
   fetchedAt: Date;
+  /**
+   * Set by the first clean pass that did not see the run; cleared the next time
+   * one does. A run is pruned only when a second clean pass misses it too.
+   *
+   * The grace exists because the board moves while a pass reads it: a run can
+   * slide above the read cursor between two pages and be missed while still
+   * ranked, and pruning it would take every member no other run names with it
+   * for a whole interval. A run that has really left the board goes one pass
+   * later instead. Readers of the board should skip runs carrying this field.
+   */
+  missedSince?: Date;
 }
 
 export const MPLUS_RUNS_COLLECTION = 'mplus_runs';

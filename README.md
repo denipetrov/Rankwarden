@@ -59,7 +59,12 @@ src/
   admin/                      POST /admin/* — dev-only job triggers (404 in production)
   archive/                    finished seasons, fetched once and kept separately
   representation/             daily spec-representation snapshots
-  sync/                       POST /characters/sync — push a record in from the API
+  raiderio/                   the Mythic+ upstream: http, schemas, typed endpoints
+  mplus-season/               M+ season catalogue, current season, transition, cutoffs
+  mplus/                      the M+ live pass over each region's top runs
+  mplus-archive/              finished M+ seasons, read once per region
+  mplus-representation/       M+ spec representation per season, region and dungeon
+  sync/                       POST /characters/sync and /mplus/characters/sync
 scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
 scripts/migrate-to-characters.mjs  folds legacy flat entries into the grouped shape
 docker-compose.yml            local mongo:8 + mongo-express
@@ -439,6 +444,37 @@ regions, at roughly 3,700 entries each.
 | `ARCHIVE_MAX_ENTRIES_PER_BRACKET` (5000) | Top N by rating per bracket. **Saves ~1%** — Blizzard already returns about 5,000, so this is a guard, not a reduction |
 | `ARCHIVE_MIN_SEASON` (0 = all)           | The real lever. Seasons 35+ are the ones with per-spec shuffle ladders; starting there is roughly a third of the rows  |
 
+## Mythic+
+
+A second ingestion side, from **Raider.io** rather than Blizzard, with its own per-minute
+budget and its own place in the job order (it yields to the PvP sweep and to enrichment).
+
+| Job                  | What it does                                                                   | Cadence                              |
+| -------------------- | ------------------------------------------------------------------------------ | ------------------------------------ |
+| Season catalogue     | Every main season and dungeon, walked across expansions                        | boot, then daily                     |
+| Season check         | Which season is current **in each region**; announces ends and rollovers       | boot, then hourly                    |
+| Live pass            | The top runs of the current season, per region, folded into characters         | every 6h, after warm-up              |
+| Season transition    | Retires a superseded season per region, once the archive holds it              | hourly + on rollover                 |
+| Archive              | Each finished season, 100 pages a region, into its own collections             | hourly, lowest priority              |
+| Spec representation  | Which specs were played, per season, region and dungeon                        | after each pass; once when archived  |
+| Season cutoffs       | Keystone Master/Hero/Legend… and the top 0.1% / 1% titles, per region          | after each pass; once when archived  |
+
+Ten collections: `mplus_runs`, `mplus_characters`, `mplus_affixes`, `mplus_seasons`,
+`mplus_dungeons`, `mplus_archive_runs`, `mplus_archive_characters`,
+`mplus_spec_representation`, `mplus_season_state`, `mplus_season_transitions`.
+
+Two rules worth knowing before reading the code. A Mythic+ **score never decreases**: each
+dungeon keeps its best run, so the sum is monotonic by construction (§5.6). And a season is
+**current per region** until its successor opens there, so on rollover day two regions can
+be ingesting different seasons — which is also why the archive, the transition and the
+cutoffs all work a region at a time.
+
+Both Mythic+ jobs are **off by default** (`MPLUS_ENABLED`, `MPLUS_ARCHIVE_ENABLED`): they
+need `RAIDER_IO_API_KEY`, which a deployment predating them does not have.
+
+Full reference in [`SKILLS.md`](SKILLS.md) §4.6–§4.6.2 and §5.5–§5.10; a map of the
+implementation and its test coverage in [`MPLUS-TESTING.md`](MPLUS-TESTING.md).
+
 ## Health endpoints
 
 Three endpoints, deliberately split, because an orchestrator needs different answers:
@@ -581,7 +617,8 @@ is kept out of the default `npm test`.
 
 The integration harness lives in `test/support/`: a mutable `World` standing in for
 Blizzard, a `FakeBlizzard` that replaces the HTTP service (so every zod schema still runs),
-`bootTestApp`, and `expectInvariants`.
+`bootTestApp`, and `expectInvariants`. Mythic+ has the same pair, `MplusWorld` and
+`FakeRaiderIo`; [`MPLUS-TESTING.md`](MPLUS-TESTING.md) §6 shows how to drive them.
 
 Two things it enforces, both learned the hard way:
 

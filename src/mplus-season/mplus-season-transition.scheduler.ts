@@ -97,7 +97,19 @@ export class MplusSeasonTransitionScheduler implements OnApplicationBootstrap, O
     this.running = true;
 
     try {
-      await this.coordinator.whenMplusIdle();
+      // Waited for, but not for ever: a pass that never ends would otherwise
+      // hold this tick — and, through `running`, every tick after it. One
+      // interval is the bound; the next tick tries again.
+      const idle = await this.coordinator.waitFor(
+        () => !this.coordinator.isMplusActive,
+        this.intervalMs,
+      );
+      if (!idle) {
+        this.logger.warn(
+          'A Mythic+ pass has been running for a whole transition interval; skipping this check',
+        );
+        return;
+      }
 
       await withRunId('transition', async () => {
         const { plan, purged } = await this.transitions.run();
