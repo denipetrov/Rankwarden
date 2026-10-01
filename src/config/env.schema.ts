@@ -458,6 +458,26 @@ export const envSchema = z.object({
    */
   MPLUS_CATALOGUE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
 
+  /**
+   * Keeps the raid catalogue (`raids`) loaded from Raider.io. Off by default
+   * for the same reason as the Mythic+ jobs: it needs `RAIDER_IO_API_KEY`,
+   * which a deployment predating it does not have.
+   */
+  RAID_CATALOGUE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * First expansion the raid catalogue walks from; 6 is Legion, the first
+   * Raider.io lists raids for. The walk continues upward until an expansion is
+   * unsupported, so a new expansion needs no change here.
+   */
+  RAID_CATALOGUE_FIRST_EXPANSION: z.coerce.number().int().positive().default(6),
+  /** How stale the raid catalogue may get before a check re-reads it. */
+  RAID_CATALOGUE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  /** How often the catalogue's age is checked. Costs no request inside the TTL. */
+  RAID_CATALOGUE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+
   // Mythic+ seasons: which one is current, and retiring the one it replaced.
   /**
    * Checks the Mythic+ season on its own schedule: the catalogue at boot and
@@ -557,6 +577,15 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
       path: ['RAIDER_IO_API_KEY'],
       message:
         'is required when MPLUS_ARCHIVE_ENABLED is true; set it or set MPLUS_ARCHIVE_ENABLED=false',
+    });
+  }
+
+  if (env.RAID_CATALOGUE_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAIDER_IO_API_KEY'],
+      message:
+        'is required when RAID_CATALOGUE_ENABLED is true; set it or set RAID_CATALOGUE_ENABLED=false',
     });
   }
 

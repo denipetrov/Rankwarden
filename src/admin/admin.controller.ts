@@ -13,6 +13,7 @@ import { MplusSeasonTransitionService } from '../mplus-season/mplus-season-trans
 import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import { MplusService } from '../mplus/mplus.service.js';
 import { ProfileEnrichmentService } from '../profile/profile-enrichment.service.js';
+import { RaidCatalogueService } from '../raid/raid-catalogue.service.js';
 import { SpecRepresentationService } from '../representation/spec-representation.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { SeasonTransitionService } from '../season/season-transition.service.js';
@@ -48,6 +49,7 @@ export class AdminController implements OnModuleInit {
     private readonly mplusArchive: MplusArchiveService,
     private readonly mplusCatalogue: MplusCatalogueService,
     private readonly mplusTransitions: MplusSeasonTransitionService,
+    private readonly raidCatalogue: RaidCatalogueService,
   ) {
     this.enabled = config.get('NODE_ENV', { infer: true }) !== 'production';
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
@@ -168,6 +170,14 @@ export class AdminController implements OnModuleInit {
     this.guard();
 
     return withRunId('mplus-season', () => this.mplusCatalogue.refresh());
+  }
+
+  /** Re-reads the raid catalogue now, ignoring its TTL. */
+  @Post('raid-catalogue')
+  async raidCatalogueRefresh() {
+    this.guard();
+
+    return withRunId('raid-catalogue', () => this.raidCatalogue.refresh());
   }
 
   @Post('season-refresh')

@@ -9,6 +9,7 @@ export type RunKind =
   | 'mplus'
   | 'mplus-archive'
   | 'mplus-season'
+  | 'raid-catalogue'
   | 'snapshot'
   | 'transition';
 

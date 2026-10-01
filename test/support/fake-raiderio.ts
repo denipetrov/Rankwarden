@@ -233,6 +233,17 @@ export class FakeRaiderIo {
   ): unknown {
     if (path === 'mythic-plus/static-data') return this.world.staticData(expansionId);
 
+    if (path === 'raiding/static-data') {
+      const payload = expansionId === undefined ? null : this.world.raidStaticData(expansionId);
+      // The endpoint's real answer for an expansion with no raids, and for a
+      // request that names none: a 400, which is how its list ends.
+      if (payload === null) {
+        throw new RaiderIoApiError(400, url, 'Requested unsupported expansion_id');
+      }
+
+      return payload;
+    }
+
     if (path === 'mythic-plus/season-cutoffs') {
       // No cutoffs for the season: a 404 naming it, as upstream answers for
       // everything before `season-sl-3`.

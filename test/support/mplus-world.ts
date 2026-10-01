@@ -58,6 +58,20 @@ export interface MplusWorldMember {
   region?: string;
 }
 
+/** A raid as `/raiding/static-data` lists it, under one expansion. */
+export interface WorldRaid {
+  id: number;
+  slug: string;
+  name: string;
+  shortName?: string;
+  /** Omitted from the payload when absent, as upstream does before Shadowlands. */
+  icon?: string;
+  expansionId: number;
+  starts: Record<string, string>;
+  ends: Record<string, string>;
+  encounters: { id: number; slug: string; name: string }[];
+}
+
 export interface MplusWorldSeason {
   slug: string;
   name: string;
@@ -150,6 +164,76 @@ export class MplusWorld {
   ];
 
   runs: MplusWorldRun[] = [];
+
+  /**
+   * The raids `/raiding/static-data` lists: two expansions, a finished raid in
+   * each and one still open, which carries the 2030 placeholder end. Real ids
+   * and slugs, so a failure reads like the data it stands for.
+   */
+  raids: WorldRaid[] = [
+    {
+      id: 16178,
+      slug: 'manaforge-omega',
+      name: 'Manaforge Omega',
+      shortName: 'MFO',
+      icon: 'inv_112_achievement_raid_manaforgeomega',
+      expansionId: 10,
+      starts: { us: '2025-08-12T15:00:00Z', eu: '2025-08-13T04:00:00Z' },
+      ends: { us: '2026-03-02T22:00:00Z', eu: '2026-03-02T22:00:00Z' },
+      encounters: [
+        { id: 197124, slug: 'plexus-sentinel', name: 'Plexus Sentinel' },
+        { id: 197131, slug: 'dimensius', name: 'Dimensius' },
+      ],
+    },
+    {
+      id: 16340,
+      slug: 'tier-mn-1',
+      name: 'Tier MN 1',
+      shortName: 'MN1',
+      icon: 'inv_achievement_raid_mn1',
+      expansionId: 11,
+      starts: { us: '2026-03-17T15:00:00Z', eu: '2026-03-18T04:00:00Z' },
+      ends: { us: '2026-08-18T15:00:00Z', eu: '2026-08-19T04:00:00Z' },
+      encounters: [{ id: 200001, slug: 'first-boss', name: 'First Boss' }],
+    },
+    {
+      id: 16915,
+      slug: 'the-venomous-abyss',
+      name: 'The Venomous Abyss',
+      shortName: 'TVA',
+      icon: 'inv_achievement_raid_venomousabyss',
+      expansionId: 11,
+      starts: { us: '2026-08-18T15:00:00Z', eu: '2026-08-19T04:00:00Z' },
+      ends: { us: '2030-01-01T00:00:00Z', eu: '2030-01-01T00:00:00Z' },
+      encounters: [
+        { id: 210001, slug: 'gatekeeper', name: 'Gatekeeper' },
+        { id: 210008, slug: 'the-abyssal-queen', name: 'The Abyssal Queen' },
+      ],
+    },
+  ];
+
+  /**
+   * The `/raiding/static-data` payload for one expansion, or null for an
+   * expansion with no raids — which upstream answers with a 400, not with an
+   * empty list, and the fake does the same.
+   */
+  raidStaticData(expansionId: number): unknown | null {
+    const listed = this.raids.filter((raid) => raid.expansionId === expansionId);
+    if (listed.length === 0) return null;
+
+    return {
+      raids: listed.map((raid) => ({
+        id: raid.id,
+        slug: raid.slug,
+        name: raid.name,
+        short_name: raid.shortName ?? raid.slug.slice(0, 3).toUpperCase(),
+        ...(raid.icon === undefined ? {} : { icon: raid.icon }),
+        starts: raid.starts,
+        ends: raid.ends,
+        encounters: raid.encounters,
+      })),
+    };
+  }
 
   /** Regions the fake will serve at all; anything else 404s. */
   regions = ['us', 'eu', 'kr', 'tw', 'cn'];

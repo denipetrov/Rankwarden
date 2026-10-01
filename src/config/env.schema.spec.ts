@@ -271,3 +271,24 @@ describe('validateEnv — bounded waits', () => {
     expect(env.MPLUS_YIELD_WAIT_MS).toBe(600_000);
   });
 });
+
+describe('validateEnv — raid catalogue', () => {
+  it('is off by default, walks from Legion, and re-reads daily', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.RAID_CATALOGUE_ENABLED).toBe(false);
+    expect(env.RAID_CATALOGUE_FIRST_EXPANSION).toBe(6);
+    expect(env.RAID_CATALOGUE_TTL_MS).toBe(86_400_000);
+    expect(env.RAID_CATALOGUE_CHECK_INTERVAL_MS).toBe(3_600_000);
+  });
+
+  it('refuses to run without a Raider.io key, naming the key and the switch', () => {
+    expect(() => validateEnv({ ...base, RAID_CATALOGUE_ENABLED: 'true' })).toThrow(
+      /RAIDER_IO_API_KEY: is required when RAID_CATALOGUE_ENABLED is true/,
+    );
+    expect(
+      validateEnv({ ...base, RAID_CATALOGUE_ENABLED: 'true', RAIDER_IO_API_KEY: 'key' })
+        .RAID_CATALOGUE_ENABLED,
+    ).toBe(true);
+  });
+});

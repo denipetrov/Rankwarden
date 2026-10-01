@@ -114,6 +114,9 @@ src/
     mplus.repository.ts         mplus_runs + mplus_characters + mplus_affixes
     mplus.service.ts            the pass
     mplus.scheduler.ts          interval + warm-up gate
+  raid/
+    raid-catalogue.service.ts   walks expansions; one document per raid in `raids`
+    raid-catalogue.scheduler.ts boot tick + interval; outside the coordinator
   mplus-representation/
     mplus-spec-representation.mapper.ts   tallies -> per region/dungeon + all documents
     mplus-spec-representation.service.ts  live after each pass; archive once per season
@@ -1326,6 +1329,48 @@ absorb a real outage spread over three ticks. The cap applies to the archive's f
 only; a live season is never given up on, and a finalised record from before this rule
 (2026-09-26) is read once more to be finalised.
 
+### 5.11 Raid catalogue — `raids`
+
+```js
+{ id: 16178,                         // Raider.io's raid id; the identity
+  slug: 'manaforge-omega',           // what the raiding endpoints take as `raid=`
+  name: 'Manaforge Omega', shortName: 'MFO',
+  icon: 'inv_112_achievement_raid_manaforgeomega',   // null before Shadowlands
+  expansionId: 10,
+  starts: { us: Date, eu: Date, kr: Date, tw: Date, cn: Date },
+  ends:   { us: Date, … },           // 2030-01-01 while the raid is open
+  encounters: [ { id: 197124, slug: 'plexus-sentinel', name: 'Plexus Sentinel' }, … ],
+  catalogueUpdatedAt: Date,
+  unlistedAt?: Date }                // a complete walk no longer listed it
+```
+
+One document per raid, from `GET /raiding/static-data?expansion_id=N`, one request per
+expansion. Indexes: `raid_identity` (unique `id`), `raid_slug`, `raid_expansion`.
+
+Checked live 2026-10-01: expansions **6 (Legion) to 11 (Midnight)** answer, with **30 raids
+and 244 encounters**; `id` and `slug` are each unique across all of them.
+
+- **The list ends on a 400**, not on an empty answer. Any expansion with no raids — below 6
+  or above the newest — answers `400 "Requested unsupported expansion_id"`, where the Mythic+
+  static data answers 200 with no seasons. The walk reads that 400, and only that, as the
+  end; any other failure stops the walk without reaching it, so later expansions are left as
+  they were rather than taken for gone. `expansion_id` is required: without it, 400 too.
+- **A re-release is a raid of its own.** Fated (Shadowlands) and Awakened (Dragonflight)
+  raids have their own id — the original's plus 100,000,000 — their own slug, dates and
+  encounter slugs (`fated-shriekwing`). They are stored as separate documents: each had its
+  own progression race.
+- **`icon` is absent on every Legion raid** (5 of 30), stored as `null`.
+- **Re-read on a TTL** (`RAID_CATALOGUE_TTL_MS`, a day), judged by the oldest stamp among
+  raids still listed, exactly as the Mythic+ catalogue is (§5.8): a new raid is listed before
+  it opens, and an open raid's placeholder end is replaced once the tier is over. A raid a
+  complete walk no longer lists is marked `unlistedAt` and kept.
+- **Field-level writes**, so anything a later raiding job stores on a raid document survives
+  a refresh.
+- The scheduler ticks at boot and then every `RAID_CATALOGUE_CHECK_INTERVAL_MS`. It takes no
+  part in the coordinator's ordering: six requests and thirty writes compete with nothing.
+  Requests are charged to the Raider.io budget's `other` consumer.
+- `POST /admin/raid-catalogue` (development only) re-reads it now, ignoring the TTL.
+
 ---
 
 ## 6. Blizzard API surface
@@ -1386,6 +1431,7 @@ Non-2xx becomes `RaiderIoApiError` with `statusCode`, `isNotFound` and `isBadReq
 | `/api/v1/mythic-plus/static-data?expansion_id`            | the current season; the whole catalogue, one call per expansion |
 | `/api/v1/mythic-plus/runs?…&region=<region>` (archive)     | the archive — 100 pages a region, a finished season             |
 | `/api/v1/mythic-plus/season-cutoffs?season&region`        | title + percentile cutoffs, one per season and region (§5.10)  |
+| `/api/v1/raiding/static-data?expansion_id`                | the raid catalogue, one expansion at a time; 400 past the last (§5.11) |
 
 **The access key travels as a query parameter**, which Raider.io requires and which means it
 lands inside every url — including the ones got bakes into its own error messages. It is
@@ -1684,6 +1730,10 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `MPLUS_ARCHIVE_PAGES`                 | `100`                               | Pages per region per season: 2,000 runs a region           |
 | `MPLUS_CATALOGUE_FIRST_EXPANSION`     | `6`                                 | Legion; the walk continues until an empty expansion        |
 | `MPLUS_CATALOGUE_TTL_MS`              | `86400000`                          | How a new or finished season is noticed (§5.8)             |
+| `RAID_CATALOGUE_ENABLED`              | `false`                             | Keep `raids` loaded (§5.11); needs `RAIDER_IO_API_KEY`     |
+| `RAID_CATALOGUE_FIRST_EXPANSION`      | `6`                                 | Legion; the walk continues until an unsupported expansion  |
+| `RAID_CATALOGUE_TTL_MS`               | `86400000`                          | How a new raid or a real end date is noticed               |
+| `RAID_CATALOGUE_CHECK_INTERVAL_MS`    | `3600000`                           | How often its age is checked; free inside the TTL          |
 | `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
 | `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
 | `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
@@ -1880,9 +1930,22 @@ Most are, but two of thirteen sampled seasons had a 399-member page, and Raider.
 `season-tww-3-legion-remix-1-player` board. Nothing in the schema or the fold assumes five; do
 not introduce anything that does.
 
+### 9.16 The raid static data ends its list with a 400
+
+`/raiding/static-data` answers `400 "Requested unsupported expansion_id"` for an expansion
+with no raids, where `/mythic-plus/static-data` answers 200 with an empty list. A walk copied
+from the Mythic+ one would read the end of the list as a failure, stop "incomplete", and so
+never learn that a raid had stopped being listed. `RaidCatalogueService` treats that 400 —
+and no other failure — as the end.
+
 ---
 
 ## 10. Testing
+
+> **Raid catalogue:** `test/raid-catalogue.spec.ts` (boot, shape, indexes, TTL, re-releases,
+> corrections, unlisted raids, a failing expansion, the admin route), with unit specs beside
+> the service, mapper and scheduler in `src/raid/`. `MplusWorld.raids` and
+> `raidStaticData()` serve the payload, 400 included.
 
 > **Mythic+ specifically:** [`MPLUS-TESTING.md`](MPLUS-TESTING.md) maps every Mythic+ part to
 > the rule it promises, the spec that pins it, and what is still unpinned. It is the file to

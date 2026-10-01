@@ -80,6 +80,10 @@ const BASE_ENV: Record<string, string> = {
   MPLUS_SEASON_CHECK_INTERVAL_MS: '3600000',
   MPLUS_TRANSITION_ENABLED: 'false',
   MPLUS_TRANSITION_CHECK_INTERVAL_MS: '3600000',
+  RAID_CATALOGUE_ENABLED: 'false',
+  RAID_CATALOGUE_CHECK_INTERVAL_MS: '3600000',
+  // The fake world lists its raids under The War Within and Midnight.
+  RAID_CATALOGUE_FIRST_EXPANSION: '10',
   RAIDER_IO_API_KEY: 'test-raiderio-key',
 };
 
