@@ -35,6 +35,11 @@ export interface RaiderIoGetOptions {
    * one — the static data is global — so it is explicit rather than derived.
    */
   region?: string;
+  /**
+   * Overrides `RAIDERIO_REQUEST_TIMEOUT_MS` for this call. For the one endpoint
+   * that is legitimately slow: an uncached raid ranking takes up to a minute.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -138,6 +143,7 @@ export class RaiderIoHttpService {
           // hook explicitly rather than trusting async local storage to survive
           // the trip through got's internals.
           context: { consumer: raiderIoConsumerFor(currentRunKind()) },
+          ...(options.timeoutMs === undefined ? {} : { timeout: { request: options.timeoutMs } }),
           searchParams: { ...options.searchParams },
         })
         .json<unknown>();

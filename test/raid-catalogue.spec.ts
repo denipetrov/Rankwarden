@@ -81,6 +81,14 @@ describe('Raid catalogue', () => {
     ).toHaveLength(1);
   });
 
+  it('reads no ranking while the rankings are switched off', async () => {
+    expect(app.raiderIo.countMatching('raiding/raid-rankings')).toBe(0);
+    expect(
+      await db.collection(RAIDS_COLLECTION).countDocuments({ guilds: { $exists: true } }),
+    ).toBe(0);
+    expect(await db.collection('guilds').countDocuments()).toBe(0);
+  });
+
   it('stores one document per raid, with its encounters and per-region dates', async () => {
     const manaforge = await raid('manaforge-omega');
 

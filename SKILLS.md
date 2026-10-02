@@ -117,6 +117,11 @@ src/
   raid/
     raid-catalogue.service.ts   walks expansions; one document per raid in `raids`
     raid-catalogue.scheduler.ts boot tick + interval; outside the coordinator
+    raid-rankings.service.ts    per raid, board and difficulty: the top hundred, in pages of twenty
+    raid-rankings.mapper.ts     entry -> guild document + ranked guild tied to encounters
+    raid-rankings.repository.ts `raids.guilds.<board>.<difficulty>` and its stamp; nothing else
+    guild.repository.ts         `guilds`: one document per guild
+    raid-rankings.scheduler.ts  after every first pass, then per interval; yields to every job
   mplus-representation/
     mplus-spec-representation.mapper.ts   tallies -> per region/dungeon + all documents
     mplus-spec-representation.service.ts  live after each pass; archive once per season
@@ -152,6 +157,7 @@ ranks them:
 | 3        | **Spec representation** | `REPRESENTATION_CHECK_INTERVAL_MS` (1h), writes once per UTC day | the sweep                    | none      |
 | 4        | **Season archive**      | `ARCHIVE_CHECK_INTERVAL_MS` (1h)                                 | sweep, enrichment **and** M+ | Blizzard  |
 | 5        | **Mythic+ archive**     | `MPLUS_ARCHIVE_CHECK_INTERVAL_MS` (1h), after both warm-ups      | **every** job above          | Raider.io |
+| 6        | **Raid rankings**       | `RAID_RANKINGS_INTERVAL_MS` (1h), after both warm-ups            | **every** job above          | Raider.io |
 | —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)         | Blizzard  |
 | —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)       | none      |
 | —        | **M+ season check**     | `MPLUS_SEASON_CHECK_INTERVAL_MS` (1h) + at boot                  | nothing (catalogue only)     | Raider.io |
@@ -159,7 +165,7 @@ ranks them:
 
 The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
 `isArchiveActive`, `isMplusArchiveActive`, `isLiveIngestionActive`,
-`isAboveMplusArchiveActive`, `isWarmedUp`, `isMplusWarmedUp`, `warmedUp$` and
+`isAboveMplusArchiveActive`, `isAboveRaidRankingsActive`, `isWarmedUp`, `isMplusWarmedUp`, `warmedUp$` and
 `mplusWarmedUp$`. `duringSweep()` / `duringEnrichment()` / `duringMplus()` /
 `duringArchive()` / `duringMplusArchive()` wrap the work.
 
@@ -167,6 +173,15 @@ The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
 > needed to. It does now purely so the Mythic+ archive — the one job below it — can yield
 > to it. Without that, the two lowest-priority jobs would share every gap the live jobs
 > leave, which is exactly what "lowest priority" rules out.
+
+> **The raid rankings are last, and are not a job on the coordinator.** Nothing waits for
+> them, so there is no `duringRaidRankings`; they only read it. Nothing at boot: the first
+> run comes once the first sweep, enrichment pass and Mythic+ pass are done (a job switched
+> off releases its gate), then one per interval. A run waits for every job above to be idle
+> before it starts and again **before each board**, so a job that starts mid-run — enrichment
+> does, every five minutes — pauses it and it carries on where it was; past
+> `ARCHIVE_WAIT_FOR_IDLE_MS` the run ends and the boards it did not reach are due next tick.
+> The raid catalogue is not part of this: six requests, still loaded at boot.
 
 > **Why M+ yields at all.** The two upstreams meter separately, so no _request_ of the M+
 > pass competes with a Blizzard job — it yields because it shares MongoDB and the process,
@@ -178,7 +193,7 @@ The coordinator exposes `isSweepActive`, `isEnrichmentActive`, `isMplusActive`,
 
 > **No job waits without a bound, and no job skips a tick because a higher one is running.**
 > The waits only ever point up the priority order (sweep → enrichment → M+ pass → PvP archive
-> → M+ archive), so there is no cycle to deadlock on; what remains is starvation, and two
+> → M+ archive → raid rankings), so there is no cycle to deadlock on; what remains is starvation, and two
 > things caused it. Every hourly job starts its interval at boot, and Node fires timers of
 > one length together, in the order they were set, for the life of the process — so the
 > archives' hourly ticks landed on the hourly sweep every time, and the 6-hour pass on it
@@ -1341,7 +1356,9 @@ only; a live season is never given up on, and a finalised record from before thi
   ends:   { us: Date, … },           // 2030-01-01 while the raid is open
   encounters: [ { id: 197124, slug: 'plexus-sentinel', name: 'Plexus Sentinel' }, … ],
   catalogueUpdatedAt: Date,
-  unlistedAt?: Date }                // a complete walk no longer listed it
+  unlistedAt?: Date,                 // a complete walk no longer listed it
+  guilds?: { world: { mythic: [...], heroic: [...], normal: [...] }, us: {…}, … },   // §5.12
+  guildsUpdatedAt?: { world: { mythic: Date, … }, … } }
 ```
 
 One document per raid, from `GET /raiding/static-data?expansion_id=N`, one request per
@@ -1370,6 +1387,89 @@ and 244 encounters**; `id` and `slug` are each unique across all of them.
   part in the coordinator's ordering: six requests and thirty writes compete with nothing.
   Requests are charged to the Raider.io budget's `other` consumer.
 - `POST /admin/raid-catalogue` (development only) re-reads it now, ignoring the TTL.
+- `RaidCatalogueRepository.allRaids()` and `findBySlug()` project the boards (`guilds`) out:
+  they are the bulk of a raid document and nothing in the catalogue reads them.
+
+### 5.12 Raid rankings — `raids.guilds` and `guilds`
+
+```js
+// on a raid document
+guilds: {
+  world: {                                   // also us, eu, kr, tw
+   mythic: [                                 // best first; also heroic, normal
+    { rank: 1,                               // on this board, as served
+      regionRank: 1,                         // within the guild's own region
+      guildId: 1047044,                      // -> guilds.id
+      encountersPulled: [
+        { encounterId: 210008,               // -> this raid's encounters[].id, matched by slug
+          slug: 'the-abyssal-queen',
+          numPulls: 335,                     // null when the guild hides its pulls
+          pullStartedAt: Date,               // null likewise
+          bestPercent: 0,                    // boss health left on the best pull; 0 once dead
+          isDefeated: true }, … ],
+      encountersDefeated: [
+        { encounterId: 210008, slug: 'the-abyssal-queen',
+          firstDefeated: Date, lastDefeated: Date }, … ] }, … ] } },
+guildsUpdatedAt: { world: { mythic: Date, heroic: Date, normal: Date }, … }   // per board
+
+// guilds
+{ id: 1047044, name: 'Echo', faction: 'horde',
+  logo: 'https://…/image.png',               // always a url: a default icon when none was uploaded
+  region: 'eu',                              // the guild's own, not the board's
+  realm: { slug: 'tarren-mill', name: 'Tarren Mill' },
+  updatedAt: Date }                          // when a board last listed it
+```
+
+`GET /raiding/raid-rankings?raid=<slug>&difficulty=<d>&region=<board>&limit=20&page=N`.
+Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
+
+- **A board is a raid, a region and a difficulty**: the top hundred, for each of
+  `RAID_RANKINGS_REGIONS` (default `world,us,eu,kr,tw`) at each of
+  `RAID_RANKINGS_DIFFICULTIES` (default `mythic,heroic,normal`) — fifteen boards a raid,
+  stored as `guilds.<region>.<difficulty>`. Each difficulty is a ranking of its own: a guild
+  can be on the Heroic board and on no Mythic one. `world` is a board of its own here —
+  unlike Mythic+, where it is refused — and it is where `cn` guilds enter `guilds` when no
+  `cn` board is read.
+- **Boards are read several at once** (`RAID_RANKINGS_CONCURRENCY`, default 5), started raid
+  by raid and, within a raid, in the configured difficulty order. Two boards read together
+  name the same guilds, so `GuildRepository.upsertGuilds` retries a duplicate-key once: the
+  guild the other board inserted is by then there to update.
+- **Read twenty at a time, five pages a board** (§9.17). The pages are read in order and stop
+  at the first short one; a guild appearing on two pages (the board moved between them) is
+  kept once, at its first place.
+- **A board is replaced whole or not at all.** If any page fails, the stored board and its
+  stamp stay as they were and the board is due again next run. Guilds are written before the
+  board that names them, so a `guildId` always resolves (invariant I26).
+- **What is read when.** An open raid — any region's `ends` still ahead, or no `ends` — has
+  every board read every run (`RAID_RANKINGS_INTERVAL_MS`, hourly). A closed raid's board is
+  read until one read of that board lands after the raid closed in its last region, then
+  left: of 30 raids only the open ones cost anything after the first run. `POST /admin/raid-rankings?raid=<slug>`
+  re-reads one raid whole; without `raid` it runs what is due.
+- **`encountersPulled[].encounterId` is ours, not upstream's.** Upstream's `id` on a pull is
+  not the encounter's id; the boss is matched to the raid's `encounters` by `slug`, which
+  matched on all 30 raids when checked live. A slug the catalogue does not list is stored
+  with `encounterId: null` and logged.
+- **`encountersPulled` is often empty**: for every guild on every raid before Shadowlands,
+  and for a good share of later ones (57 of the top 100 `cn` guilds on the current raid).
+  `encountersDefeated` is then the only progress the entry carries, so both are stored.
+- **Ranks are as served**, never the position in the list: a board can skip a rank (The
+  Emerald Nightmare's top 100 has 97 entries). A board nobody is ranked on — Blackrock Depths
+  has Normal and Heroic and no Mythic — is an empty board, stored as `[]` with its stamp.
+- **Failures.** A 400 (a raid, region or difficulty upstream does not know) is logged and
+  the run moves on. Anything else is logged, the board keeps what it had, and after three
+  failures with no board succeeding in between the run starts no more boards until the next
+  interval (those already in flight finish). A guild is never deleted.
+- **Size.** A raid document with all fifteen boards is a few megabytes — the Mythic boards
+  alone reached 1.0 MB on the largest raid when checked live — against MongoDB's 16 MB cap.
+  Read a raid with a projection (`guilds.world.mythic`), never whole, unless every board is
+  wanted.
+- **Lowest priority in the service** (§4): no run at boot; the first comes after the first
+  sweep, enrichment pass and Mythic+ pass, then one per interval, each waiting for every
+  other job to be idle and pausing between boards for any that starts. A run still going is
+  not stacked on, and a shutdown ends it at the next board. `POST /admin/raid-rankings` is
+  not held back: an operator asked for it now. Requests are charged to
+  the Raider.io budget's `other` consumer. Needs `RAID_CATALOGUE_ENABLED`, refused at boot
+  otherwise; each run checks the catalogue first, so a first boot finds its raids.
 
 ---
 
@@ -1432,6 +1532,7 @@ Non-2xx becomes `RaiderIoApiError` with `statusCode`, `isNotFound` and `isBadReq
 | `/api/v1/mythic-plus/runs?…&region=<region>` (archive)     | the archive — 100 pages a region, a finished season             |
 | `/api/v1/mythic-plus/season-cutoffs?season&region`        | title + percentile cutoffs, one per season and region (§5.10)  |
 | `/api/v1/raiding/static-data?expansion_id`                | the raid catalogue, one expansion at a time; 400 past the last (§5.11) |
+| `/api/v1/raiding/raid-rankings?raid&difficulty&region&limit&page` | a raid's ranked guilds on one board, 20 a page (§5.12)   |
 
 **The access key travels as a query parameter**, which Raider.io requires and which means it
 lands inside every url — including the ones got bakes into its own error messages. It is
@@ -1734,6 +1835,12 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAID_CATALOGUE_FIRST_EXPANSION`      | `6`                                 | Legion; the walk continues until an unsupported expansion  |
 | `RAID_CATALOGUE_TTL_MS`               | `86400000`                          | How a new raid or a real end date is noticed               |
 | `RAID_CATALOGUE_CHECK_INTERVAL_MS`    | `3600000`                           | How often its age is checked; free inside the TTL          |
+| `RAID_RANKINGS_ENABLED`               | `false`                             | Keep `raids.guilds` and `guilds` (§5.12); needs the catalogue |
+| `RAID_RANKINGS_REGIONS`               | `world,us,eu,kr,tw`                 | Boards read per raid; `cn` is accepted                     |
+| `RAID_RANKINGS_DIFFICULTIES`          | `mythic,heroic,normal`              | Difficulties read per board, in this order                 |
+| `RAID_RANKINGS_CONCURRENCY`           | `5`                                 | Boards read at once (1-20); a board's pages stay in order  |
+| `RAID_RANKINGS_INTERVAL_MS`           | `3600000`                           | How often open raids' boards are re-read                   |
+| `RAID_RANKINGS_REQUEST_TIMEOUT_MS`    | `75000`                             | Per ranking request; upstream's gateway gives up at 60s    |
 | `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
 | `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
 | `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
@@ -1938,6 +2045,18 @@ from the Mythic+ one would read the end of the list as a failure, stop "incomple
 never learn that a raid had stopped being listed. `RaidCatalogueService` treats that 400 —
 and no other failure — as the end.
 
+### 9.17 A raid ranking is slow by the guild, and nothing upstream stays cached
+
+`/raiding/raid-rankings` takes `limit` up to 200, and one request for the top hundred looks
+like the obvious read. Its cost is per guild and far from flat: checked live (2026-10-02),
+a hundred guilds of an older raid took 40-60s in one request, Amirdrassil's world board
+answered 504 from upstream's gateway at 60s on every attempt, and asking again a minute
+later was just as slow. The same boards twenty at a time took 1-2s a page. So a board is
+five requests of twenty (`RAID_RANKING_PAGE_SIZE`), several boards at a time rather than
+several pages of one, with a timeout of its own
+(`RAID_RANKINGS_REQUEST_TIMEOUT_MS`) through `RaiderIoGetOptions.timeoutMs`. Raising the page
+size to save requests brings the 504s back.
+
 ---
 
 ## 10. Testing
@@ -1946,6 +2065,21 @@ and no other failure — as the end.
 > corrections, unlisted raids, a failing expansion, the admin route), with unit specs beside
 > the service, mapper and scheduler in `src/raid/`. `MplusWorld.raids` and
 > `raidStaticData()` serve the payload, 400 included.
+>
+> **Raid rankings:** `test/raid-rankings.spec.ts` (boot order, board shape, world against
+> region ranks, a board per difficulty, `guilds`, hidden pulls, empty boards, open against
+> finished raids, paging and the top hundred, a failed page, giving up, a refused board,
+> drift, unlisted raids, the admin route) reads one board at a time so request order can be
+> asserted (`RAID_RANKINGS_CONCURRENCY=1` in the harness); `test/raid-rankings-parallel.spec.ts`
+> reads five at once; `test/raid-rankings-scheduler.spec.ts` has the real gates (nothing at
+> boot, after the Mythic+ pass, pausing mid-run for each job above). The ranking files open
+> the gates with a sweep in `beforeAll`, as the harness runs none at startup. Unit specs sit beside the service, mapper, scheduler and guild
+> repository. `MplusWorld.guilds` (`progress` is Mythic; `heroic`, `normal`) and
+> `raidRankings()` serve the boards; `raid:<slug>` and `difficulty:<d>` are `RequestMatcher`
+> keys. Invariants
+> **I26** (every ranked `guildId` is a guild document) and **I27** (a board is best first, no
+> rank or guild twice, at most a hundred, stamped, each boss tied to its raid's encounter)
+> run with every `expectInvariants`.
 
 > **Mythic+ specifically:** [`MPLUS-TESTING.md`](MPLUS-TESTING.md) maps every Mythic+ part to
 > the rule it promises, the spec that pins it, and what is still unpinned. It is the file to

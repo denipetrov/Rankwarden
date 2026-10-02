@@ -8,6 +8,7 @@ import { MplusSeasonTransitionScheduler } from '../../src/mplus-season/mplus-sea
 import { MplusSeasonScheduler } from '../../src/mplus-season/mplus-season.scheduler.js';
 import { ProfileScheduler } from '../../src/profile/profile.scheduler.js';
 import { RaidCatalogueScheduler } from '../../src/raid/raid-catalogue.scheduler.js';
+import { RaidRankingsScheduler } from '../../src/raid/raid-rankings.scheduler.js';
 import { SpecRepresentationScheduler } from '../../src/representation/spec-representation.scheduler.js';
 import { SeasonScheduler } from '../../src/season/season.scheduler.js';
 import { SeasonTransitionScheduler } from '../../src/season/season-transition.scheduler.js';
@@ -34,6 +35,7 @@ export function schedulerSeams(app: INestApplication): Settleable[] {
     MplusSeasonScheduler,
     MplusSeasonTransitionScheduler,
     RaidCatalogueScheduler,
+    RaidRankingsScheduler,
     SeasonScheduler,
     SeasonTransitionScheduler,
   ].map((type) => app.get<Settleable>(type));

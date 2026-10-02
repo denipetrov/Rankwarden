@@ -292,3 +292,64 @@ describe('validateEnv — raid catalogue', () => {
     ).toBe(true);
   });
 });
+
+describe('validateEnv — raid rankings', () => {
+  const withCatalogue = { ...base, RAID_CATALOGUE_ENABLED: 'true', RAIDER_IO_API_KEY: 'key' };
+
+  it('is off by default: world and four regions, three difficulties, five boards at once', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.RAID_RANKINGS_ENABLED).toBe(false);
+    expect(env.RAID_RANKINGS_REGIONS).toEqual(['world', 'us', 'eu', 'kr', 'tw']);
+    expect(env.RAID_RANKINGS_DIFFICULTIES).toEqual(['mythic', 'heroic', 'normal']);
+    expect(env.RAID_RANKINGS_CONCURRENCY).toBe(5);
+    expect(env.RAID_RANKINGS_INTERVAL_MS).toBe(3_600_000);
+    expect(env.RAID_RANKINGS_REQUEST_TIMEOUT_MS).toBe(75_000);
+  });
+
+  it('refuses to run without the catalogue it reads rankings for', () => {
+    expect(() =>
+      validateEnv({ ...base, RAID_RANKINGS_ENABLED: 'true', RAIDER_IO_API_KEY: 'key' }),
+    ).toThrow(/RAID_RANKINGS_ENABLED: needs the raid catalogue/);
+    expect(
+      validateEnv({ ...withCatalogue, RAID_RANKINGS_ENABLED: 'true' }).RAID_RANKINGS_ENABLED,
+    ).toBe(true);
+  });
+
+  it('accepts world and cn as boards, normalised and deduplicated', () => {
+    expect(
+      validateEnv({ ...base, RAID_RANKINGS_REGIONS: ' World, cn ,EU,eu' }).RAID_RANKINGS_REGIONS,
+    ).toEqual(['world', 'cn', 'eu']);
+  });
+
+  it('refuses a board it does not know, and an empty list', () => {
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_REGIONS: 'eu,oce' })).toThrow(
+      /RAID_RANKINGS_REGIONS: unknown region\(s\) oce; expected any of world, us, eu, kr, tw, cn/,
+    );
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_REGIONS: ' , ' })).toThrow(
+      /RAID_RANKINGS_REGIONS: must name at least one region/,
+    );
+  });
+
+  it('accepts a subset of difficulties in its own order, and refuses one it does not know', () => {
+    expect(
+      validateEnv({ ...base, RAID_RANKINGS_DIFFICULTIES: 'Heroic, mythic,heroic' })
+        .RAID_RANKINGS_DIFFICULTIES,
+    ).toEqual(['heroic', 'mythic']);
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_DIFFICULTIES: 'mythic,lfr' })).toThrow(
+      /RAID_RANKINGS_DIFFICULTIES: unknown difficulty\(ies\) lfr; expected any of mythic, heroic, normal/,
+    );
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_DIFFICULTIES: '' })).toThrow(
+      /RAID_RANKINGS_DIFFICULTIES: must name at least one difficulty/,
+    );
+  });
+
+  it('refuses a concurrency of none, or of more than upstream should be asked for', () => {
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_CONCURRENCY: '0' })).toThrow(
+      /RAID_RANKINGS_CONCURRENCY/,
+    );
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_CONCURRENCY: '21' })).toThrow(
+      /RAID_RANKINGS_CONCURRENCY/,
+    );
+  });
+});

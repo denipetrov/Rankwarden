@@ -72,6 +72,49 @@ export interface WorldRaid {
   encounters: { id: number; slug: string; name: string }[];
 }
 
+/** One boss of one raid, as one guild stands on it. */
+export interface WorldBossProgress {
+  slug: string;
+  pulls: number;
+  /** ISO time of the first kill; absent means not defeated. */
+  defeatedAt?: string;
+  /** Boss health left on the best attempt, for a boss not yet defeated. */
+  bestPercent?: number;
+}
+
+/** A guild, and how far it is on each raid it is ranked on. */
+export interface WorldGuild {
+  id: number;
+  name: string;
+  faction: 'horde' | 'alliance';
+  region: string;
+  realmSlug: string;
+  realmName: string;
+  logo?: string;
+  /** Hides its pull counts: `numPulls` and `pullStartedAt` are then not served. */
+  hidesPulls?: boolean;
+  /**
+   * Mythic progress: bosses by raid slug, in kill order. A raid absent here
+   * does not rank the guild on Mythic.
+   */
+  progress: Record<string, WorldBossProgress[]>;
+  /** The same for the Heroic and Normal boards, which are boards of their own. */
+  heroic?: Record<string, WorldBossProgress[]>;
+  normal?: Record<string, WorldBossProgress[]>;
+}
+
+/** A guild's bosses on one raid at one difficulty, or undefined if it is not ranked there. */
+function progressOn(
+  guild: WorldGuild,
+  raid: string,
+  difficulty: string,
+): WorldBossProgress[] | undefined {
+  if (difficulty === 'heroic') return guild.heroic?.[raid];
+  if (difficulty === 'normal') return guild.normal?.[raid];
+
+  return guild.progress[raid];
+}
+
 export interface MplusWorldSeason {
   slug: string;
   name: string;
@@ -232,6 +275,214 @@ export class MplusWorld {
         ends: raid.ends,
         encounters: raid.encounters,
       })),
+    };
+  }
+
+  /**
+   * The guilds `/raiding/raid-rankings` ranks. Enough to tell the boards apart:
+   * two regions racing, a `cn` guild that only the world board of a default
+   * configuration shows, a guild that hides its pulls, and one still
+   * progressing.
+   */
+  guilds: WorldGuild[] = [
+    {
+      id: 1047044,
+      name: 'Echo',
+      faction: 'horde',
+      region: 'eu',
+      realmSlug: 'tarren-mill',
+      realmName: 'Tarren Mill',
+      logo: 'https://cdn.example/echo.png',
+      progress: {
+        'the-venomous-abyss': [
+          { slug: 'gatekeeper', pulls: 9, defeatedAt: '2026-08-25T08:39:08Z' },
+          { slug: 'the-abyssal-queen', pulls: 335, defeatedAt: '2026-09-03T19:29:00Z' },
+        ],
+        'manaforge-omega': [
+          { slug: 'plexus-sentinel', pulls: 3, defeatedAt: '2025-08-13T10:00:00Z' },
+          { slug: 'dimensius', pulls: 370, defeatedAt: '2025-08-24T20:00:00Z' },
+        ],
+      },
+    },
+    {
+      id: 43113,
+      name: 'Liquid',
+      faction: 'horde',
+      region: 'us',
+      realmSlug: 'illidan',
+      realmName: 'Illidan',
+      logo: 'https://cdn.example/liquid.png',
+      progress: {
+        'the-venomous-abyss': [
+          { slug: 'gatekeeper', pulls: 12, defeatedAt: '2026-08-25T09:10:00Z' },
+          { slug: 'the-abyssal-queen', pulls: 341, defeatedAt: '2026-09-04T02:00:00Z' },
+        ],
+        'manaforge-omega': [
+          { slug: 'plexus-sentinel', pulls: 2, defeatedAt: '2025-08-12T20:00:00Z' },
+          { slug: 'dimensius', pulls: 402, defeatedAt: '2025-08-25T03:00:00Z' },
+        ],
+      },
+    },
+    {
+      id: 889329,
+      name: 'Mental Exiles',
+      faction: 'alliance',
+      region: 'eu',
+      realmSlug: 'burning-legion',
+      realmName: 'Burning Legion',
+      progress: {
+        'the-venomous-abyss': [
+          { slug: 'gatekeeper', pulls: 41, defeatedAt: '2026-09-01T20:00:00Z' },
+          { slug: 'the-abyssal-queen', pulls: 118, bestPercent: 23.4 },
+        ],
+      },
+    },
+    {
+      id: 2001,
+      name: 'Quiet Ones',
+      faction: 'alliance',
+      region: 'us',
+      realmSlug: 'stormrage',
+      realmName: 'Stormrage',
+      hidesPulls: true,
+      progress: {
+        'the-venomous-abyss': [
+          { slug: 'gatekeeper', pulls: 60, defeatedAt: '2026-09-05T03:00:00Z' },
+        ],
+      },
+    },
+    {
+      id: 3001,
+      name: '佶天鸿',
+      faction: 'horde',
+      region: 'cn',
+      realmSlug: 'bleeding-hollow-cn',
+      realmName: '血环',
+      progress: {
+        'the-venomous-abyss': [
+          { slug: 'gatekeeper', pulls: 30, defeatedAt: '2026-08-27T12:00:00Z' },
+          { slug: 'the-abyssal-queen', pulls: 582, defeatedAt: '2026-09-20T12:00:00Z' },
+        ],
+      },
+    },
+  ];
+
+  /**
+   * Raids whose boards carry no `encountersPulled` for anyone, as every raid
+   * older than Shadowlands does: the kills are served, the pulls are not.
+   */
+  raidsWithoutPulls = new Set<string>();
+
+  /**
+   * One board, best first: more bosses down, then the earlier last kill, then
+   * the smaller id. `world` ranks every guild; a region ranks its own.
+   */
+  rankedGuilds(
+    raid: string,
+    region: string,
+    difficulty = 'mythic',
+  ): { guild: WorldGuild; rank: number; regionRank: number }[] {
+    const on = (guild: WorldGuild) => progressOn(guild, raid, difficulty);
+    const kills = (guild: WorldGuild) => on(guild)!.filter((boss) => boss.defeatedAt !== undefined);
+    const lastKill = (guild: WorldGuild) =>
+      Math.max(0, ...kills(guild).map((boss) => Date.parse(boss.defeatedAt!)));
+
+    const ranked = this.guilds
+      .filter((guild) => on(guild) !== undefined)
+      .sort(
+        (left, right) =>
+          kills(right).length - kills(left).length ||
+          lastKill(left) - lastKill(right) ||
+          left.id - right.id,
+      );
+    const regionRanks = new Map<string, number>();
+
+    return ranked
+      .map((guild, index) => {
+        const regionRank = (regionRanks.get(guild.region) ?? 0) + 1;
+        regionRanks.set(guild.region, regionRank);
+
+        return { guild, rank: index + 1, regionRank };
+      })
+      .filter((entry) => region === 'world' || entry.guild.region === region)
+      .map((entry) => (region === 'world' ? entry : { ...entry, rank: entry.regionRank }));
+  }
+
+  /**
+   * One page of `/raiding/raid-rankings`, in the API's own shape, or null for a
+   * raid it does not know — which upstream answers with a 400. A page past the
+   * end is an empty list, as upstream serves it.
+   */
+  raidRankings(
+    raid: string,
+    region: string,
+    limit: number,
+    page: number,
+    difficulty = 'mythic',
+  ): unknown | null {
+    const on = (guild: WorldGuild) => progressOn(guild, raid, difficulty);
+    if (!this.raids.some((entry) => entry.slug === raid)) return null;
+
+    const start = page * limit;
+    const withoutPulls = this.raidsWithoutPulls.has(raid);
+
+    return {
+      raidRankings: this.rankedGuilds(raid, region, difficulty)
+        .slice(start, start + limit)
+        .map(({ guild, rank, regionRank }) => ({
+          rank,
+          regionRank,
+          guild: {
+            id: guild.id,
+            name: guild.name,
+            displayName: guild.name,
+            faction: guild.faction,
+            realm: {
+              id: 1,
+              name: guild.realmName,
+              altName: null,
+              slug: guild.realmSlug,
+              isConnected: true,
+              realmType: 'live',
+            },
+            region: {
+              name: guild.region.toUpperCase(),
+              slug: guild.region,
+              short_name: guild.region.toUpperCase(),
+            },
+            path: `/guilds/${guild.region}/${guild.realmSlug}/${encodeURIComponent(guild.name)}`,
+            // Upstream always serves a logo: a default one when the guild has none.
+            logo: guild.logo ?? `https://cdn.raiderio.net/images/site/${guild.faction}_icon4.png`,
+            isDefaultLogo: guild.logo === undefined,
+          },
+          encountersDefeated: on(guild)!
+            .filter((boss) => boss.defeatedAt !== undefined)
+            .map((boss) => ({
+              slug: boss.slug,
+              firstDefeated: boss.defeatedAt,
+              lastDefeated: boss.defeatedAt,
+              attempts: 0,
+            })),
+          guildPrivacy: {
+            raidPulls: !guild.hidesPulls,
+            wereRaidPullsRestricted: !!guild.hidesPulls,
+          },
+          encountersPulled: withoutPulls
+            ? []
+            : on(guild)!.map((boss, index) => ({
+                // Not the encounter's id: a record of the guild's own progress.
+                id: 470_000 + guild.id + index,
+                slug: boss.slug,
+                ...(guild.hidesPulls
+                  ? {}
+                  : { numPulls: boss.pulls, pullStartedAt: '2026-08-24T12:23:39Z' }),
+                bestPercent: boss.defeatedAt === undefined ? (boss.bestPercent ?? null) : 0,
+                isDefeated: boss.defeatedAt !== undefined,
+                ...(boss.defeatedAt === undefined
+                  ? { bossPercent: boss.bestPercent, phase: 2, progressDisplay: 'P2' }
+                  : {}),
+              })),
+        })),
     };
   }
 

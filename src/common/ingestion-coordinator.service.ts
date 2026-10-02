@@ -23,6 +23,11 @@ import { ReplaySubject, type Observable } from 'rxjs';
  * static history fetched once, so it has no reason to compete with anything:
  * it waits for the first sweep, the first enrichment pass *and* the first
  * Mythic+ pass, and yields whenever any other job is active.
+ *
+ * The raid rankings come last of all. They are not on the coordinator as a job
+ * — nothing waits for them — but they read it: they start only after the same
+ * three first passes, and step aside for every job above, the Mythic+ archive
+ * included (`isAboveRaidRankingsActive`).
  */
 @Injectable()
 export class IngestionCoordinator {
@@ -86,6 +91,15 @@ export class IngestionCoordinator {
    */
   get isAboveMplusArchiveActive(): boolean {
     return this.isLiveIngestionActive || this.isMplusActive || this.isArchiveActive;
+  }
+
+  /**
+   * Whether anything the raid rankings must wait for is running: every job on
+   * the coordinator. The rankings are the lowest priority in the service — a
+   * top hundred that is an hour old is still a top hundred.
+   */
+  get isAboveRaidRankingsActive(): boolean {
+    return this.isAboveMplusArchiveActive || this.isMplusArchiveActive;
   }
 
   /** True while anything that serves live data is fetching. */

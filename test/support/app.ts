@@ -81,6 +81,11 @@ const BASE_ENV: Record<string, string> = {
   MPLUS_TRANSITION_ENABLED: 'false',
   MPLUS_TRANSITION_CHECK_INTERVAL_MS: '3600000',
   RAID_CATALOGUE_ENABLED: 'false',
+  RAID_RANKINGS_ENABLED: 'false',
+  RAID_RANKINGS_INTERVAL_MS: '3600000',
+  // One board at a time, so the order requests are made in is the order the
+  // boards are due in; the file about reading them at once raises it.
+  RAID_RANKINGS_CONCURRENCY: '1',
   RAID_CATALOGUE_CHECK_INTERVAL_MS: '3600000',
   // The fake world lists its raids under The War Within and Midnight.
   RAID_CATALOGUE_FIRST_EXPANSION: '10',

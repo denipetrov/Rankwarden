@@ -1,5 +1,5 @@
 import type { StaticRaid } from '../raiderio/schemas/raid-static-data.schema.js';
-import type { RaidDocument } from './entities/raid.entity.js';
+import type { CataloguedRaid } from './raid-catalogue.repository.js';
 
 /** Parses a region-keyed timestamp map, dropping anything that is not a date. */
 function toDates(values: Record<string, string> | null | undefined): Record<string, Date> {
@@ -18,7 +18,7 @@ export function toRaidDocument(
   raid: StaticRaid,
   expansionId: number,
   catalogueUpdatedAt: Date,
-): Omit<RaidDocument, 'unlistedAt'> {
+): CataloguedRaid {
   return {
     id: raid.id,
     slug: raid.slug,

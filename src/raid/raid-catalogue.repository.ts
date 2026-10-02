@@ -1,7 +1,17 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
-import { RAIDS_COLLECTION, type RaidDocument } from './entities/raid.entity.js';
+import {
+  RAIDS_COLLECTION,
+  type RaidCatalogueDocument,
+  type RaidDocument,
+} from './entities/raid.entity.js';
+
+/** The catalogue never reads a raid's boards: they are the bulk of the document. */
+const WITHOUT_BOARDS = { projection: { guilds: 0 } } as const;
+
+/** A raid as a catalogue walk writes it: no boards, and listed. */
+export type CataloguedRaid = Omit<RaidCatalogueDocument, 'unlistedAt' | 'guildsUpdatedAt'>;
 
 /** Storage for the raid catalogue: one document per raid. */
 @Injectable()
@@ -32,7 +42,7 @@ export class RaidCatalogueRepository implements OnModuleInit {
    * document is not erased by a refresh; and a raid listed again stops being
    * unlisted.
    */
-  async upsertRaids(raids: readonly Omit<RaidDocument, 'unlistedAt'>[]): Promise<number> {
+  async upsertRaids(raids: readonly CataloguedRaid[]): Promise<number> {
     if (raids.length === 0) return 0;
 
     const result = await this.raids.bulkWrite(
@@ -81,12 +91,15 @@ export class RaidCatalogueRepository implements OnModuleInit {
     return oldest?.catalogueUpdatedAt ?? null;
   }
 
-  allRaids(): Promise<RaidDocument[]> {
-    return this.raids.find({}).sort({ expansionId: 1, id: 1 }).toArray();
+  allRaids(): Promise<RaidCatalogueDocument[]> {
+    return this.raids
+      .find<RaidCatalogueDocument>({}, WITHOUT_BOARDS)
+      .sort({ expansionId: 1, id: 1 })
+      .toArray();
   }
 
-  findBySlug(slug: string): Promise<RaidDocument | null> {
-    return this.raids.findOne({ slug });
+  findBySlug(slug: string): Promise<RaidCatalogueDocument | null> {
+    return this.raids.findOne<RaidCatalogueDocument>({ slug }, WITHOUT_BOARDS);
   }
 
   countRaids(): Promise<number> {
