@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import got, { HTTPError, RequestError, type Got } from 'got';
 
-import { DependencyHealth } from '../../common/health/dependency-health.service.js';
+import {
+  DependencyHealth,
+  type UpstreamProvider,
+} from '../../common/health/dependency-health.service.js';
 import { currentRunKind } from '../../common/logging/run-context.js';
 import {
   RaiderIoBudget,
@@ -40,6 +43,13 @@ export interface RaiderIoGetOptions {
    * that is legitimately slow: an uncached raid ranking takes up to a minute.
    */
   timeoutMs?: number;
+  /**
+   * The health record the call is observed under, in place of `raiderio`. For
+   * the raid rankings: an endpoint slow enough to time out on its own, read by
+   * the lowest-priority job, whose failures must not read as Raider.io being
+   * down for the Mythic+ regions that share the names `us` and `eu`.
+   */
+  healthProvider?: UpstreamProvider;
 }
 
 /**
@@ -129,6 +139,7 @@ export class RaiderIoHttpService {
     // The url without the key, which is what every message below quotes.
     const url = `${this.baseUrl}/${path.replace(/^\//, '')}`;
     const region = options.region ?? 'global';
+    const provider = options.healthProvider ?? 'raiderio';
 
     // Paced before the request rather than inside the hook: the hook also runs
     // for retries, and sleeping in it would hold got's own backoff open on top
@@ -154,7 +165,7 @@ export class RaiderIoHttpService {
       // through an outage.
       if (isEmptyBody(payload)) throw new RaiderIoEmptyResponseError(url);
 
-      this.health.recordSuccess('raiderio', region, Date.now() - startedAt);
+      this.health.recordSuccess(provider, region, Date.now() - startedAt);
 
       return payload;
     } catch (error) {
@@ -165,7 +176,12 @@ export class RaiderIoHttpService {
 
       if (error instanceof HTTPError) {
         const status = error.response.statusCode;
-        this.health.recordFailure('raiderio', region, `HTTP ${status} for ${url}`, status);
+
+        // A 400 is Raider.io answering — "no such page", "no such expansion" —
+        // and two callers read it as the end of a list. Recording it as a
+        // failure left readiness degraded after every successful catalogue walk.
+        if (status === 400) this.health.recordSuccess(provider, region, Date.now() - startedAt);
+        else this.health.recordFailure(provider, region, `HTTP ${status} for ${url}`, status);
 
         throw new RaiderIoApiError(
           status,
@@ -177,7 +193,7 @@ export class RaiderIoHttpService {
       }
 
       const reason = this.safe(error instanceof Error ? error.message : String(error));
-      this.health.recordFailure('raiderio', region, `${reason} for ${url}`);
+      this.health.recordFailure(provider, region, `${reason} for ${url}`);
 
       if (error instanceof Error) {
         error.message =

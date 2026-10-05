@@ -53,6 +53,7 @@ export class RaidingApi {
     const payload = await this.http.get('raiding/raid-rankings', {
       region,
       timeoutMs,
+      healthProvider: 'raiderioRankings',
       searchParams: {
         raid,
         difficulty,

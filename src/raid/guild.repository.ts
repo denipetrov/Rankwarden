@@ -5,6 +5,18 @@ import { GUILDS_COLLECTION, type GuildDocument } from './entities/guild.entity.j
 
 const DUPLICATE_KEY = 11000;
 
+type GuildFields = Partial<GuildDocument>;
+
+/** The fields of a description that carry a value. */
+function known(guild: GuildDocument): GuildFields {
+  return Object.fromEntries(Object.entries(guild).filter(([, value]) => value !== null));
+}
+
+/** The fields it leaves out, written as null only when the guild is new. */
+function unknown(guild: GuildDocument): GuildFields {
+  return Object.fromEntries(Object.entries(guild).filter(([, value]) => value === null));
+}
+
 /** Storage for guilds: one document per guild. */
 @Injectable()
 export class GuildRepository implements OnModuleInit {
@@ -28,7 +40,10 @@ export class GuildRepository implements OnModuleInit {
 
   /**
    * Writes guilds by id, field-level: a guild is described again by every board
-   * that lists it, and the latest description wins.
+   * that lists it, and the latest description wins — field by field, and only
+   * where it says something. A field a later answer leaves out keeps what an
+   * earlier one gave: upstream ceasing to send a realm is not the guild
+   * ceasing to have one.
    */
   async upsertGuilds(guilds: readonly GuildDocument[]): Promise<number> {
     if (guilds.length === 0) return 0;
@@ -36,7 +51,11 @@ export class GuildRepository implements OnModuleInit {
     const write = () =>
       this.guilds.bulkWrite(
         guilds.map((guild) => ({
-          updateOne: { filter: { id: guild.id }, update: { $set: guild }, upsert: true },
+          updateOne: {
+            filter: { id: guild.id },
+            update: { $set: known(guild), $setOnInsert: unknown(guild) },
+            upsert: true,
+          },
         })),
         { ordered: false },
       );

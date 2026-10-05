@@ -26,6 +26,19 @@ export interface RaidCatalogueRefresh {
   unlisted: number;
 }
 
+/** What the health endpoint reports of the job, from memory. */
+export interface RaidCatalogueStatus {
+  running: boolean;
+  lastWalk: {
+    finishedAt: string;
+    expansions: number[];
+    raids: number;
+    unlisted: number;
+    /** Whether the walk reached the end of the list. */
+    complete: boolean;
+  } | null;
+}
+
 /**
  * Keeps the raid catalogue in step with Raider.io: one document per raid, with
  * its encounters and its per-region dates. The raiding counterpart of
@@ -43,6 +56,7 @@ export class RaidCatalogueService {
   private readonly firstExpansion: number;
   private readonly ttlMs: number;
   private inFlight: Promise<RaidCatalogueRefresh> | null = null;
+  private last: RaidCatalogueStatus['lastWalk'] = null;
 
   constructor(
     config: ConfigService<Env, true>,
@@ -51,6 +65,11 @@ export class RaidCatalogueService {
   ) {
     this.firstExpansion = config.get('RAID_CATALOGUE_FIRST_EXPANSION', { infer: true });
     this.ttlMs = config.get('RAID_CATALOGUE_TTL_MS', { infer: true });
+  }
+
+  /** Whether a walk is going and how the last one ended, for the health endpoint. */
+  get lastStatus(): RaidCatalogueStatus {
+    return { running: this.inFlight !== null, lastWalk: this.last };
   }
 
   /** Refreshes the catalogue when it is empty or older than its TTL. */
@@ -97,6 +116,11 @@ export class RaidCatalogueService {
     // Whether the walk reached the end of the list, rather than stopping on a
     // failure or the hard stop: only then is "no longer listed" known.
     let complete = false;
+    // A 400 ends the list — unless raids of a later expansion are stored, when
+    // it is a hole in the middle: one bad answer for expansion 10 must not
+    // have every raid of 10 and 11 taken for gone.
+    const newestKnown = await this.repository.highestListedExpansion();
+    let holes = 0;
 
     for (let offset = 0; offset < MAX_EXPANSIONS_WALKED; offset += 1) {
       const expansionId = this.firstExpansion + offset;
@@ -106,7 +130,16 @@ export class RaidCatalogueService {
         data = await this.api.getStaticData(expansionId);
       } catch (error) {
         if (error instanceof RaiderIoApiError && error.isBadRequest) {
-          complete = true;
+          if (newestKnown !== null && expansionId <= newestKnown) {
+            holes += 1;
+            this.logger.warn(
+              `Raider.io lists no raids for expansion ${expansionId}, though raids of ` +
+                `expansion ${newestKnown} are stored; not taking it for the end of the list`,
+            );
+            continue;
+          }
+
+          complete = holes === 0;
           break;
         }
 
@@ -147,6 +180,8 @@ export class RaidCatalogueService {
         `${raids} raid write(s)` +
         (unlisted > 0 ? `; ${unlisted} raid(s) no longer listed` : ''),
     );
+
+    this.last = { finishedAt: new Date().toISOString(), expansions, raids, unlisted, complete };
 
     return { refreshed: expansions.length > 0, reason: null, expansions, raids, unlisted };
   }

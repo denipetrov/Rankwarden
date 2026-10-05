@@ -18,6 +18,8 @@ import { MplusService } from '../mplus/mplus.service.js';
 import { MplusArchiveService } from '../mplus-archive/mplus-archive.service.js';
 import { MplusSeasonTransitionService } from '../mplus-season/mplus-season-transition.service.js';
 import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
+import { RaidCatalogueService } from '../raid/raid-catalogue.service.js';
+import { RaidRankingsService } from '../raid/raid-rankings.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { SeasonTransitionService } from '../season/season-transition.service.js';
 
@@ -52,6 +54,8 @@ export class HealthController {
     private readonly mplusArchive: MplusArchiveService,
     private readonly mplusSeasons: MplusSeasonService,
     private readonly mplusTransitions: MplusSeasonTransitionService,
+    private readonly raidCatalogue: RaidCatalogueService,
+    private readonly raidRankings: RaidRankingsService,
   ) {
     // The host, never the URI: a connection string carries its password in
     // userinfo and this endpoint is unauthenticated.
@@ -133,6 +137,14 @@ export class HealthController {
           failingRegions: this.dependencies.failingRegionsFor('raiderio'),
           regions: this.dependencies.byRegion('raiderio'),
         },
+        // Reported, never judged: the ranking endpoint times out on its own on
+        // some boards, the job reading it is the lowest priority there is, and
+        // the boards it has already stored still serve.
+        raiderioRankings: {
+          status: this.dependencies.statusFor('raiderioRankings'),
+          failingRegions: this.dependencies.failingRegionsFor('raiderioRankings'),
+          regions: this.dependencies.byRegion('raiderioRankings'),
+        },
       },
       jobs: this.jobs(),
       staleSweep,
@@ -178,6 +190,10 @@ export class HealthController {
       // season still owed is history that has waited years already, and no
       // state of this job makes the service less able to serve.
       mplusArchive: this.mplusArchive.lastStatus,
+      // Likewise from memory, and likewise reported rather than judged.
+      raidCatalogue: this.raidCatalogue.lastStatus,
+      raidRankingsRunning: this.raidRankings.isRunning,
+      raidRankings: this.raidRankings.lastStatus.lastRun,
       warmedUp: this.coordinator.isWarmedUp,
       lastSweep: last
         ? {

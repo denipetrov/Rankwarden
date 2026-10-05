@@ -13,6 +13,10 @@ const MPLUS_ROUTES = [
   '/admin/mplus-season-transition',
   '/admin/mplus-archive',
   '/admin/mplus-catalogue',
+  // Raid plan R7.2: the raid routes are Raider.io routes like the rest.
+  '/admin/raid-catalogue',
+  '/admin/raid-rankings',
+  '/admin/raid-rankings?raid=manaforge-omega',
 ];
 
 /**
@@ -50,7 +54,7 @@ describe('Mythic+ admin routes in production', () => {
 
     const collections = (await db.listCollections({}, { nameOnly: true }).toArray())
       .map((collection) => collection.name)
-      .filter((name) => name.startsWith('mplus_'));
+      .filter((name) => name.startsWith('mplus_') || name === 'raids' || name === 'guilds');
     for (const name of collections) {
       expect(await db.collection(name).countDocuments(), `${name} is untouched`).toBe(0);
     }

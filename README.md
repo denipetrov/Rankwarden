@@ -488,7 +488,8 @@ and difficulty — `mythic`, `heroic`, `normal` — from `/raiding/raid-rankings
 `guilds.<board>.<difficulty>`: each entry is a rank, a `guildId`, and the bosses the
 guild has pulled and killed, tied to the raid's own `encounters` by id. The guilds
 themselves — name, faction, logo, region, realm — are one document each in `guilds`. An
-open raid's boards are re-read hourly; a finished raid's are read once. It is the lowest
+open raid's boards are re-read hourly; a finished raid's are read once. A board is read in
+pages of twenty until an empty one, since Raider.io leaves out ranks it does not show. It is the lowest
 priority job: nothing at boot, a first run only after the first sweep, enrichment pass and
 Mythic+ pass, and it pauses for any other job. Off by default (`RAID_RANKINGS_ENABLED`). See
 `SKILLS.md` §5.12.

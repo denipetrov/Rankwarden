@@ -1372,6 +1372,13 @@ and 244 encounters**; `id` and `slug` are each unique across all of them.
   static data answers 200 with no seasons. The walk reads that 400, and only that, as the
   end; any other failure stops the walk without reaching it, so later expansions are left as
   they were rather than taken for gone. `expansion_id` is required: without it, 400 too.
+- **A 400 below the newest stored expansion is a hole, not the end.** If expansion 10
+  answers 400 while raids of 11 are stored, the walk warns, carries on to 11 and 12, and is
+  not "complete": nothing is marked unlisted on the strength of it. One bad answer must not
+  take two expansions' raids — and the boards read for them — out of service until the next
+  walk.
+- **That 400 is not a failure of Raider.io.** The HTTP client records a 400 as the upstream
+  answering (§9.18); before it did, every successful walk left readiness `degraded`.
 - **A re-release is a raid of its own.** Fated (Shadowlands) and Awakened (Dragonflight)
   raids have their own id — the original's plus 100,000,000 — their own slug, dates and
   encounter slugs (`fated-shriekwing`). They are stored as separate documents: each had its
@@ -1434,9 +1441,10 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
   by raid and, within a raid, in the configured difficulty order. Two boards read together
   name the same guilds, so `GuildRepository.upsertGuilds` retries a duplicate-key once: the
   guild the other board inserted is by then there to update.
-- **Read twenty at a time, five pages a board** (§9.17). The pages are read in order and stop
-  at the first short one; a guild appearing on two pages (the board moved between them) is
-  kept once, at its first place.
+- **Read twenty at a time, up to five pages a board** (§9.17). The pages are read in order
+  and stop at the first **empty** one — never at a short one (§9.19): a page is a window of
+  ranks, and a rank upstream does not show leaves its page with 19. A guild appearing on two
+  pages (the board moved between them) is kept once, at its first place.
 - **A board is replaced whole or not at all.** If any page fails, the stored board and its
   stamp stay as they were and the board is due again next run. Guilds are written before the
   board that names them, so a `guildId` always resolves (invariant I26).
@@ -1455,10 +1463,18 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
 - **Ranks are as served**, never the position in the list: a board can skip a rank (The
   Emerald Nightmare's top 100 has 97 entries). A board nobody is ranked on — Blackrock Depths
   has Normal and Heroic and no Mythic — is an empty board, stored as `[]` with its stamp.
-- **Failures.** A 400 (a raid, region or difficulty upstream does not know) is logged and
-  the run moves on. Anything else is logged, the board keeps what it had, and after three
+- **A refused board is an answer.** A 400 or a 404 (a raid, region or difficulty upstream
+  does not know) is logged, counted (`refused`), and stamped in
+  `guildsRefusedAt.<region>.<difficulty>`; any board stored before is kept. The refusal
+  settles the board as a read does: a closed raid's is not asked for again, an open raid's
+  once a day, where it used to be asked — and warned about — every hour for ever. Reading the
+  board clears the stamp, and `?raid=<slug>` asks regardless.
+- **Other failures.** Anything else is logged, the board keeps what it had, and after three
   failures with no board succeeding in between the run starts no more boards until the next
   interval (those already in flight finish). A guild is never deleted.
+- **A guild's description never blanks what is known.** `upsertGuilds` sets only the fields
+  an answer carries a value for; one it leaves out (`realm`, `faction`, …) keeps what an
+  earlier answer gave, and is written as null only for a guild that is new.
 - **Size.** A raid document with all fifteen boards is a few megabytes — the Mythic boards
   alone reached 1.0 MB on the largest raid when checked live — against MongoDB's 16 MB cap.
   Read a raid with a projection (`guilds.world.mythic`), never whole, unless every board is
@@ -1466,10 +1482,23 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
 - **Lowest priority in the service** (§4): no run at boot; the first comes after the first
   sweep, enrichment pass and Mythic+ pass, then one per interval, each waiting for every
   other job to be idle and pausing between boards for any that starts. A run still going is
-  not stacked on, and a shutdown ends it at the next board. `POST /admin/raid-rankings` is
-  not held back: an operator asked for it now. Requests are charged to
+  not stacked on, and a shutdown ends it at the next board — also when it comes while the
+  run is paused. The scheduler logs once when a run pauses and once when it resumes or gives
+  up. `POST /admin/raid-rankings` is not held back: an operator asked for it now. That holds
+  because a run by hand and a scheduled run are **two runs** (`refreshDue()` against
+  `refreshDue(now, control)`): callers of one kind share a run, the kinds never do, or a
+  hand-started run would wait on a paused scheduled one and a scheduled one riding a
+  hand-started run would stop yielding. Requests are charged to
   the Raider.io budget's `other` consumer. Needs `RAID_CATALOGUE_ENABLED`, refused at boot
   otherwise; each run checks the catalogue first, so a first boot finds its raids.
+- **Health.** `/health` `jobs` carries `raidCatalogue` (`running`, `lastWalk` with
+  `complete`), `raidRankingsRunning` and `raidRankings` (the last run's `boards`, `failed`,
+  `refused`, `settled`, `raids`, `guilds`, `stopped`, `finishedAt`). Ranking requests are
+  observed as their own upstream, `raiderioRankings`, shown on `/health/ready` and **never
+  folded into its status**: the endpoint times out on its own, and a failing `eu` board must
+  not read as Raider.io being down for Mythic+ in `eu`.
+- **A configured difficulty or region that is later removed** leaves its boards where they
+  are: stale, never refreshed, never deleted.
 
 ---
 
@@ -1603,6 +1632,7 @@ Pings Mongo (cached ~3s) and reports what real traffic has already observed of B
 | everything healthy                      | `ok`       | **200** |
 | Blizzard failing (any/all regions)      | `degraded` | **200** |
 | **Raider.io failing (any/all regions)** | `degraded` | **200** |
+| raid-ranking endpoint failing           | unchanged  | **200** |
 | no sweep for 2× `INGEST_INTERVAL_MS`    | `degraded` | **200** |
 | enrichment infeasible or behind         | `degraded` | **200** |
 | **M+ infeasible, failing or cut short** | `degraded` | **200** |
@@ -2051,11 +2081,37 @@ and no other failure — as the end.
 like the obvious read. Its cost is per guild and far from flat: checked live (2026-10-02),
 a hundred guilds of an older raid took 40-60s in one request, Amirdrassil's world board
 answered 504 from upstream's gateway at 60s on every attempt, and asking again a minute
-later was just as slow. The same boards twenty at a time took 1-2s a page. So a board is
+later was just as slow. The same boards twenty at a time took 1-2s a page when probed one
+by one — and 2.6 to 25s for a page nothing had asked for lately, during a real backfill
+(2026-10-05), which the 75s timeout covers. So a board is
 five requests of twenty (`RAID_RANKING_PAGE_SIZE`), several boards at a time rather than
 several pages of one, with a timeout of its own
 (`RAID_RANKINGS_REQUEST_TIMEOUT_MS`) through `RaiderIoGetOptions.timeoutMs`. Raising the page
 size to save requests brings the 504s back.
+
+### 9.18 A 400 from Raider.io is an answer, not an outage
+
+Two callers read a 400 as the end of a list: the Mythic+ pass past page 1000 and the raid
+catalogue past the last expansion. `RaiderIoHttpService` used to record every non-2xx as a
+failure of the upstream, so the last request of every successful catalogue walk left the
+`global` region with a consecutive failure and `/health/ready` saying `degraded` until some
+other `global` request succeeded — found by running it (2026-10-05). A 400 is now recorded
+as a success: the upstream answered. Everything else non-2xx is still a failure.
+
+### 9.19 A short ranking page is not the last page
+
+`/raiding/raid-rankings` pages by **rank**, not by position: page 0 is ranks 1-20, page 1 is
+21-40. A rank Raider.io does not show is simply left out, so its page comes back with 19
+guilds and the board carries on — The Emerald Nightmare's world Mythic board serves 19, 20,
+20, 19 and 19. Ending a board at the first page shorter than twenty, the obvious rule, cut
+54 of 450 boards when checked live, most to 19 guilds of about 97, and marked them read for
+good because their raids are finished. A board ends at an **empty** page or after five. The
+cost is one request more for a board that really is shorter than a hundred. A whole window
+of twenty hidden ranks would still end a board early; that has not been seen.
+
+The fake paged by position until this was found, which is why no test caught it:
+`WorldGuild.notServed` and rank-window paging in `MplusWorld.raidRankings()` are the fix on
+the harness side, and invariant I28 compares stored boards with what the world serves.
 
 ---
 
@@ -2073,13 +2129,23 @@ size to save requests brings the 504s back.
 > asserted (`RAID_RANKINGS_CONCURRENCY=1` in the harness); `test/raid-rankings-parallel.spec.ts`
 > reads five at once; `test/raid-rankings-scheduler.spec.ts` has the real gates (nothing at
 > boot, after the Mythic+ pass, pausing mid-run for each job above). The ranking files open
-> the gates with a sweep in `beforeAll`, as the harness runs none at startup. Unit specs sit beside the service, mapper, scheduler and guild
+> the gates with a sweep in `beforeAll`, as the harness runs none at startup. The raid test
+> plan's cases are in `test/raid-plan-*.spec.ts`: `findings` (one regression guard per defect
+> found, RG1-RG6), `catalogue` (R1), `boards` (R2-R7: rank windows, what is due, guilds,
+> failures, health), `scheduling` (R5: a slow backfill pausing, a shutdown mid-pause, the
+> restart after it) and `config` (a `cn` board, a difficulty no longer configured);
+> `raid-disabled.spec.ts` is both jobs off. `FakeRaiderIo.slow(matcher, ms)` makes chosen
+> requests slow. Unit specs sit beside the service, mapper, scheduler and guild
 > repository. `MplusWorld.guilds` (`progress` is Mythic; `heroic`, `normal`) and
 > `raidRankings()` serve the boards; `raid:<slug>` and `difficulty:<d>` are `RequestMatcher`
 > keys. Invariants
-> **I26** (every ranked `guildId` is a guild document) and **I27** (a board is best first, no
-> rank or guild twice, at most a hundred, stamped, each boss tied to its raid's encounter)
-> run with every `expectInvariants`.
+> **I26** (every ranked `guildId` is a guild document), **I27** (a board is best first, no
+> rank or guild twice, at most a hundred, stamped, each boss tied to its raid's encounter),
+> **I29** (a guild document is whole) and **I30** (a raid document keeps its catalogue
+> fields and stays well under 16 MB) run with every `expectInvariants`. **I28** (a stored
+> board holds exactly what the world serves for ranks 1-100) is opt-in — pass the
+> `MplusWorld` as the third argument, straight after the boards were read — because
+> self-consistency cannot see a board cut short.
 
 > **Mythic+ specifically:** [`MPLUS-TESTING.md`](MPLUS-TESTING.md) maps every Mythic+ part to
 > the rule it promises, the spec that pins it, and what is still unpinned. It is the file to

@@ -324,4 +324,88 @@ describe('RaiderIoHttpService — against a real listener', () => {
       raidRankings: [],
     });
   });
+
+  it('RG2 a 400 is an answer: the upstream is not recorded as failing', async () => {
+    const { http, health } = clientFor();
+    server.handler = answer(400, { message: 'Requested unsupported expansion_id' });
+
+    const error = await failureOf(
+      http.get('raiding/static-data', { searchParams: { expansion_id: 12 } }),
+    );
+
+    expect((error as RaiderIoApiError).isBadRequest).toBe(true);
+    expect(health.byRegion('raiderio').global).toMatchObject({
+      status: 'ok',
+      consecutiveFailures: 0,
+      lastError: null,
+    });
+    expect(health.failingRegionsFor('raiderio')).toEqual([]);
+
+    // Any other status is still a failure of the upstream.
+    server.handler = answer(404, { message: 'Could not find' });
+    await failureOf(http.get('raiding/static-data'));
+    expect(health.byRegion('raiderio').global).toMatchObject({
+      status: 'degraded',
+      lastStatusCode: 404,
+    });
+  });
+
+  it('R6.3 a ranking page that 504s is retried, charged per attempt, under its own health record', async () => {
+    const { http, health, budget } = clientFor({ RAIDERIO_REQUEST_TIMEOUT_MS: 150 });
+    // The gateway gives up once; the retry answers, slower than the client's
+    // own timeout would allow.
+    sequence(answer(504, 'error code: 504'), (_request, response) => {
+      setTimeout(() => {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ raidRankings: [] }));
+      }, 400);
+
+      return true;
+    });
+
+    const payload = await withRunId('raid-rankings', () =>
+      http.get('raiding/raid-rankings', {
+        region: 'eu',
+        timeoutMs: 3_000,
+        healthProvider: 'raiderioRankings',
+        searchParams: { raid: 'amirdrassil-the-dreams-hope', region: 'eu', page: 3 },
+      }),
+    );
+
+    expect(payload).toEqual({ raidRankings: [] });
+    expect(server.hitsFor('raiding/raid-rankings')).toHaveLength(2);
+    expect(budget.spent('other'), 'both attempts, to the general allowance').toBe(2);
+    expect(budget.spent('mplus')).toBe(0);
+    expect(health.byRegion('raiderioRankings').eu).toMatchObject({ status: 'ok' });
+    expect(health.byRegion('raiderio'), 'nothing is held against Raider.io itself').toEqual({});
+  });
+
+  it('R7.4 the key is in no ranking log line or error, failing or retried', async () => {
+    const { http, health } = clientFor();
+    server.handler = answer(504, 'error code: 504');
+
+    const error = await failureOf(
+      http.get('raiding/raid-rankings', {
+        region: 'world',
+        healthProvider: 'raiderioRankings',
+        searchParams: { raid: 'amirdrassil-the-dreams-hope', region: 'world', page: 0 },
+      }),
+    );
+
+    expect(server.hitsFor('raiding/raid-rankings')[0].query.get('access_key')).toBe(KEY);
+    const read = [
+      error.message,
+      error.stack ?? '',
+      ...captured.map((line) => line.message),
+      JSON.stringify(health.byRegion('raiderioRankings')),
+    ];
+    for (const text of read) expect(text).not.toContain(KEY);
+    // The retry warning quotes the url got built, key and all, redacted.
+    expect(captured.filter((line) => line.level === 'warn')).toHaveLength(1);
+    expect(captured[0].message).toContain('access_key=[redacted]');
+    expect(health.byRegion('raiderioRankings').world).toMatchObject({
+      status: 'degraded',
+      lastStatusCode: 504,
+    });
+  });
 });

@@ -8,7 +8,7 @@ import {
 } from './entities/raid.entity.js';
 
 /** The catalogue never reads a raid's boards: they are the bulk of the document. */
-const WITHOUT_BOARDS = { projection: { guilds: 0 } } as const;
+const WITHOUT_BOARDS = { projection: { guilds: 0, guildsRefusedAt: 0 } } as const;
 
 /** A raid as a catalogue walk writes it: no boards, and listed. */
 export type CataloguedRaid = Omit<RaidCatalogueDocument, 'unlistedAt' | 'guildsUpdatedAt'>;
@@ -89,6 +89,20 @@ export class RaidCatalogueRepository implements OnModuleInit {
       .next();
 
     return oldest?.catalogueUpdatedAt ?? null;
+  }
+
+  /**
+   * The highest expansion any listed raid belongs to, or null with none stored.
+   * What tells a walk the end of the list from a hole in the middle of it.
+   */
+  async highestListedExpansion(): Promise<number | null> {
+    const newest = await this.raids
+      .find({ unlistedAt: { $exists: false } }, { projection: { expansionId: 1 } })
+      .sort({ expansionId: -1 })
+      .limit(1)
+      .next();
+
+    return newest?.expansionId ?? null;
   }
 
   allRaids(): Promise<RaidCatalogueDocument[]> {

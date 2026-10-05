@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
+import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { GUILDS_COLLECTION } from '../src/raid/entities/guild.entity.js';
@@ -72,17 +73,26 @@ describe('Raid rankings, boards read at once', () => {
     expect(await db.collection(GUILDS_COLLECTION).countDocuments()).toBe(5);
     expect(logger.of('warn', /rank/i)).toEqual([]);
     expect(logger.of('error')).toEqual([]);
-    await expectInvariants(db);
+    await expectInvariants(db, undefined, world);
   });
 
   it('reads as many boards at once as it is allowed, and no more', async () => {
     app.raiderIo.reset();
     app.raiderIo.delayMs = 15;
 
+    const budget = app.app.get(RaiderIoBudget);
+    const before = { other: budget.spent('other'), mplus: budget.spent('mplus') };
+
     const result = await app.app.get(RaidRankingsService).refreshDue();
 
     expect(result).toMatchObject({ boards: 15, failed: 0 });
     expect(app.raiderIo.peakInFlight).toBe(5);
+    // R6.6: every request, second pages included, is charged to the general
+    // allowance and none to the Mythic+ pass.
+    const made = app.raiderIo.countMatching('raiding/raid-rankings');
+    expect(made).toBeGreaterThan(15);
+    expect(budget.spent('other') - before.other).toBe(made);
+    expect(budget.spent('mplus')).toBe(before.mplus);
   });
 
   it('stops soon after an outage begins, without starting every board', async () => {

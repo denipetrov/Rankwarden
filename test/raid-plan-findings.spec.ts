@@ -13,9 +13,14 @@ import { MplusWorld, type WorldGuild } from './support/mplus-world.js';
 import { World } from './support/world.js';
 
 /**
- * Cases from the raid and guild test plan that assert the *desired* behaviour
- * for each suspected defect (RG1-RG4). A failing case here is a finding, not a
- * broken test: see the plan's "Defects found" section.
+ * One case per defect the raid and guild test plan found (2026-10-05), each
+ * asserting the behaviour wanted. They failed until the defects were fixed and
+ * are regression guards now.
+ *
+ * The case names keep the numbers they were written under, which differ from
+ * the plan's: RG2 here is the plan's RG4 (a refused board), RG3 its RG5 (a run
+ * by hand), RG4 its RG3 (readiness), RG6 its RG2 (the catalogue's 400) and RG5
+ * its RG6 (liveness).
  */
 const RAID = 'tier-mn-1';
 
@@ -83,7 +88,7 @@ describe('Raid plan findings', () => {
 
     expect(us.length, 'every served guild of the top hundred is stored').toBe(97);
     expect(us.at(-1)!.rank).toBe(100);
-    await expectInvariants(db);
+    await expectInvariants(db, undefined, world);
   });
 
   it('RG2 a board Raider.io refuses with a 400 is not asked for again every run', async () => {

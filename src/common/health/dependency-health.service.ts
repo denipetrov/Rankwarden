@@ -6,8 +6,14 @@ import { redactSecrets } from './redact.js';
 
 export type DependencyStatus = 'ok' | 'degraded' | 'down' | 'unknown';
 
-/** The upstreams observed here. Both are soft dependencies; only Mongo is hard. */
-export type UpstreamProvider = 'blizzard' | 'raiderio';
+/**
+ * The upstreams observed here. All are soft dependencies; only Mongo is hard.
+ *
+ * `raiderioRankings` is Raider.io's raid-ranking endpoint, observed apart from
+ * the rest of Raider.io: it is slow enough to time out by itself and nothing
+ * live depends on it, so it is reported and never judged.
+ */
+export type UpstreamProvider = 'blizzard' | 'raiderio' | 'raiderioRankings';
 
 /** Observed state for one dependency, or for one region of one dependency. */
 export interface DependencyObservation {
