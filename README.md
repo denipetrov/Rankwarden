@@ -64,6 +64,7 @@ src/
   mplus/                      the M+ live pass over each region's top runs
   mplus-archive/              finished M+ seasons, read once per region
   mplus-representation/       M+ spec representation per season, region and dungeon
+  raid/                       raid catalogue, and the guilds ranked on each raid
   sync/                       POST /characters/sync and /mplus/characters/sync
 scripts/db-check.mjs          standalone MongoDB connectivity + ingestion report
 scripts/migrate-to-characters.mjs  folds legacy flat entries into the grouped shape
@@ -474,6 +475,23 @@ need `RAIDER_IO_API_KEY`, which a deployment predating them does not have.
 
 Full reference in [`SKILLS.md`](SKILLS.md) §4.6–§4.6.2 and §5.5–§5.10; a map of the
 implementation and its test coverage in [`MPLUS-TESTING.md`](MPLUS-TESTING.md).
+
+## Raiding
+
+Also from Raider.io. `raids` holds one document per raid — 30 across Legion to Midnight —
+with its encounters and its per-region start and end, read from `/raiding/static-data` one
+expansion at a time and re-read daily. Off by default (`RAID_CATALOGUE_ENABLED`), since it
+needs `RAIDER_IO_API_KEY`. See `SKILLS.md` §5.11.
+
+On each raid, `guilds` holds the top hundred per board — `world`, `us`, `eu`, `kr`, `tw` —
+and difficulty — `mythic`, `heroic`, `normal` — from `/raiding/raid-rankings`, as
+`guilds.<board>.<difficulty>`: each entry is a rank, a `guildId`, and the bosses the
+guild has pulled and killed, tied to the raid's own `encounters` by id. The guilds
+themselves — name, faction, logo, region, realm — are one document each in `guilds`. An
+open raid's boards are re-read hourly; a finished raid's are read once. It is the lowest
+priority job: nothing at boot, a first run only after the first sweep, enrichment pass and
+Mythic+ pass, and it pauses for any other job. Off by default (`RAID_RANKINGS_ENABLED`). See
+`SKILLS.md` §5.12.
 
 ## Health endpoints
 

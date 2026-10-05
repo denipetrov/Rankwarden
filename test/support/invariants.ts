@@ -28,6 +28,8 @@ import {
   MPLUS_SEASONS_COLLECTION,
 } from '../../src/mplus-season/entities/mplus-season.entity.js';
 import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../../src/mplus-representation/entities/mplus-spec-representation.entity.js';
+import { GUILDS_COLLECTION } from '../../src/raid/entities/guild.entity.js';
+import { RAIDS_COLLECTION } from '../../src/raid/entities/raid.entity.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
@@ -74,6 +76,8 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
     characters: MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   });
   await expectMplusArchiveRowsOwned(db);
+  await expectRaidBoardsResolve(db);
+  await expectRaidBoardsWellFormed(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -1020,4 +1024,110 @@ export async function expectMplusArchiveRowsOwned(db: Db): Promise<void> {
   });
 
   expect(unowned, 'I25: every archived (season, region) is named by its marker').toEqual([]);
+}
+
+interface StoredBoardEntry {
+  rank: number;
+  guildId: number;
+  encountersPulled: { encounterId: number | null; slug: string }[];
+  encountersDefeated: { encounterId: number | null; slug: string }[];
+}
+
+interface StoredRaid {
+  slug: string;
+  encounters: { id: number; slug: string }[];
+  /** By region, then by difficulty. */
+  guilds?: Record<string, Record<string, StoredBoardEntry[]>>;
+  guildsUpdatedAt?: Record<string, Record<string, Date>>;
+}
+
+/** Every stored board of a raid, named `region/difficulty`. */
+function boardsOf(raid: StoredRaid): [string, StoredBoardEntry[]][] {
+  return Object.entries(raid.guilds ?? {}).flatMap(([region, byDifficulty]) =>
+    Object.entries(byDifficulty).map(([difficulty, board]): [string, StoredBoardEntry[]] => [
+      `${region}/${difficulty}`,
+      board,
+    ]),
+  );
+}
+
+/**
+ * I26 - every guild a raid's board names is a document in `guilds`.
+ *
+ * A board carries only the id; the name, faction and logo are read through it.
+ * An id that resolves to nothing is a row on a ranking with nothing to show.
+ */
+export async function expectRaidBoardsResolve(db: Db): Promise<void> {
+  const raids = await db
+    .collection<StoredRaid>(RAIDS_COLLECTION)
+    .find({ guilds: { $exists: true } }, { projection: { slug: 1, guilds: 1 } })
+    .toArray();
+  if (raids.length === 0) return;
+
+  const known = new Set(
+    (
+      await db
+        .collection(GUILDS_COLLECTION)
+        .find({}, { projection: { id: 1 } })
+        .toArray()
+    ).map((guild) => guild.id as number),
+  );
+  const dangling = raids.flatMap((raid) =>
+    boardsOf(raid).flatMap(([name, board]) =>
+      board
+        .filter((entry) => !known.has(entry.guildId))
+        .map((entry) => `${raid.slug}/${name}#${entry.rank}:${entry.guildId}`),
+    ),
+  );
+
+  expect(dangling, 'I26: every ranked guildId is a guild document').toEqual([]);
+}
+
+/**
+ * I27 - a stored board is one a reader can trust without checking.
+ *
+ * Best first with no rank or guild twice, no longer than the top hundred,
+ * stamped with when it was read, and every boss it names tied to the raid's own
+ * encounter of that slug - or to none, never to another boss's.
+ */
+export async function expectRaidBoardsWellFormed(db: Db): Promise<void> {
+  const raids = await db
+    .collection<StoredRaid>(RAIDS_COLLECTION)
+    .find(
+      { $or: [{ guilds: { $exists: true } }, { guildsUpdatedAt: { $exists: true } }] },
+      { projection: { slug: 1, encounters: 1, guilds: 1, guildsUpdatedAt: 1 } },
+    )
+    .toArray();
+
+  for (const raid of raids) {
+    const boards = boardsOf(raid);
+    const idBySlug = new Map(raid.encounters.map((encounter) => [encounter.slug, encounter.id]));
+    const stamped = Object.entries(raid.guildsUpdatedAt ?? {}).flatMap(([region, byDifficulty]) =>
+      Object.keys(byDifficulty).map((difficulty) => `${region}/${difficulty}`),
+    );
+
+    expect(stamped.sort(), `I27: ${raid.slug} stamps exactly the boards it stores`).toEqual(
+      boards.map(([name]) => name).sort(),
+    );
+
+    for (const [name, board] of boards) {
+      const label = `I27: ${raid.slug}/${name}`;
+      const ranks = board.map((entry) => entry.rank);
+
+      expect(board.length, `${label} is at most the top hundred`).toBeLessThanOrEqual(100);
+      expect(ranks, `${label} is stored best first`).toEqual([...ranks].sort((a, b) => a - b));
+      expect(new Set(ranks).size, `${label} gives no rank twice`).toBe(ranks.length);
+      expect(
+        new Set(board.map((entry) => entry.guildId)).size,
+        `${label} lists no guild twice`,
+      ).toBe(board.length);
+
+      const mislinked = board.flatMap((entry) =>
+        [...entry.encountersPulled, ...entry.encountersDefeated]
+          .filter((boss) => boss.encounterId !== (idBySlug.get(boss.slug) ?? null))
+          .map((boss) => `#${entry.rank}:${boss.slug}`),
+      );
+      expect(mislinked, `${label} ties each boss to the raid's own encounter`).toEqual([]);
+    }
+  }
 }

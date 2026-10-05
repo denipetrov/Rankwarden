@@ -19,6 +19,39 @@ export type RaiderIoRegion = (typeof RAIDERIO_REGIONS)[number];
  */
 export const AGGREGATE_REGION = 'world';
 
+/**
+ * Regions `/raiding/raid-rankings` serves a board for. Unlike the Mythic+ runs,
+ * the aggregate is worth reading here: the world ranking is a race of its own,
+ * not a second copy of the regional ones, and it is a hundred guilds rather
+ * than twenty thousand runs.
+ */
+export const RAID_RANKING_REGIONS = [AGGREGATE_REGION, ...RAIDERIO_REGIONS] as const;
+export type RaidRankingRegion = (typeof RAID_RANKING_REGIONS)[number];
+
+/**
+ * The difficulties `/raiding/raid-rankings` ranks, hardest first: each is a
+ * board of its own, with its own top hundred. `difficulty` is required by the
+ * endpoint: without it, or with one it does not know (`lfr`), it answers 400
+ * "Invalid request query input".
+ */
+export const RAID_DIFFICULTIES = ['mythic', 'heroic', 'normal'] as const;
+export type RaidDifficulty = (typeof RAID_DIFFICULTIES)[number];
+
+/** Guilds kept per board: the top hundred. */
+export const RAID_RANKING_TOP = 100;
+
+/**
+ * Guilds asked for per request, so a board is five pages.
+ *
+ * The endpoint would serve the hundred in one — `limit` goes to 200 — but its
+ * cost is per guild and far from flat: checked live (2026-10-02), one request
+ * for a hundred guilds of an older raid took 40-60s and Amirdrassil's world
+ * board answered 504 from the gateway at 60s every time, while the same board
+ * twenty at a time took 1-2s a page. Nothing upstream stays cached between
+ * reads either, so the slow request is slow again an hour later.
+ */
+export const RAID_RANKING_PAGE_SIZE = 20;
+
 /** Runs per page, fixed by the API — the endpoint takes no page-size parameter. */
 export const RUNS_PER_PAGE = 20;
 

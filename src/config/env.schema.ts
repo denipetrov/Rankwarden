@@ -4,8 +4,12 @@ import { REGIONS, type Region } from '../blizzard/blizzard.constants.js';
 import {
   AGGREGATE_REGION,
   MAX_RUNS_PAGE,
+  RAID_DIFFICULTIES,
+  RAID_RANKING_REGIONS,
   RAIDERIO_REGIONS,
+  type RaidDifficulty,
   type RaiderIoRegion,
+  type RaidRankingRegion,
 } from '../raiderio/raiderio.constants.js';
 
 const split = (value: string) =>
@@ -100,6 +104,70 @@ const raiderIoRegionCsv = (fallback: string) =>
       }
 
       return [...new Set(parts)] as RaiderIoRegion[];
+    });
+
+/**
+ * Comma-separated raid-ranking boards. `world` is welcome here, unlike in
+ * `RAIDERIO_REGIONS`: the world ranking is a board of its own, not a second
+ * copy of the regional ones.
+ */
+const raidRankingRegionCsv = (fallback: string) =>
+  z
+    .string()
+    .default(fallback)
+    .transform((value, ctx) => {
+      const parts = split(value).map((part) => part.toLowerCase());
+
+      if (parts.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'must name at least one region' });
+        return z.NEVER;
+      }
+
+      const unknown = parts.filter(
+        (part) => !(RAID_RANKING_REGIONS as readonly string[]).includes(part),
+      );
+
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `unknown region(s) ${unknown.join(', ')}; ` +
+            `expected any of ${RAID_RANKING_REGIONS.join(', ')}`,
+        });
+        return z.NEVER;
+      }
+
+      return [...new Set(parts)] as RaidRankingRegion[];
+    });
+
+/** Comma-separated raid difficulties, each of which the rankings endpoint must know. */
+const raidDifficultyCsv = (fallback: string) =>
+  z
+    .string()
+    .default(fallback)
+    .transform((value, ctx) => {
+      const parts = split(value).map((part) => part.toLowerCase());
+
+      if (parts.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'must name at least one difficulty' });
+        return z.NEVER;
+      }
+
+      const unknown = parts.filter(
+        (part) => !(RAID_DIFFICULTIES as readonly string[]).includes(part),
+      );
+
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `unknown difficulty(ies) ${unknown.join(', ')}; ` +
+            `expected any of ${RAID_DIFFICULTIES.join(', ')}`,
+        });
+        return z.NEVER;
+      }
+
+      return [...new Set(parts)] as RaidDifficulty[];
     });
 
 /**
@@ -458,6 +526,61 @@ export const envSchema = z.object({
    */
   MPLUS_CATALOGUE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
 
+  /**
+   * Keeps the raid catalogue (`raids`) loaded from Raider.io. Off by default
+   * for the same reason as the Mythic+ jobs: it needs `RAIDER_IO_API_KEY`,
+   * which a deployment predating it does not have.
+   */
+  RAID_CATALOGUE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * First expansion the raid catalogue walks from; 6 is Legion, the first
+   * Raider.io lists raids for. The walk continues upward until an expansion is
+   * unsupported, so a new expansion needs no change here.
+   */
+  RAID_CATALOGUE_FIRST_EXPANSION: z.coerce.number().int().positive().default(6),
+  /** How stale the raid catalogue may get before a check re-reads it. */
+  RAID_CATALOGUE_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  /** How often the catalogue's age is checked. Costs no request inside the TTL. */
+  RAID_CATALOGUE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+
+  /**
+   * Keeps each raid's boards — the top hundred guilds at each difficulty — and
+   * the guilds on them (`guilds`). Needs the catalogue it hangs off, so it is refused
+   * without `RAID_CATALOGUE_ENABLED`.
+   */
+  RAID_RANKINGS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * The boards read for each raid: `world` and any real region. `cn` is served
+   * too and left out by default; its guilds still appear on the world board.
+   */
+  RAID_RANKINGS_REGIONS: raidRankingRegionCsv('world,us,eu,kr,tw'),
+  /** The difficulties read on each board, in the order they are read. */
+  RAID_RANKINGS_DIFFICULTIES: raidDifficultyCsv('mythic,heroic,normal'),
+  /**
+   * Boards read at once. A board's own pages stay in order, so this is also the
+   * most ranking requests in flight; upstream is slow at this endpoint, and the
+   * shared token bucket still paces them.
+   */
+  RAID_RANKINGS_CONCURRENCY: z.coerce.number().int().positive().max(20).default(5),
+  /**
+   * How often the boards are read. Every run reads each open raid's boards; a
+   * finished raid's are read once after it finished and then left.
+   */
+  RAID_RANKINGS_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  /**
+   * Timeout for one board, in place of `RAIDERIO_REQUEST_TIMEOUT_MS`. An old
+   * raid's board that upstream has not cached took 40-60s when checked live,
+   * and its gateway gives up at 60s, so the usual 30s would abandon requests
+   * that were about to answer.
+   */
+  RAID_RANKINGS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(75_000),
+
   // Mythic+ seasons: which one is current, and retiring the one it replaced.
   /**
    * Checks the Mythic+ season on its own schedule: the catalogue at boot and
@@ -557,6 +680,25 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
       path: ['RAIDER_IO_API_KEY'],
       message:
         'is required when MPLUS_ARCHIVE_ENABLED is true; set it or set MPLUS_ARCHIVE_ENABLED=false',
+    });
+  }
+
+  if (env.RAID_CATALOGUE_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAIDER_IO_API_KEY'],
+      message:
+        'is required when RAID_CATALOGUE_ENABLED is true; set it or set RAID_CATALOGUE_ENABLED=false',
+    });
+  }
+
+  if (env.RAID_RANKINGS_ENABLED && !env.RAID_CATALOGUE_ENABLED) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAID_RANKINGS_ENABLED'],
+      message:
+        'needs the raid catalogue it reads rankings for; set RAID_CATALOGUE_ENABLED=true ' +
+        'or set RAID_RANKINGS_ENABLED=false',
     });
   }
 

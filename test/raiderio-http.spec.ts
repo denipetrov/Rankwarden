@@ -302,4 +302,26 @@ describe('RaiderIoHttpService — against a real listener', () => {
       lastStatusCode: null,
     });
   });
+
+  it('a call may bring a timeout of its own, for the one endpoint that is slow', async () => {
+    const { http } = clientFor({ RAIDERIO_REQUEST_TIMEOUT_MS: 150, RAIDERIO_RETRY_LIMIT: 0 });
+    const slow: NonNullable<RaiderIoServer['handler']> = (_request, response) => {
+      setTimeout(() => {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ raidRankings: [] }));
+      }, 400);
+
+      return true;
+    };
+
+    // The client's own timeout abandons it...
+    server.handler = slow;
+    const error = await failureOf(http.get('raiding/raid-rankings', { region: 'eu' }));
+    expect(error.message).toMatch(/Timeout awaiting 'request' for 150ms/);
+
+    // ...and the call's own waits it out.
+    expect(await http.get('raiding/raid-rankings', { region: 'eu', timeoutMs: 2_000 })).toEqual({
+      raidRankings: [],
+    });
+  });
 });

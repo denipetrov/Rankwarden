@@ -30,7 +30,8 @@ export interface RecordedRaiderIoRequest {
  * One condition, or several joined with `&`, all of which must hold:
  *
  * - a fragment of the path, `mythic-plus/runs`;
- * - `page:<n>`, `region:<r>`, `season:<slug>`, `expansion:<id>`.
+ * - `page:<n>`, `region:<r>`, `season:<slug>`, `expansion:<id>`, `raid:<slug>`,
+ *   `difficulty:<d>`.
  *
  * The keyed forms exist because a path alone cannot tell requests apart: every
  * static-data call has the same path, so "expansion 11 fails" has no other way
@@ -54,6 +55,10 @@ function matches(matcher: RequestMatcher, request: RecordedRaiderIoRequest): boo
         return request.season === value;
       case 'expansion':
         return request.expansionId === Number(value);
+      case 'raid':
+        return request.params.raid === value;
+      case 'difficulty':
+        return request.params.difficulty === value;
       default:
         return request.path.includes(condition);
     }
@@ -181,7 +186,7 @@ export class FakeRaiderIo {
       const corruption = this.next(this.corruptions, request);
       const payload = corruption
         ? corruption.payload
-        : this.route(path, region, season, page, url, expansionId);
+        : this.route(path, region, season, page, url, expansionId, params);
 
       // Mirrors the real client, which rejects an empty body as a transport
       // failure rather than letting `''` reach the zod boundary and be misread
@@ -230,8 +235,46 @@ export class FakeRaiderIo {
     page: number | null,
     url: string,
     expansionId?: number,
+    params: Record<string, string | number> = {},
   ): unknown {
     if (path === 'mythic-plus/static-data') return this.world.staticData(expansionId);
+
+    if (path === 'raiding/raid-rankings') {
+      // The endpoint's real answers: a difficulty it does not know, or none, and
+      // a raid it does not know, are the same 400; a region is its own.
+      if (
+        !['mythic', 'heroic', 'normal'].includes(String(params.difficulty)) ||
+        params.limit === undefined
+      ) {
+        throw new RaiderIoApiError(400, url, 'Invalid request query input');
+      }
+
+      if (region !== 'world' && !this.world.regions.includes(region)) {
+        throw new RaiderIoApiError(400, url, 'Could not find requested region or sub region');
+      }
+
+      const payload = this.world.raidRankings(
+        String(params.raid),
+        region,
+        Number(params.limit),
+        page ?? 0,
+        String(params.difficulty),
+      );
+      if (payload === null) throw new RaiderIoApiError(400, url, 'Invalid request query input');
+
+      return payload;
+    }
+
+    if (path === 'raiding/static-data') {
+      const payload = expansionId === undefined ? null : this.world.raidStaticData(expansionId);
+      // The endpoint's real answer for an expansion with no raids, and for a
+      // request that names none: a 400, which is how its list ends.
+      if (payload === null) {
+        throw new RaiderIoApiError(400, url, 'Requested unsupported expansion_id');
+      }
+
+      return payload;
+    }
 
     if (path === 'mythic-plus/season-cutoffs') {
       // No cutoffs for the season: a 404 naming it, as upstream answers for

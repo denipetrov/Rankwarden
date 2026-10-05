@@ -1,4 +1,4 @@
-import { Controller, Logger, NotFoundException, OnModuleInit, Post } from '@nestjs/common';
+import { Controller, Logger, NotFoundException, OnModuleInit, Post, Query } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { Region } from '../blizzard/blizzard.constants.js';
@@ -13,6 +13,8 @@ import { MplusSeasonTransitionService } from '../mplus-season/mplus-season-trans
 import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
 import { MplusService } from '../mplus/mplus.service.js';
 import { ProfileEnrichmentService } from '../profile/profile-enrichment.service.js';
+import { RaidCatalogueService } from '../raid/raid-catalogue.service.js';
+import { RaidRankingsService } from '../raid/raid-rankings.service.js';
 import { SpecRepresentationService } from '../representation/spec-representation.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { SeasonTransitionService } from '../season/season-transition.service.js';
@@ -48,6 +50,8 @@ export class AdminController implements OnModuleInit {
     private readonly mplusArchive: MplusArchiveService,
     private readonly mplusCatalogue: MplusCatalogueService,
     private readonly mplusTransitions: MplusSeasonTransitionService,
+    private readonly raidCatalogue: RaidCatalogueService,
+    private readonly raidRankings: RaidRankingsService,
   ) {
     this.enabled = config.get('NODE_ENV', { infer: true }) !== 'production';
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
@@ -168,6 +172,33 @@ export class AdminController implements OnModuleInit {
     this.guard();
 
     return withRunId('mplus-season', () => this.mplusCatalogue.refresh());
+  }
+
+  /** Re-reads the raid catalogue now, ignoring its TTL. */
+  @Post('raid-catalogue')
+  async raidCatalogueRefresh() {
+    this.guard();
+
+    return withRunId('raid-catalogue', () => this.raidCatalogue.refresh());
+  }
+
+  /**
+   * Reads the raid boards that are due, as a scheduled run would. With
+   * `?raid=<slug>` it re-reads every board of that one raid instead, due or
+   * not — the only way a finished raid's settled board is read again.
+   */
+  @Post('raid-rankings')
+  async raidRankingsRefresh(@Query('raid') raid?: string) {
+    this.guard();
+
+    return withRunId('raid-rankings', async () => {
+      if (!raid) return this.raidRankings.refreshDue();
+
+      const result = await this.raidRankings.refreshRaid(raid);
+      if (!result) throw new NotFoundException(`The raid catalogue lists no raid "${raid}"`);
+
+      return result;
+    });
   }
 
   @Post('season-refresh')
