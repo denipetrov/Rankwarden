@@ -94,6 +94,13 @@ export interface WorldGuild {
   /** Hides its pull counts: `numPulls` and `pullStartedAt` are then not served. */
   hidesPulls?: boolean;
   /**
+   * Holds its rank on every board but is not served: how upstream answers for a
+   * rank it will not show. A page is a window of ranks (page 0 is ranks 1-20),
+   * so such a guild leaves its page one short - 19 of 20 - with more pages
+   * after it. Checked live 2026-10-05: The Emerald Nightmare serves 19/20/20/19/19.
+   */
+  notServed?: boolean;
+  /**
    * Mythic progress: bosses by raid slug, in kill order. A raid absent here
    * does not rank the guild on Mythic.
    */
@@ -429,6 +436,7 @@ export class MplusWorld {
     return {
       raidRankings: this.rankedGuilds(raid, region, difficulty)
         .slice(start, start + limit)
+        .filter(({ guild }) => guild.notServed !== true)
         .map(({ guild, rank, regionRank }) => ({
           rank,
           regionRank,
