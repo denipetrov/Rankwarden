@@ -3,6 +3,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { MongoService } from '../database/mongo.service.js';
 import { type RaidCatalogueDocument, type RaidDocument } from './entities/raid.entity.js';
 import { RAIDS_COLLECTION } from '../database/collections.js';
+import { RAIDS_INDEXES } from './raid.indexes.js';
 
 /** The catalogue never reads a raid's boards: they are the bulk of the document. */
 const WITHOUT_BOARDS = { projection: { guilds: 0, guildsRefusedAt: 0 } } as const;
@@ -22,14 +23,7 @@ export class RaidCatalogueRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.raids.createIndexes([
-      // The identity. Raider.io's raid id is unique across every expansion.
-      { key: { id: 1 }, name: 'raid_identity', unique: true },
-      // What the raiding endpoints are asked by. Not unique: the id is the
-      // identity, and a slug Raider.io ever reused must not fail a whole walk.
-      { key: { slug: 1 }, name: 'raid_slug' },
-      { key: { expansionId: 1 }, name: 'raid_expansion' },
-    ]);
+    await this.raids.createIndexes(RAIDS_INDEXES);
 
     this.logger.log(`Indexes ensured on "${RAIDS_COLLECTION}"`);
   }

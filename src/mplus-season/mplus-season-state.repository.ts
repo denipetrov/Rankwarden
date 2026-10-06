@@ -9,6 +9,10 @@ import {
   MPLUS_SEASON_STATE_COLLECTION,
   MPLUS_SEASON_TRANSITIONS_COLLECTION,
 } from '../database/collections.js';
+import {
+  MPLUS_SEASON_STATE_INDEXES,
+  MPLUS_SEASON_TRANSITIONS_INDEXES,
+} from './mplus-season.indexes.js';
 
 /**
  * Owns the two small collections that make Mythic+ season transitions durable.
@@ -31,13 +35,8 @@ export class MplusSeasonStateRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.state.createIndexes([
-      { key: { region: 1 }, name: 'mplus_state_region', unique: true },
-    ]);
-    await this.transitions.createIndexes([
-      { key: { season: 1, region: 1 }, name: 'mplus_transition_identity', unique: true },
-      { key: { purgedAt: -1 }, name: 'mplus_transition_recent' },
-    ]);
+    await this.state.createIndexes(MPLUS_SEASON_STATE_INDEXES);
+    await this.transitions.createIndexes(MPLUS_SEASON_TRANSITIONS_INDEXES);
 
     this.logger.log(
       `Indexes ensured on "${MPLUS_SEASON_STATE_COLLECTION}" and ` +

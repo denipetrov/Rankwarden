@@ -18,6 +18,7 @@ import {
   type SpecShare,
 } from './entities/spec-representation.entity.js';
 import { CHARACTERS_COLLECTION, SPEC_REPRESENTATION_COLLECTION } from '../database/collections.js';
+import { SPEC_REPRESENTATION_INDEXES } from './representation.indexes.js';
 
 interface HeroTalentRef {
   id: number;
@@ -79,15 +80,7 @@ export class SpecRepresentationService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.collection.createIndexes([
-      {
-        key: { date: 1, seasonId: 1, region: 1, family: 1, minRating: 1 },
-        name: 'snapshot_identity',
-        unique: true,
-      },
-      // The visualisation's own query: one series over time.
-      { key: { seasonId: 1, region: 1, family: 1, minRating: 1, date: 1 }, name: 'series' },
-    ]);
+    await this.collection.createIndexes(SPEC_REPRESENTATION_INDEXES);
     this.logger.log(`Indexes ensured on "${SPEC_REPRESENTATION_COLLECTION}"`);
   }
 

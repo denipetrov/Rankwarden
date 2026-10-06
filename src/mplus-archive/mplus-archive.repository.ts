@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import type { AnyBulkWriteOperation, IndexDescription } from 'mongodb';
+import type { AnyBulkWriteOperation } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
@@ -11,6 +11,10 @@ import {
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
 } from '../database/collections.js';
+import {
+  MPLUS_ARCHIVE_CHARACTERS_INDEXES,
+  MPLUS_ARCHIVE_RUNS_INDEXES,
+} from './mplus-archive.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -40,25 +44,8 @@ export class MplusArchiveRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    const runIndexes: IndexDescription[] = [
-      // World run ids are unique on their own; the season prefix keeps the
-      // collection partitionable by season like every other one here.
-      { key: { season: 1, keystoneRunId: 1 }, name: 'archive_run_identity', unique: true },
-      { key: { season: 1, score: -1 }, name: 'archive_run_board' },
-      { key: { season: 1, region: 1, score: -1 }, name: 'archive_run_region_board' },
-      { key: { season: 1, 'dungeon.id': 1, score: -1 }, name: 'archive_run_dungeon_board' },
-      { key: { season: 1, rosterKeys: 1 }, name: 'archive_run_roster' },
-    ];
-
-    const characterIndexes: IndexDescription[] = [
-      { key: { season: 1, key: 1 }, name: 'archive_character_identity', unique: true },
-      { key: { season: 1, mythicScore: -1 }, name: 'archive_score_board' },
-      { key: { season: 1, region: 1, mythicScore: -1 }, name: 'archive_score_region_board' },
-      { key: { nameKey: 1, realmSlug: 1 }, name: 'archive_character_lookup' },
-    ];
-
-    await this.runs.createIndexes(runIndexes);
-    await this.characters.createIndexes(characterIndexes);
+    await this.runs.createIndexes(MPLUS_ARCHIVE_RUNS_INDEXES);
+    await this.characters.createIndexes(MPLUS_ARCHIVE_CHARACTERS_INDEXES);
 
     this.logger.log(
       `Indexes ensured on "${MPLUS_ARCHIVE_RUNS_COLLECTION}" and ` +

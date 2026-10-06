@@ -3,6 +3,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { MongoService } from '../database/mongo.service.js';
 import { type GuildDocument } from './entities/guild.entity.js';
 import { GUILDS_COLLECTION } from '../database/collections.js';
+import { GUILDS_INDEXES } from './raid.indexes.js';
 
 const DUPLICATE_KEY = 11000;
 
@@ -30,11 +31,7 @@ export class GuildRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.guilds.createIndexes([
-      // The identity, and what a raid's board points at.
-      { key: { id: 1 }, name: 'guild_identity', unique: true },
-      { key: { region: 1, 'realm.slug': 1, name: 1 }, name: 'guild_region_realm_name' },
-    ]);
+    await this.guilds.createIndexes(GUILDS_INDEXES);
 
     this.logger.log(`Indexes ensured on "${GUILDS_COLLECTION}"`);
   }

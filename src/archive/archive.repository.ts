@@ -14,6 +14,11 @@ import {
   ARCHIVE_ENTRIES_COLLECTION,
   ARCHIVE_SEASONS_COLLECTION,
 } from '../database/collections.js';
+import {
+  ARCHIVE_BRACKETS_INDEXES,
+  ARCHIVE_ENTRIES_INDEXES,
+  ARCHIVE_SEASONS_INDEXES,
+} from './archive.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -36,30 +41,11 @@ export class ArchiveRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.entries.createIndexes([
-      // A past season's ladder, ordered.
-      { key: { seasonId: 1, region: 1, bracket: 1, rating: -1 }, name: 'archive_board' },
-      // Idempotent re-runs: archiving a season twice must not duplicate it.
-      {
-        key: { seasonId: 1, region: 1, bracket: 1, characterId: 1 },
-        name: 'archive_identity',
-        unique: true,
-      },
-      // One character's history across seasons.
-      { key: { characterId: 1, seasonId: -1 }, name: 'archive_character' },
-    ]);
+    await this.entries.createIndexes(ARCHIVE_ENTRIES_INDEXES);
 
-    await this.seasons.createIndexes([
-      { key: { seasonId: 1, region: 1 }, name: 'season_identity', unique: true },
-    ]);
+    await this.seasons.createIndexes(ARCHIVE_SEASONS_INDEXES);
 
-    await this.brackets.createIndexes([
-      {
-        key: { seasonId: 1, region: 1, bracket: 1 },
-        name: 'bracket_identity',
-        unique: true,
-      },
-    ]);
+    await this.brackets.createIndexes(ARCHIVE_BRACKETS_INDEXES);
 
     this.logger.log(`Indexes ensured on "${ARCHIVE_ENTRIES_COLLECTION}"`);
   }

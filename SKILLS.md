@@ -781,6 +781,13 @@ them all for diagnostics and census-style checks. A name is a wire contract, sin
 already sits under it, so renaming one is a migration rather than an edit. The standalone
 `scripts/*.mjs` cannot import TypeScript and repeat the names as literals.
 
+Indexes follow the same idea one level down. Each folder that owns collections has a single
+`<folder>.indexes.ts` declaring every index on them, one constant per collection named after
+it (`ARCHIVE_ENTRIES_COLLECTION` → `ARCHIVE_ENTRIES_INDEXES`), with the comment saying which
+query each index serves. Repositories import the constant and pass it to `createIndexes`;
+none declares an index inline. Index names retired by a later build, which are dropped at
+boot, are declared in the same file, so it shows what was removed as well as what exists.
+
 ### 5.1 `characters` — one document per character per season+region
 
 ```js
@@ -2329,8 +2336,11 @@ pick the field up before the TTL expires.
 `ALL_COLLECTIONS`; put the document interface in the module's `entities/`; create its indexes
 in the repository's `onModuleInit`.
 
-**Adding an index.** `characters` is near no cap, but remember the 64-index limit and prefer
-extending the wildcard-covered maps over adding per-key indexes.
+**Adding an index.** Declare it in the folder's `<folder>.indexes.ts`, with a comment naming the
+query it serves; never inline in a repository. Replacing one means adding the old name to the
+retired list in the same file, or it lingers and costs write throughput. `characters` is near
+no cap, but remember the 64-index limit and prefer extending the wildcard-covered maps over
+adding per-key indexes.
 
 **Adding a third upstream.** The pattern is now established rather than improvised, and
 Raider.io is the worked example: a module under `src/<upstream>/` with `http/`, `schemas/`

@@ -12,6 +12,7 @@ import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 import { type RatingDocument } from './entities/rating.entity.js';
 import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../database/collections.js';
+import { RATING_INDEXES } from './leaderboard.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -35,17 +36,7 @@ export class RatingRepository implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     for (const family of RATING_FAMILIES) {
-      await this.collection(family).createIndexes([
-        // The board itself: a sorted range scan across every spec at once.
-        { key: { seasonId: 1, region: 1, rating: -1 }, name: 'board_order' },
-        {
-          key: { seasonId: 1, region: 1, bracket: 1, characterId: 1 },
-          name: 'entry_identity',
-          unique: true,
-        },
-        // "Every rating this character holds", for a character page.
-        { key: { characterId: 1 }, name: 'character' },
-      ]);
+      await this.collection(family).createIndexes(RATING_INDEXES);
     }
 
     this.logger.log(`Indexes ensured on ${RATING_FAMILIES.length} ratings collections`);

@@ -18,9 +18,10 @@ import {
   MPLUS_RUNS_COLLECTION,
   MPLUS_SPEC_REPRESENTATION_COLLECTION,
 } from '../database/collections.js';
-
-/** The unique index before documents were split by dungeon: one per season and region. */
-const LEGACY_IDENTITY_INDEX = 'mplus_representation_identity';
+import {
+  LEGACY_MPLUS_SPEC_REPRESENTATION_INDEX,
+  MPLUS_SPEC_REPRESENTATION_INDEXES,
+} from './mplus-representation.indexes.js';
 
 /** Runs to count: a collection and the rows of it that belong to this computation. */
 interface RunSource {
@@ -72,18 +73,9 @@ export class MplusSpecRepresentationService implements OnModuleInit {
     // The old identity allowed one document per season and region, so every
     // per-dungeon document would collide with it. Dropped before the new one is
     // built; absent on a fresh database, which is not an error.
-    await this.collection.dropIndex(LEGACY_IDENTITY_INDEX).catch(() => undefined);
+    await this.collection.dropIndex(LEGACY_MPLUS_SPEC_REPRESENTATION_INDEX).catch(() => undefined);
 
-    await this.collection.createIndexes([
-      // Also the front end's filter: season, then region, then dungeon — null
-      // for every dungeon together.
-      {
-        key: { season: 1, region: 1, dungeonId: 1 },
-        name: 'mplus_representation_key',
-        unique: true,
-      },
-      { key: { region: 1, season: 1 }, name: 'mplus_representation_by_region' },
-    ]);
+    await this.collection.createIndexes(MPLUS_SPEC_REPRESENTATION_INDEXES);
 
     this.logger.log(`Indexes ensured on "${MPLUS_SPEC_REPRESENTATION_COLLECTION}"`);
   }

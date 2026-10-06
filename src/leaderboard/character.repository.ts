@@ -1,10 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import {
-  MongoBulkWriteError,
-  type AnyBulkWriteOperation,
-  type Filter,
-  type IndexDescription,
-} from 'mongodb';
+import { MongoBulkWriteError, type AnyBulkWriteOperation, type Filter } from 'mongodb';
 
 import { EXCLUDED_BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
@@ -35,12 +30,14 @@ export type ProfileSummaryFields = Pick<CharacterProfile, (typeof PROFILE_SUMMAR
 export type ProfileSpecFields = Pick<CharacterProfile, (typeof PROFILE_SPEC_KEYS)[number]>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 import { CHARACTERS_COLLECTION } from '../database/collections.js';
+import {
+  CHARACTERS_INDEXES,
+  LEGACY_CHARACTERS_INDEX_PATTERN,
+  SUPERSEDED_CHARACTERS_INDEXES,
+} from './leaderboard.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 const DUPLICATE_KEY = 11000;
-
-/** Indexes an earlier build created and a later one replaced. */
-const SUPERSEDED_INDEXES = new Set(['specs_staleness', 'profile_staleness']);
 
 /**
  * The characters enrichment serves at all. Only ladder characters need it:
@@ -83,25 +80,7 @@ export class CharacterRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    const indexes: IndexDescription[] = [
-      { key: { seasonId: 1, region: 1, characterId: 1 }, name: 'character_identity', unique: true },
-      { key: { characterName: 1, realmSlug: 1 }, name: 'character_lookup' },
-      // One compound wildcard index serves ordered queries for every bracket:
-      //   find({ seasonId, region, 'ratings.3v3': { $gt: 0 } }).sort({ 'ratings.3v3': -1 })
-      // Measured index-ordered (no blocking sort) and 4.6x smaller than the five
-      // per-bracket indexes it replaces — which could never have reached 85 anyway.
-      { key: { seasonId: 1, region: 1, 'ratings.$**': 1 }, name: 'bracket_ratings' },
-      // Enrichment selects the least recently fetched characters first;
-      // never-enriched ones sort ahead of everything because the field is absent.
-      // Led by the type because characters that are never enriched never get a
-      // timestamp either: without the prefix they would sit at the very front
-      // of the timestamp order, and every run would walk past all of them
-      // before reaching the first character it can use.
-      { key: { characterType: 1, specsFetchedAt: 1 }, name: 'enrichment_specs_staleness' },
-      { key: { characterType: 1, profileFetchedAt: 1 }, name: 'enrichment_profile_staleness' },
-    ];
-
-    await this.collection.createIndexes(indexes);
+    await this.collection.createIndexes(CHARACTERS_INDEXES);
     await this.dropSupersededIndexes();
     await this.backfillCharacterType();
     await this.purgeExcludedBrackets();
@@ -120,8 +99,8 @@ export class CharacterRepository implements OnModuleInit {
       .map((index) => index.name)
       .filter(
         (name): name is string =>
-          /^bracket_.+_rank$|^best_in_family$/.test(name ?? '') ||
-          SUPERSEDED_INDEXES.has(name ?? ''),
+          LEGACY_CHARACTERS_INDEX_PATTERN.test(name ?? '') ||
+          SUPERSEDED_CHARACTERS_INDEXES.has(name ?? ''),
       );
 
     for (const name of superseded) {

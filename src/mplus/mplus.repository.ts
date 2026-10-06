@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import type { AnyBulkWriteOperation, IndexDescription } from 'mongodb';
+import type { AnyBulkWriteOperation } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
@@ -16,6 +16,11 @@ import {
   MPLUS_CHARACTERS_COLLECTION,
   MPLUS_RUNS_COLLECTION,
 } from '../database/collections.js';
+import {
+  MPLUS_AFFIXES_INDEXES,
+  MPLUS_CHARACTERS_INDEXES,
+  MPLUS_RUNS_INDEXES,
+} from './mplus.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -46,33 +51,9 @@ export class MplusRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    const runIndexes: IndexDescription[] = [
-      { key: { season: 1, region: 1, keystoneRunId: 1 }, name: 'run_identity', unique: true },
-      // The headline board: a season's best runs in a region, index-ordered.
-      { key: { season: 1, region: 1, score: -1 }, name: 'run_board' },
-      // The same board filtered to one dungeon, which is how the UI slices it.
-      { key: { season: 1, region: 1, 'dungeon.id': 1, score: -1 }, name: 'run_dungeon_board' },
-      // "Every run this character appears in", answered from the flat mirror
-      // rather than by scanning nested roster documents.
-      { key: { season: 1, region: 1, rosterKeys: 1 }, name: 'run_roster' },
-      // Pruning reads this: runs the latest pass did not refresh have fallen
-      // off the leaderboard.
-      { key: { season: 1, region: 1, fetchedAt: 1 }, name: 'run_freshness' },
-    ];
-
-    const characterIndexes: IndexDescription[] = [
-      // One canonical key rather than a four-field tuple, so the merge read and
-      // the orphan cleanup can both `$in` on it.
-      { key: { season: 1, key: 1 }, name: 'mplus_character_identity', unique: true },
-      // The front end's sort: best M+ players in a region.
-      { key: { season: 1, region: 1, mythicScore: -1 }, name: 'mplus_score_board' },
-      // Cross-region lookup by name, mirroring `character_lookup` on the PvP side.
-      { key: { nameKey: 1, realmSlug: 1 }, name: 'mplus_character_lookup' },
-    ];
-
-    await this.runs.createIndexes(runIndexes);
-    await this.characters.createIndexes(characterIndexes);
-    await this.affixes.createIndexes([{ key: { id: 1 }, name: 'affix_identity', unique: true }]);
+    await this.runs.createIndexes(MPLUS_RUNS_INDEXES);
+    await this.characters.createIndexes(MPLUS_CHARACTERS_INDEXES);
+    await this.affixes.createIndexes(MPLUS_AFFIXES_INDEXES);
 
     this.logger.log(
       `Indexes ensured on "${MPLUS_RUNS_COLLECTION}", "${MPLUS_CHARACTERS_COLLECTION}" ` +

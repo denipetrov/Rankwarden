@@ -9,6 +9,7 @@ import {
   type MplusSeasonDocument,
 } from './entities/mplus-season.entity.js';
 import { MPLUS_DUNGEONS_COLLECTION, MPLUS_SEASONS_COLLECTION } from '../database/collections.js';
+import { MPLUS_DUNGEONS_INDEXES, MPLUS_SEASONS_INDEXES } from './mplus-season.indexes.js';
 
 /**
  * The season and dungeon catalogue.
@@ -33,11 +34,8 @@ export class MplusCatalogueRepository implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.seasons.createIndexes([
-      { key: { slug: 1 }, name: 'season_identity', unique: true },
-      { key: { expansionId: 1 }, name: 'season_expansion' },
-    ]);
-    await this.dungeons.createIndexes([{ key: { id: 1 }, name: 'dungeon_identity', unique: true }]);
+    await this.seasons.createIndexes(MPLUS_SEASONS_INDEXES);
+    await this.dungeons.createIndexes(MPLUS_DUNGEONS_INDEXES);
 
     this.logger.log(
       `Indexes ensured on "${MPLUS_SEASONS_COLLECTION}" and "${MPLUS_DUNGEONS_COLLECTION}"`,
