@@ -3,11 +3,11 @@ import { Injectable } from '@nestjs/common';
 import { MongoService } from '../database/mongo.service.js';
 import type { RaidDifficulty, RaidRankingRegion } from '../raiderio/raiderio.constants.js';
 import {
-  RAIDS_COLLECTION,
   type RaidDocument,
   type RaidEncounter,
   type RaidRankedGuild,
 } from './entities/raid.entity.js';
+import { RAIDS_COLLECTION } from '../database/collections.js';
 
 /** What the rankings job needs to know about a raid to decide what to read. */
 export interface RaidRankingTarget {

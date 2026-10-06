@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { MongoService } from '../src/database/mongo.service.js';
 import { SeasonService } from '../src/season/season.service.js';
-import { SEASON_STATE_COLLECTION } from '../src/season/entities/season-state.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { World } from './support/world.js';
+import { SEASON_STATE_COLLECTION } from '../src/database/collections.js';
 
 /**
  * The season refresh is enabled here, which is why this is its own file: a test

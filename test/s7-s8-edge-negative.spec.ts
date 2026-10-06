@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson, postJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';
 import { World } from './support/world.js';
+import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../src/database/collections.js';
 
 /**
  * S7 / S8 — edge conditions and failure injection.

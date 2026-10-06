@@ -1,12 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../src/representation/entities/spec-representation.entity.js';
-import {
-  SEASON_STATE_COLLECTION,
-  SEASON_TRANSITIONS_COLLECTION,
-} from '../src/season/entities/season-state.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { SeasonService } from '../src/season/season.service.js';
 import { SeasonTransitionService } from '../src/season/season-transition.service.js';
@@ -15,6 +9,12 @@ import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson, postJson } from './support/http.js';
 import { World } from './support/world.js';
+import {
+  CHARACTERS_COLLECTION,
+  SEASON_STATE_COLLECTION,
+  SEASON_TRANSITIONS_COLLECTION,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const SEASON = 42;
 const NEXT = 43;

@@ -2,12 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { LoggerService } from '@nestjs/common';
 import type { Db } from 'mongodb';
 
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectIdentityUniqueness, expectInvariants } from './support/invariants.js';
 import { SPECS, World } from './support/world.js';
+import { CHARACTERS_COLLECTION } from '../src/database/collections.js';
 
 /** Eight ladders every player is ranked in, so every bracket races every other. */
 const CONTESTED = [

@@ -117,5 +117,3 @@ export interface RaidDocument {
 
 /** A raid without its boards, which is all the catalogue itself ever needs. */
 export type RaidCatalogueDocument = Omit<RaidDocument, 'guilds' | 'guildsRefusedAt'>;
-
-export const RAIDS_COLLECTION = 'raids';

@@ -28,6 +28,3 @@ export type MplusArchiveRunDocument = MplusRunDocument;
  * document is written once from one complete read.
  */
 export type MplusArchiveCharacterDocument = MplusCharacterDocument;
-
-export const MPLUS_ARCHIVE_RUNS_COLLECTION = 'mplus_archive_runs';
-export const MPLUS_ARCHIVE_CHARACTERS_COLLECTION = 'mplus_archive_characters';

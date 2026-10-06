@@ -25,5 +25,3 @@ export interface GuildDocument {
   /** When a board last listed the guild. */
   updatedAt: Date;
 }
-
-export const GUILDS_COLLECTION = 'guilds';

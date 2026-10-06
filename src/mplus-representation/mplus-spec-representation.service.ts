@@ -3,21 +3,21 @@ import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
-import { MPLUS_ARCHIVE_RUNS_COLLECTION } from '../mplus-archive/entities/mplus-archive.entity.js';
 import { isArchivedEverywhere } from '../mplus-archive/mplus-archive.mapper.js';
-import { MPLUS_RUNS_COLLECTION } from '../mplus/entities/mplus-run.entity.js';
 import type { MplusSeasonDocument } from '../mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
-import {
-  MPLUS_SPEC_REPRESENTATION_COLLECTION,
-  type MplusSpecRepresentationDocument,
-} from './entities/mplus-spec-representation.entity.js';
+import { type MplusSpecRepresentationDocument } from './entities/mplus-spec-representation.entity.js';
 import {
   representationsOf,
   type MplusRunCount,
   type MplusSpecTally,
 } from './mplus-spec-representation.mapper.js';
+import {
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../database/collections.js';
 
 /** The unique index before documents were split by dungeon: one per season and region. */
 const LEGACY_IDENTITY_INDEX = 'mplus_representation_identity';

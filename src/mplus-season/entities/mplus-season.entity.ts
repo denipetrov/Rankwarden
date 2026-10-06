@@ -178,8 +178,3 @@ export interface MplusSeasonTransitionDocument {
   triggeredBy: string;
   dryRun: boolean;
 }
-
-export const MPLUS_SEASONS_COLLECTION = 'mplus_seasons';
-export const MPLUS_DUNGEONS_COLLECTION = 'mplus_dungeons';
-export const MPLUS_SEASON_STATE_COLLECTION = 'mplus_season_state';
-export const MPLUS_SEASON_TRANSITIONS_COLLECTION = 'mplus_season_transitions';

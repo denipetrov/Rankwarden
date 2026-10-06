@@ -2,13 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
-import { MPLUS_ARCHIVE_RUNS_COLLECTION } from '../src/mplus-archive/entities/mplus-archive.entity.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
-import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import {
   expectInvariants,
@@ -21,6 +16,13 @@ import {
 } from './support/invariants.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const MAX_PAGES = 5;
 

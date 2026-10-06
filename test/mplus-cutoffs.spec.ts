@@ -5,13 +5,11 @@ import { MongoService } from '../src/database/mongo.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import type { MplusSeasonCutoffs } from '../src/mplus-season/entities/mplus-cutoffs.entity.js';
-import {
-  MPLUS_SEASONS_COLLECTION,
-  type MplusSeasonDocument,
-} from '../src/mplus-season/entities/mplus-season.entity.js';
+import { type MplusSeasonDocument } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { MPLUS_SEASONS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * Title and percentile cutoffs on the season catalogue: read per region, every

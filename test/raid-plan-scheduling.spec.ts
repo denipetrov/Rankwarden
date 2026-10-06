@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidRankingsScheduler } from '../src/raid/raid-rankings.scheduler.js';
 import { RaidRankingsService } from '../src/raid/raid-rankings.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -12,6 +11,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { RAIDS_COLLECTION } from '../src/database/collections.js';
 
 const REGIONS = ['world', 'us', 'eu', 'kr', 'tw'];
 const FINISHED = ['tier-mn-1', 'manaforge-omega'];

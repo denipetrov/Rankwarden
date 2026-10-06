@@ -9,28 +9,26 @@ import {
 } from '../../src/blizzard/blizzard.constants.js';
 import type { MplusWorld } from './mplus-world.js';
 import type { World } from './world.js';
-import { CHARACTERS_COLLECTION } from '../../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../../src/leaderboard/entities/rating.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../../src/representation/entities/spec-representation.entity.js';
-import { ARCHIVE_ENTRIES_COLLECTION } from '../../src/archive/entities/archive.entity.js';
 import {
-  MPLUS_CHARACTERS_COLLECTION,
   mplusCharacterKey,
   mplusNameKey,
 } from '../../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../../src/mplus/entities/mplus-run.entity.js';
-import { MPLUS_AFFIXES_COLLECTION } from '../../src/mplus/entities/mplus-affix.entity.js';
 import {
+  ARCHIVE_ENTRIES_COLLECTION,
+  CHARACTERS_COLLECTION,
+  GUILDS_COLLECTION,
+  MPLUS_AFFIXES_COLLECTION,
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
-} from '../../src/mplus-archive/entities/mplus-archive.entity.js';
-import {
+  MPLUS_CHARACTERS_COLLECTION,
   MPLUS_DUNGEONS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
   MPLUS_SEASONS_COLLECTION,
-} from '../../src/mplus-season/entities/mplus-season.entity.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../../src/mplus-representation/entities/mplus-spec-representation.entity.js';
-import { GUILDS_COLLECTION } from '../../src/raid/entities/guild.entity.js';
-import { RAIDS_COLLECTION } from '../../src/raid/entities/raid.entity.js';
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+  RAIDS_COLLECTION,
+  RATING_COLLECTIONS,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../../src/database/collections.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [

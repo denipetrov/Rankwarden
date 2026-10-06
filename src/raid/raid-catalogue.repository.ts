@@ -1,11 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
-import {
-  RAIDS_COLLECTION,
-  type RaidCatalogueDocument,
-  type RaidDocument,
-} from './entities/raid.entity.js';
+import { type RaidCatalogueDocument, type RaidDocument } from './entities/raid.entity.js';
+import { RAIDS_COLLECTION } from '../database/collections.js';
 
 /** The catalogue never reads a raid's boards: they are the bulk of the document. */
 const WITHOUT_BOARDS = { projection: { guilds: 0, guildsRefusedAt: 0 } } as const;

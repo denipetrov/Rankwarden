@@ -3,14 +3,13 @@ import type { Db } from 'mongodb';
 
 import { IngestionCoordinator } from '../src/common/ingestion-coordinator.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson } from './support/http.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { MPLUS_CHARACTERS_COLLECTION, MPLUS_RUNS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * Where the Mythic+ pass sits relative to the PvP jobs, what it reports to

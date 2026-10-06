@@ -4,11 +4,13 @@ import type { AnyBulkWriteOperation, IndexDescription } from 'mongodb';
 import { MongoService } from '../database/mongo.service.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import {
-  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
-  MPLUS_ARCHIVE_RUNS_COLLECTION,
   type MplusArchiveCharacterDocument,
   type MplusArchiveRunDocument,
 } from './entities/mplus-archive.entity.js';
+import {
+  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+} from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 

@@ -3,13 +3,12 @@ import type { Db } from 'mongodb';
 
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusRepository } from '../src/mplus/mplus.repository.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { MPLUS_CHARACTERS_COLLECTION, MPLUS_RUNS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * What happens when a Mythic+ pass does not go cleanly.

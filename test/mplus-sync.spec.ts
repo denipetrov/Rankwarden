@@ -3,13 +3,13 @@ import type { Db } from 'mongodb';
 
 import { IngestionCoordinator } from '../src/common/ingestion-coordinator.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson, postJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { MPLUS_CHARACTERS_COLLECTION } from '../src/database/collections.js';
 
 const KEY = 'us/illidan/regular';
 

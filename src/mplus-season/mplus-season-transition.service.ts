@@ -4,14 +4,13 @@ import { ConfigService } from '@nestjs/config';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../mplus/entities/mplus-run.entity.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type { MplusSeasonDocument } from './entities/mplus-season.entity.js';
 import { isArchiveSettled, startIn } from './mplus-catalogue.mapper.js';
 import { MplusCatalogueRepository } from './mplus-catalogue.repository.js';
 import { MplusSeasonStateRepository } from './mplus-season-state.repository.js';
 import { resolveRegions, type ResolvedMplusSeason } from './mplus-season.service.js';
+import { MPLUS_CHARACTERS_COLLECTION, MPLUS_RUNS_COLLECTION } from '../database/collections.js';
 
 export interface MplusPurgeCandidate {
   region: RaiderIoRegion;

@@ -2,17 +2,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService, type MplusSweepResult } from '../src/mplus/mplus.service.js';
-import {
-  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
-  MPLUS_ARCHIVE_RUNS_COLLECTION,
-} from '../src/mplus-archive/entities/mplus-archive.entity.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
 import { MplusSpecRepresentationService } from '../src/mplus-representation/mplus-spec-representation.service.js';
-import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
 import { MplusCatalogueRepository } from '../src/mplus-season/mplus-catalogue.repository.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -20,6 +12,14 @@ import { expectInvariants, expectMplusCutoffsWellFormed } from './support/invari
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld, WORLD_DUNGEONS } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const LIVE = 'season-mn-2';
 const FINISHED = 'season-mn-1';

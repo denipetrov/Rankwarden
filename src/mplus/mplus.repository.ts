@@ -3,18 +3,19 @@ import type { AnyBulkWriteOperation, IndexDescription } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
+import { type MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import {
-  MPLUS_AFFIXES_COLLECTION,
-  type MplusAffixDocument,
-} from './entities/mplus-affix.entity.js';
-import {
-  MPLUS_CHARACTERS_COLLECTION,
   type MplusCharacterDocument,
   type MplusCharacterProfile,
   type MplusDungeonRun,
 } from './entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION, type MplusRunDocument } from './entities/mplus-run.entity.js';
+import { type MplusRunDocument } from './entities/mplus-run.entity.js';
 import { mergeDungeonRuns, scoreOf, withDungeonRuns } from './mplus.mapper.js';
+import {
+  MPLUS_AFFIXES_COLLECTION,
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+} from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 

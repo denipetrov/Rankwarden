@@ -7,8 +7,6 @@ import {
   characterProfileSchema,
   characterSpecializationsSchema,
 } from '../src/blizzard/schemas/character-profile.schema.js';
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -21,6 +19,7 @@ import {
 } from './support/invariants.js';
 import { World } from './support/world.js';
 import { TEST_DB_PREFIX, assertTestDatabase } from './support/database.js';
+import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../src/database/collections.js';
 
 /**
  * Proves the harness itself works before any scenario is written against it.

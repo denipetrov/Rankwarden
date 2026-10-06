@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidCatalogueRepository } from '../src/raid/raid-catalogue.repository.js';
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -12,6 +11,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { RAIDS_COLLECTION } from '../src/database/collections.js';
 
 const DAY = 86_400_000;
 

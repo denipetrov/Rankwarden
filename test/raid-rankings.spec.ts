@@ -4,8 +4,6 @@ import type { Db } from 'mongodb';
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
-import { GUILDS_COLLECTION } from '../src/raid/entities/guild.entity.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidCatalogueRepository } from '../src/raid/raid-catalogue.repository.js';
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { RaidRankingsService } from '../src/raid/raid-rankings.service.js';
@@ -15,6 +13,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld, type WorldGuild } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { GUILDS_COLLECTION, RAIDS_COLLECTION } from '../src/database/collections.js';
 
 const REGIONS = ['world', 'us', 'eu', 'kr', 'tw'];
 const DIFFICULTIES = ['mythic', 'heroic', 'normal'];

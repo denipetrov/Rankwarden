@@ -4,12 +4,11 @@ import { MongoService } from '../database/mongo.service.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type { MplusSeasonCutoffs } from './entities/mplus-cutoffs.entity.js';
 import {
-  MPLUS_DUNGEONS_COLLECTION,
-  MPLUS_SEASONS_COLLECTION,
   type MplusDungeonDocument,
   type MplusSeasonArchiveMarker,
   type MplusSeasonDocument,
 } from './entities/mplus-season.entity.js';
+import { MPLUS_DUNGEONS_COLLECTION, MPLUS_SEASONS_COLLECTION } from '../database/collections.js';
 
 /**
  * The season and dungeon catalogue.

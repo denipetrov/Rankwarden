@@ -2,14 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import { GUILDS_COLLECTION } from '../src/raid/entities/guild.entity.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { RaidRankingsService } from '../src/raid/raid-rankings.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectInvariants } from './support/invariants.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { GUILDS_COLLECTION, RAIDS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * Raid plan R2.7 and R2.8 — a configuration other than the default: a `cn`

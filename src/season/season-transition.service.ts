@@ -4,15 +4,15 @@ import { ConfigService } from '@nestjs/config';
 import { RATING_FAMILIES, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import type { Env } from '../config/env.schema.js';
-import {
-  ARCHIVE_SEASONS_COLLECTION,
-  type ArchiveSeasonDocument,
-} from '../archive/entities/archive.entity.js';
-import { CHARACTERS_COLLECTION } from '../leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../leaderboard/entities/rating.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../representation/entities/spec-representation.entity.js';
+import { type ArchiveSeasonDocument } from '../archive/entities/archive.entity.js';
 import { SeasonStateRepository } from './season-state.repository.js';
 import type { SeasonStateDocument } from './entities/season-state.entity.js';
+import {
+  ARCHIVE_SEASONS_COLLECTION,
+  CHARACTERS_COLLECTION,
+  RATING_COLLECTIONS,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../database/collections.js';
 
 export interface PurgeCandidate {
   region: Region;

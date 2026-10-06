@@ -10,8 +10,8 @@ import {
 } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
-import { CHARACTERS_COLLECTION } from './entities/character.entity.js';
-import { RATING_COLLECTIONS, type RatingDocument } from './entities/rating.entity.js';
+import { type RatingDocument } from './entities/rating.entity.js';
+import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 

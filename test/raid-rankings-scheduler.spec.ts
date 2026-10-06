@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidRankingsScheduler } from '../src/raid/raid-rankings.scheduler.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { holdActive, releaseAllHolds, type HeldJob } from './support/hold.js';
@@ -11,6 +10,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { RAIDS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * Where the raid rankings sit among the other jobs: last. With their real

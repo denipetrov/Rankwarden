@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { MAX_RUNS_PAGE, RUNS_PER_PAGE } from '../src/raiderio/raiderio.constants.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -13,6 +12,7 @@ import {
 } from './support/invariants.js';
 import { member, MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { MPLUS_RUNS_COLLECTION } from '../src/database/collections.js';
 
 const SEASON = 'season-mn-2';
 const FULL = MAX_RUNS_PAGE + 1;

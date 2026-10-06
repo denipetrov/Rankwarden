@@ -2,11 +2,10 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import {
-  SEASON_STATE_COLLECTION,
-  SEASON_TRANSITIONS_COLLECTION,
   type SeasonStateDocument,
   type SeasonTransitionDocument,
 } from './entities/season-state.entity.js';
+import { SEASON_STATE_COLLECTION, SEASON_TRANSITIONS_COLLECTION } from '../database/collections.js';
 
 /** Owns the two small collections that make season transitions durable. */
 @Injectable()

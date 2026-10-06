@@ -2,11 +2,13 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import {
-  MPLUS_SEASON_STATE_COLLECTION,
-  MPLUS_SEASON_TRANSITIONS_COLLECTION,
   type MplusSeasonStateDocument,
   type MplusSeasonTransitionDocument,
 } from './entities/mplus-season.entity.js';
+import {
+  MPLUS_SEASON_STATE_COLLECTION,
+  MPLUS_SEASON_TRANSITIONS_COLLECTION,
+} from '../database/collections.js';
 
 /**
  * Owns the two small collections that make Mythic+ season transitions durable.

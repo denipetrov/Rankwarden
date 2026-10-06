@@ -3,10 +3,7 @@ import type { Db } from 'mongodb';
 
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { holdActive, releaseAllHolds } from './support/hold.js';
 import {
@@ -16,6 +13,11 @@ import {
 } from './support/invariants.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const SEASON = 'season-mn-2';
 const PAGES = 10;

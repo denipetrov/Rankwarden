@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { FakeBlizzard } from './support/fake-blizzard.js';
 import { World } from './support/world.js';
+import { CHARACTERS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * Two seams the harness gained after the first execution pass, both of which

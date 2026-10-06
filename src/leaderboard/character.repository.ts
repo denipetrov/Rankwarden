@@ -8,11 +8,7 @@ import {
 
 import { EXCLUDED_BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
-import {
-  CHARACTERS_COLLECTION,
-  type CharacterDocument,
-  type CharacterProfile,
-} from './entities/character.entity.js';
+import { type CharacterDocument, type CharacterProfile } from './entities/character.entity.js';
 
 /** Profile fields owned by the character summary endpoint. */
 export const PROFILE_SUMMARY_KEYS = [
@@ -38,6 +34,7 @@ export const PROFILE_SPEC_KEYS = [
 export type ProfileSummaryFields = Pick<CharacterProfile, (typeof PROFILE_SUMMARY_KEYS)[number]>;
 export type ProfileSpecFields = Pick<CharacterProfile, (typeof PROFILE_SPEC_KEYS)[number]>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
+import { CHARACTERS_COLLECTION } from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 const DUPLICATE_KEY = 11000;

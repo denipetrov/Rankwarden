@@ -4,15 +4,15 @@ import type { Db } from 'mongodb';
 import { MongoService } from '../src/database/mongo.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
-import {
-  MPLUS_SPEC_REPRESENTATION_COLLECTION,
-  type MplusSpecRepresentationDocument,
-} from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
+import { type MplusSpecRepresentationDocument } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
 import { MplusSpecRepresentationService } from '../src/mplus-representation/mplus-spec-representation.service.js';
-import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_SEASONS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 /**
  * Mythic+ spec representation: live for the current season, recomputed after

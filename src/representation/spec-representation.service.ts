@@ -10,15 +10,14 @@ import {
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
-import { CHARACTERS_COLLECTION } from '../leaderboard/entities/character.entity.js';
 import { SeasonService } from '../season/season.service.js';
 import {
-  SPEC_REPRESENTATION_COLLECTION,
   startOfUtcDay,
   toSlug,
   type SpecRepresentationDocument,
   type SpecShare,
 } from './entities/spec-representation.entity.js';
+import { CHARACTERS_COLLECTION, SPEC_REPRESENTATION_COLLECTION } from '../database/collections.js';
 
 interface HeroTalentRef {
   id: number;

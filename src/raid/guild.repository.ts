@@ -1,7 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
-import { GUILDS_COLLECTION, type GuildDocument } from './entities/guild.entity.js';
+import { type GuildDocument } from './entities/guild.entity.js';
+import { GUILDS_COLLECTION } from '../database/collections.js';
 
 const DUPLICATE_KEY = 11000;
 

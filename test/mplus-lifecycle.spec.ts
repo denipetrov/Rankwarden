@@ -2,12 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService, type MplusSweepResult } from '../src/mplus/mplus.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
-import { MPLUS_SEASON_TRANSITIONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import {
   MplusSeasonEvents,
@@ -23,6 +19,12 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger, type CapturedLine } from './support/logger.js';
 import { MplusWorld, type MplusWorldSeason } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASON_TRANSITIONS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;

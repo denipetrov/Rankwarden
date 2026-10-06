@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { RaidRankingsService } from '../src/raid/raid-rankings.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -11,6 +10,7 @@ import { getJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';
 import { MplusWorld, type WorldGuild } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { RAIDS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * One case per defect the raid and guild test plan found (2026-10-05), each

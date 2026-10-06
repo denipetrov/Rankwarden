@@ -773,6 +773,14 @@ through the gap between seasons.
 
 ## 5. Data model
 
+Every collection name is declared in one file, [`src/database/collections.ts`](src/database/collections.ts),
+grouped by area (PvP live and archive, Mythic+ live and archive, raiding, infrastructure).
+It is the single source of truth: the document interfaces stay in each module's
+`entities/`, but no module declares a collection name of its own. `ALL_COLLECTIONS` lists
+them all for diagnostics and census-style checks. A name is a wire contract, since data
+already sits under it, so renaming one is a migration rather than an edit. The standalone
+`scripts/*.mjs` cannot import TypeScript and repeat the names as literals.
+
 ### 5.1 `characters` — one document per character per season+region
 
 ```js
@@ -2316,6 +2324,10 @@ appropriate key list (`PROFILE_SUMMARY_KEYS` or `PROFILE_SPEC_KEYS` — they are
 `satisfies keyof CharacterProfile`, so a typo fails to compile), the repository's `$set`,
 and the sync DTO. Existing characters need `profileFetchedAt`/`specsFetchedAt` cleared to
 pick the field up before the TTL expires.
+
+**Adding a collection.** Declare its name in `src/database/collections.ts` and add it to
+`ALL_COLLECTIONS`; put the document interface in the module's `entities/`; create its indexes
+in the repository's `onModuleInit`.
 
 **Adding an index.** `characters` is near no cap, but remember the 64-index limit and prefer
 extending the wildcard-covered maps over adding per-key indexes.

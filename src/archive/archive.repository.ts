@@ -4,14 +4,16 @@ import type { AnyBulkWriteOperation } from 'mongodb';
 import type { Bracket, Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import {
-  ARCHIVE_BRACKETS_COLLECTION,
-  ARCHIVE_ENTRIES_COLLECTION,
-  ARCHIVE_SEASONS_COLLECTION,
   type ArchiveBracketDocument,
   type ArchiveEntryDocument,
   type ArchiveSeasonDocument,
   type ArchiveSeasonReward,
 } from './entities/archive.entity.js';
+import {
+  ARCHIVE_BRACKETS_COLLECTION,
+  ARCHIVE_ENTRIES_COLLECTION,
+  ARCHIVE_SEASONS_COLLECTION,
+} from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
