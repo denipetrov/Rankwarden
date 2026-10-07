@@ -1,7 +1,7 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { MongoBulkWriteError, type AnyBulkWriteOperation, type Filter } from 'mongodb';
 
-import { EXCLUDED_BRACKETS, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
+import { type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import { type CharacterDocument, type CharacterProfile } from './entities/character.entity.js';
 
@@ -30,11 +30,6 @@ export type ProfileSummaryFields = Pick<CharacterProfile, (typeof PROFILE_SUMMAR
 export type ProfileSpecFields = Pick<CharacterProfile, (typeof PROFILE_SPEC_KEYS)[number]>;
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 import { CHARACTERS_COLLECTION } from '../database/collections.js';
-import {
-  CHARACTERS_INDEXES,
-  LEGACY_CHARACTERS_INDEX_PATTERN,
-  SUPERSEDED_CHARACTERS_INDEXES,
-} from './leaderboard.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 const DUPLICATE_KEY = 11000;
@@ -70,62 +65,13 @@ export function enrichmentFilter(
 }
 
 @Injectable()
-export class CharacterRepository implements OnModuleInit {
+export class CharacterRepository {
   private readonly logger = new Logger(CharacterRepository.name);
 
   constructor(private readonly mongo: MongoService) {}
 
   private get collection() {
     return this.mongo.collection<CharacterDocument>(CHARACTERS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.collection.createIndexes(CHARACTERS_INDEXES);
-    await this.dropSupersededIndexes();
-    await this.backfillCharacterType();
-    await this.purgeExcludedBrackets();
-    this.logger.log(`Indexes ensured on "${CHARACTERS_COLLECTION}"`);
-  }
-
-  /**
-   * Clears indexes a later build replaced. Earlier builds created one per
-   * bracket, superseded by `bracket_ratings`; and the staleness indexes before
-   * they were led by `characterType`. Either kind would only cost write
-   * throughput. Runs after `createIndexes`, so enrichment is never left without
-   * an index to select by.
-   */
-  private async dropSupersededIndexes(): Promise<void> {
-    const superseded = (await this.collection.indexes())
-      .map((index) => index.name)
-      .filter(
-        (name): name is string =>
-          LEGACY_CHARACTERS_INDEX_PATTERN.test(name ?? '') ||
-          SUPERSEDED_CHARACTERS_INDEXES.has(name ?? ''),
-      );
-
-    for (const name of superseded) {
-      await this.collection.dropIndex(name);
-      this.logger.log(`Dropped superseded index "${name}"`);
-    }
-  }
-
-  /**
-   * Stamps a type on characters stored before the field existed. The ladder
-   * sweep was the only way a character could get into the collection then, so
-   * every one of them is `PvP`.
-   *
-   * This has to finish before any scheduler starts: enrichment selects by type,
-   * and an untyped character would simply never be picked up again.
-   */
-  private async backfillCharacterType(): Promise<void> {
-    const backfilled = await this.collection.updateMany(
-      { characterType: { $exists: false } },
-      { $set: { characterType: 'PvP' } },
-    );
-
-    if (backfilled.modifiedCount > 0) {
-      this.logger.log(`Backfilled characterType "PvP" on ${backfilled.modifiedCount} characters`);
-    }
   }
 
   /**
@@ -213,40 +159,6 @@ export class CharacterRepository implements OnModuleInit {
         (await this.writeChunk(replayed, false))
       );
     }
-  }
-
-  /**
-   * Clears aggregate brackets left by earlier builds. Their sweep jobs no longer
-   * run, so ordinary pruning would never reach them and the misleading ratings
-   * would sit in the data forever.
-   */
-  private async purgeExcludedBrackets(): Promise<void> {
-    const unset: Record<string, ''> = {};
-    for (const bracket of EXCLUDED_BRACKETS) {
-      unset[`brackets.${bracket}`] = '';
-      unset[`ratings.${bracket}`] = '';
-    }
-
-    // `best` was an earlier attempt at the all-specs board; the flat per-family
-    // collections replaced it, so clear it out too.
-    const purged = await this.collection.updateMany(
-      {
-        $or: [
-          ...EXCLUDED_BRACKETS.map((bracket) => ({ [`brackets.${bracket}`]: { $exists: true } })),
-          { best: { $exists: true } },
-        ],
-      },
-      { $unset: { ...unset, best: '' } },
-    );
-
-    if (purged.modifiedCount === 0) return;
-
-    // Anyone who ranked only in an aggregate bracket now ranks in nothing.
-    const removed = await this.collection.deleteMany({ brackets: {} });
-    this.logger.log(
-      `Purged aggregate brackets from ${purged.modifiedCount} characters ` +
-        `(${removed.deletedCount} left unranked and deleted)`,
-    );
   }
 
   /**

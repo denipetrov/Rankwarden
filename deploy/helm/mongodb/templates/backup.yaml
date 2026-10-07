@@ -1,0 +1,117 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: Etc/UTC
+  # A backup still running when the next is due is a problem to look at, not
+  # one to pile a second dump on top of.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      # Six hours is far beyond any healthy run; a hung one is killed and shows
+      # as failed instead of holding the schedule forever.
+      activeDeadlineSeconds: 21600
+      template:
+        metadata:
+          labels:
+            {{- include "mongodb.labels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+            rankwarden.io/mongodb-client: 'true'
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            {{- include "mongodb.jobSecurity" . | nindent 12 }}
+          # The dump runs first, to a scratch volume; the upload only starts
+          # once the archive is complete, so a failed dump uploads nothing.
+          initContainers:
+            - name: dump
+              image: {{ include "mongodb.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command:
+                - bash
+                - -ec
+                - >-
+                  mongodump --uri="${MONGODB_URI}" --gzip
+                  --archive="/backup/{{ .Values.database }}-$(date -u +%Y%m%dT%H%M%SZ).archive.gz"
+                  && ls -l /backup
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: MONGODB_URI
+                  valueFrom:
+                    secretKeyRef: { name: {{ .Values.backup.secret }}, key: MONGODB_URI }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 512Mi }
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          containers:
+            - name: upload
+              image: {{ .Values.backup.uploaderImage }}
+              # Uploads the new archive, then deletes the ones past retention.
+              # `rclone` reads its remote from the RCLONE_CONFIG_* variables, so
+              # no configuration file and no credentials on the command line.
+              command:
+                - sh
+                - -ec
+                - >-
+                  rclone copy /backup "store:${BUCKET}/${PREFIX}" &&
+                  rclone delete --min-age "{{ .Values.backup.retentionDays }}d" "store:${BUCKET}/${PREFIX}" &&
+                  rclone lsl "store:${BUCKET}/${PREFIX}"
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: BUCKET
+                  value: {{ .Values.backup.s3.bucket | quote }}
+                - name: PREFIX
+                  value: {{ .Values.backup.s3.prefix | quote }}
+                - name: RCLONE_CONFIG_STORE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_STORE_PROVIDER
+                  value: {{ .Values.backup.s3.provider | quote }}
+                - name: RCLONE_CONFIG_STORE_ENDPOINT
+                  value: {{ .Values.backup.s3.endpoint | quote }}
+                - name: RCLONE_CONFIG_STORE_REGION
+                  value: {{ .Values.backup.s3.region | quote }}
+                - name: RCLONE_CONFIG_STORE_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef: { name: {{ .Values.backup.secret }}, key: ACCESS_KEY_ID }
+                - name: RCLONE_CONFIG_STORE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef: { name: {{ .Values.backup.secret }}, key: SECRET_ACCESS_KEY }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              emptyDir:
+                sizeLimit: {{ .Values.backup.scratchSize }}
+            - name: tmp
+              emptyDir: {}
+{{- end }}

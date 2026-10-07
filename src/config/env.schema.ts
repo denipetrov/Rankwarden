@@ -253,6 +253,16 @@ export const envSchema = z.object({
   MONGODB_URI: z.string().min(1),
   MONGODB_DB: z.string().min(1).default('rankwarden'),
   /**
+   * What the service may do to the database structure at startup.
+   *
+   * `ensure` creates collections and indexes itself: right for development and
+   * for tests, which start from an empty database. `verify` only checks them and
+   * refuses to start when something is missing: right for production, where the
+   * structure belongs to the deploy step (`npm run db:schema`) and the service
+   * runs as a database user that cannot create an index even if it tried.
+   */
+  DB_SCHEMA_MODE: z.enum(['ensure', 'verify']).default('ensure'),
+  /**
    * How long one socket read may wait before the driver gives up on it. The
    * driver's own default is no limit, which lets a query on a half-open
    * connection hang for good — and a hung query holds its job "running", which

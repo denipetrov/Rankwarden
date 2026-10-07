@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { AnyBulkWriteOperation } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
@@ -11,10 +11,6 @@ import {
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
 } from '../database/collections.js';
-import {
-  MPLUS_ARCHIVE_CHARACTERS_INDEXES,
-  MPLUS_ARCHIVE_RUNS_INDEXES,
-} from './mplus-archive.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -28,9 +24,7 @@ const BULK_CHUNK_SIZE = 1_000;
  * claiming rows that are not there.
  */
 @Injectable()
-export class MplusArchiveRepository implements OnModuleInit {
-  private readonly logger = new Logger(MplusArchiveRepository.name);
-
+export class MplusArchiveRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get runs() {
@@ -40,16 +34,6 @@ export class MplusArchiveRepository implements OnModuleInit {
   private get characters() {
     return this.mongo.collection<MplusArchiveCharacterDocument>(
       MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
-    );
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.runs.createIndexes(MPLUS_ARCHIVE_RUNS_INDEXES);
-    await this.characters.createIndexes(MPLUS_ARCHIVE_CHARACTERS_INDEXES);
-
-    this.logger.log(
-      `Indexes ensured on "${MPLUS_ARCHIVE_RUNS_COLLECTION}" and ` +
-        `"${MPLUS_ARCHIVE_CHARACTERS_COLLECTION}"`,
     );
   }
 

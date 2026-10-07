@@ -61,6 +61,8 @@ exits at boot with a zod error naming the missing variables — that is by desig
 | `npm run build` / `start:prod`           | Compile to `dist/`, run compiled output                  |
 | `npm run db:up` / `db:down` / `db:reset` | Start / stop stack; `db:reset` drops the volume          |
 | `npm run db:check`                       | Connectivity plus a full ingestion report                |
+| `npm run db:schema`                      | Build collections and indexes; `-- --verify` only checks |
+| `npm run config:check`                   | Validate the environment with the service's own schema   |
 | `npm run db:shell`                       | `mongosh` inside the container                           |
 | `npm run db:migrate`                     | One-off legacy `leaderboard_entries` → `characters` fold |
 
@@ -784,9 +786,28 @@ already sits under it, so renaming one is a migration rather than an edit. The s
 Indexes follow the same idea one level down. Each folder that owns collections has a single
 `<folder>.indexes.ts` declaring every index on them, one constant per collection named after
 it (`ARCHIVE_ENTRIES_COLLECTION` → `ARCHIVE_ENTRIES_INDEXES`), with the comment saying which
-query each index serves. Repositories import the constant and pass it to `createIndexes`;
-none declares an index inline. Index names retired by a later build, which are dropped at
-boot, are declared in the same file, so it shows what was removed as well as what exists.
+query each index serves. Index names retired by a later build are declared in the same
+file, so it shows what was removed as well as what exists.
+
+**No repository creates an index.** `src/database/schema/schema.definition.ts` pairs every
+collection with its indexes (`DATABASE_SCHEMA`), and `SchemaService` does two things with
+that list, kept apart because in production two different actors perform them:
+
+- `apply()` creates missing collections, builds indexes, drops retired ones (always after
+  their replacements exist), and runs the one-off data repairs in `data-fixes.ts`.
+  Idempotent. This is `npm run db:schema`, the deploy step.
+- `verify()` reads only, and returns every difference between the database and the
+  declaration: a missing collection or index, an index of the right name over the wrong
+  fields or without its uniqueness, a retired index still present. An index nobody
+  declared is left alone, so an operator can add one without blocking a start.
+
+`DB_SCHEMA_MODE` decides what startup does (`SchemaBootstrap`, in `onModuleInit`, so before
+any scheduler). `ensure`, the default, calls `apply()`: development and every test start
+from an empty database. `verify` calls `verify()` and **refuses to start** when anything
+is reported: production, where the service runs as a database user with no right to
+create or drop an index, and a restart must never alter the structure. Refusing matters as
+much as not building: a service without its unique indexes does not fail, it writes
+duplicates and reports success.
 
 ### 5.1 `characters` — one document per character per season+region
 
@@ -826,7 +847,7 @@ Indexes: `character_identity` (unique `seasonId+region+characterId`), `character
 from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
 (§4.2). The sweep sets it with `$setOnInsert`, so a document another source created is never
 reclassified into the enrichment queue. Documents from before the field existed are
-backfilled to `PvP` at boot, in `onModuleInit` and so before any scheduler starts. The sweep
+backfilled to `PvP` by the schema step (`data-fixes.ts`), before any scheduler starts. The sweep
 was the only writer then. The sync endpoint never touches the type.
 
 > **In practice `characters` holds only `PvP` today.** M+ characters live in their own
@@ -864,7 +885,8 @@ prefix costs nothing.
 > never gets a timestamp, and an absent field sorts ahead of every date. Keyed on the
 > timestamp alone, every M+ character would sit at the front of the index order, and each
 > enrichment run would read all of them before reaching one it can use. The superseded
-> `specs_staleness` / `profile_staleness` are dropped at boot, after their replacements exist.
+> `specs_staleness` / `profile_staleness` are dropped by the schema step, after their
+> replacements exist.
 
 > **Why the wildcard.** MongoDB caps a collection at 64 indexes; one per bracket would need
 > 85+. Mirroring only `rating` (the sole searchable field) into a flat map lets a single
@@ -1292,7 +1314,7 @@ old document is replaced rather than kept beside the new one. An archived season
 again **once** by the backfill, which looks for archived seasons with no per-dungeon document:
 the one time an archived season's figures are recomputed. The old unique index
 `mplus_representation_identity` (`season+region`) would reject every per-dungeon document, so
-`onModuleInit` drops it before building the new one.
+the schema step drops it (`mplus-representation.indexes.ts`).
 
 Indexes: `mplus_representation_key` (unique `season+region+dungeonId`, also the front end's
 filter), `mplus_representation_by_region`.
@@ -1822,6 +1844,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep                         |
 | `MONGODB_URI`                         | —                                   | **Required**                                               |
 | `MONGODB_DB`                          | `rankwarden`                        |                                                            |
+| `DB_SCHEMA_MODE`                      | `ensure`                            | `ensure` builds the structure at startup; `verify` checks it and refuses to start (§5) |
 | `MONGODB_SOCKET_TIMEOUT_MS`           | `300000`                            | Longest wait on one socket read; the driver's default is none |
 | `INGEST_INTERVAL_MS`                  | `3600000`                           |                                                            |
 | `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                            |
@@ -2316,7 +2339,7 @@ new attribution side by side.
 
 **Adding a bracket family.** `RATING_FAMILIES` in `blizzard.constants.ts` drives collection
 names, the sweep's mirroring, the sync endpoint's fan-out, and the representation job. Add
-the family and the collection appears with its indexes on next boot. `specSplitFamilyOf`
+the family and the collection appears with its indexes on the next schema step. `specSplitFamilyOf`
 decides whether a family is spec-split (spec from the bracket name) or core (spec from the
 profile).
 
@@ -2333,8 +2356,11 @@ and the sync DTO. Existing characters need `profileFetchedAt`/`specsFetchedAt` c
 pick the field up before the TTL expires.
 
 **Adding a collection.** Declare its name in `src/database/collections.ts` and add it to
-`ALL_COLLECTIONS`; put the document interface in the module's `entities/`; create its indexes
-in the repository's `onModuleInit`.
+`ALL_COLLECTIONS`; put the document interface in the module's `entities/`; declare its indexes
+in the folder's `<folder>.indexes.ts`; and pair the two in `DATABASE_SCHEMA`
+(`src/database/schema/schema.definition.ts`). A unit test fails until the last step is done:
+a collection left out would still be created in production, by its first insert, with no
+indexes at all.
 
 **Adding an index.** Declare it in the folder's `<folder>.indexes.ts`, with a comment naming the
 query it serves; never inline in a repository. Replacing one means adding the old name to the
@@ -2366,7 +2392,33 @@ afterwards.
 
 ---
 
-## 12. Known limitations
+## 12. Deployment
+
+The decisions and their reasons are in [DEPLOYMENT-PLAN.md](DEPLOYMENT-PLAN.md); the procedure
+is in [deploy/README.md](deploy/README.md). What an agent changing this service has to keep
+true:
+
+- **One image, three commands.** `Dockerfile` builds it on Node 24, non-root. It runs the
+  service (`dist/main.js`), the schema step (`dist/schema.main.js`) and the configuration
+  check (`dist/config-check.main.js`). The private `@denipetrov/blizz-auth` token is a
+  build secret and reaches no layer.
+- **Exactly one instance.** The Deployment is hard-coded to one replica with the `Recreate`
+  strategy, because the schedulers, the coordinator and the Blizzard budget are in-process.
+  Anything that would let two run together — a rolling update, an autoscaler — is a bug.
+- **Structure belongs to the deploy.** A schema Job runs before the service on every
+  release; the service starts with `DB_SCHEMA_MODE=verify` (§5). A change that needs a new
+  index needs nothing extra: declare it, and the next release builds it.
+- **Production settings live in `deploy/helm/rankwarden/env/production.env`.** A new
+  variable in `env.schema.ts` must be added there too; `production-env.spec.ts` fails until
+  it is. The four credentials never go in that file.
+- **No public entry.** The service is `ClusterIP` only, and a NetworkPolicy admits just the
+  `backend` namespace, because its endpoints have no authentication.
+- **CI runs with no `.env`.** A test that passes only because a developer's `.env` supplied a
+  value fails there; set what a test needs in the test.
+
+---
+
+## 13. Known limitations
 
 - **No authentication** on `POST /characters/sync` or on the health endpoints. The
   `/admin/*` triggers are unauthenticated too, which is why they 404 outside development.
@@ -2385,8 +2437,10 @@ afterwards.
 - **Enrichment backlog.** At default batch size a full pass over ~138k characters takes
   roughly two days, and the archive yields to enrichment, so a backfill running alongside it
   progresses only in the gaps.
-- **The season purge is irreversible and fires at boot on a first deploy** (§4.8). Ship
-  behind `SEASON_PURGE_DRY_RUN=true` and read the logged plan before flipping it.
+- **The season purge is irreversible and fires at boot on a first deploy** (§4.8). Production
+  runs with `SEASON_PURGE_DRY_RUN=false` (`production.env`). That is harmless on a database
+  that starts empty, which has no finished season to retire. A first deploy over **restored**
+  data should override it to `true` once and read the logged plan (`deploy/README.md`).
 - **Cross-region boards need four queries merged**, or a `seasonId + rating` index; the
   current index is prefixed by region.
 - **`mplus_characters.mythicScore` is not Raider.io's mythic+ score** (§5.5). It sums only

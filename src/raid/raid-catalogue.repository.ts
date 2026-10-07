@@ -1,9 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import { type RaidCatalogueDocument, type RaidDocument } from './entities/raid.entity.js';
 import { RAIDS_COLLECTION } from '../database/collections.js';
-import { RAIDS_INDEXES } from './raid.indexes.js';
 
 /** The catalogue never reads a raid's boards: they are the bulk of the document. */
 const WITHOUT_BOARDS = { projection: { guilds: 0, guildsRefusedAt: 0 } } as const;
@@ -13,19 +12,11 @@ export type CataloguedRaid = Omit<RaidCatalogueDocument, 'unlistedAt' | 'guildsU
 
 /** Storage for the raid catalogue: one document per raid. */
 @Injectable()
-export class RaidCatalogueRepository implements OnModuleInit {
-  private readonly logger = new Logger(RaidCatalogueRepository.name);
-
+export class RaidCatalogueRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get raids() {
     return this.mongo.collection<RaidDocument>(RAIDS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.raids.createIndexes(RAIDS_INDEXES);
-
-    this.logger.log(`Indexes ensured on "${RAIDS_COLLECTION}"`);
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
@@ -9,7 +9,6 @@ import {
   type MplusSeasonDocument,
 } from './entities/mplus-season.entity.js';
 import { MPLUS_DUNGEONS_COLLECTION, MPLUS_SEASONS_COLLECTION } from '../database/collections.js';
-import { MPLUS_DUNGEONS_INDEXES, MPLUS_SEASONS_INDEXES } from './mplus-season.indexes.js';
 
 /**
  * The season and dungeon catalogue.
@@ -20,9 +19,7 @@ import { MPLUS_DUNGEONS_INDEXES, MPLUS_SEASONS_INDEXES } from './mplus-season.in
  * lives on the season document.
  */
 @Injectable()
-export class MplusCatalogueRepository implements OnModuleInit {
-  private readonly logger = new Logger(MplusCatalogueRepository.name);
-
+export class MplusCatalogueRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get seasons() {
@@ -31,15 +28,6 @@ export class MplusCatalogueRepository implements OnModuleInit {
 
   private get dungeons() {
     return this.mongo.collection<MplusDungeonDocument>(MPLUS_DUNGEONS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.seasons.createIndexes(MPLUS_SEASONS_INDEXES);
-    await this.dungeons.createIndexes(MPLUS_DUNGEONS_INDEXES);
-
-    this.logger.log(
-      `Indexes ensured on "${MPLUS_SEASONS_COLLECTION}" and "${MPLUS_DUNGEONS_COLLECTION}"`,
-    );
   }
 
   /**

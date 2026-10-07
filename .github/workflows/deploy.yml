@@ -1,0 +1,64 @@
+name: Deploy
+
+# Deploys a published image to the DigitalOcean cluster. Manual only.
+#
+# Needs, under the repository's `production` environment:
+#   secrets    DIGITALOCEAN_ACCESS_TOKEN, BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET,
+#              RAIDER_IO_API_KEY, GHCR_USERNAME, GHCR_TOKEN (read:packages),
+#              BACKUP_ACCESS_KEY_ID, BACKUP_SECRET_ACCESS_KEY (Spaces key)
+#   variables  DO_CLUSTER_NAME
+#
+# Give the `production` environment a required reviewer and every run of this
+# workflow waits for an approval before it touches the cluster.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag to deploy, e.g. v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancelled part-way through.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.image_tag }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      # The charts and scripts of the version being deployed, not of whatever
+      # branch the button was pressed on.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.image_tag }}
+
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - uses: azure/setup-helm@v4
+
+      - name: Connect to the cluster
+        run: doctl kubernetes cluster kubeconfig save "${{ vars.DO_CLUSTER_NAME }}"
+
+      # Idempotent: database passwords already in the cluster are kept.
+      - name: Secrets
+        run: bash deploy/scripts/create-secrets.sh
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          RAIDER_IO_API_KEY: ${{ secrets.RAIDER_IO_API_KEY }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          BACKUP_ACCESS_KEY_ID: ${{ secrets.BACKUP_ACCESS_KEY_ID }}
+          BACKUP_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_SECRET_ACCESS_KEY }}
+
+      - name: Deploy
+        run: bash deploy/scripts/deploy.sh "${{ inputs.image_tag }}"

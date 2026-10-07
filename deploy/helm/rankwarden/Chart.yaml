@@ -1,0 +1,8 @@
+apiVersion: v2
+name: rankwarden
+description: >-
+  The Rankwarden ingestion service: exactly one instance, a schema step that
+  runs before it on every release, and no public entry point.
+type: application
+version: 0.1.0
+appVersion: '0.1.0'

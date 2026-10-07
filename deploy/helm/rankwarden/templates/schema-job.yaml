@@ -1,0 +1,70 @@
+{{- $env := include "rankwarden.env" . | fromYaml }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-schema
+  labels:
+    {{- include "rankwarden.labels" . | nindent 4 }}
+  annotations:
+    # Before the service on first install, and before it on every upgrade. If
+    # this fails the release stops there, and on an upgrade the version already
+    # running stays up, untouched.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  # Every step is safe to repeat, so a transient failure is simply retried.
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.schemaJob.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        {{- include "rankwarden.labels" . | nindent 8 }}
+        app.kubernetes.io/component: schema
+        rankwarden.io/mongodb-client: 'true'
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "rankwarden.podSecurity" . | nindent 8 }}
+      containers:
+        - name: schema
+          image: {{ include "rankwarden.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [node, dist/schema.main.js]
+          # Configuration is written out here instead of read from the
+          # ConfigMap: a pre-install hook runs before the chart's own resources
+          # exist, so on a first install there is no ConfigMap yet to read.
+          env:
+            {{- range $key, $value := $env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # The schema user, in place of the service's. This is the one pod
+            # allowed to create and drop collections and indexes.
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.schema }}
+                  key: MONGODB_URI
+          # The upstream credentials: the command never calls an upstream, but
+          # it validates the same configuration the service does, and that
+          # requires them to be present. `MONGODB_URI` above takes precedence
+          # over the one in this Secret.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.app }}
+          securityContext:
+            {{- include "rankwarden.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.schemaJob.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

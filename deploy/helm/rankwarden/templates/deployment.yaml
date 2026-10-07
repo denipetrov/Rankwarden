@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "rankwarden.labels" . | nindent 4 }}
+spec:
+  # Exactly one, and not configurable: see the note at the top of values.yaml.
+  # Never attach a HorizontalPodAutoscaler to this Deployment.
+  replicas: 1
+  # `Recreate` stops the old pod before starting the new one. The default,
+  # `RollingUpdate`, starts the new one first, so two instances would run side
+  # by side on every deploy — both sweeping, both spending the Blizzard quota.
+  # The cost is a few seconds with no instance, which nothing public depends on.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rankwarden.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rankwarden.labels" . | nindent 8 }}
+        app.kubernetes.io/component: service
+        rankwarden.io/mongodb-client: 'true'
+      annotations:
+        # Environment is read once, at start: a changed setting has to restart
+        # the pod to take effect, and this makes a config-only release do so.
+        checksum/config: {{ include "rankwarden.env" . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "rankwarden.podSecurity" . | nindent 8 }}
+      containers:
+        - name: rankwarden
+          image: {{ include "rankwarden.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+            - secretRef:
+                name: {{ .Values.secrets.app }}
+          env:
+            - name: NODE_OPTIONS
+              value: {{ .Values.nodeOptions | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+          # Liveness and startup use `/health`, which touches no dependency: a
+          # slow database can never get a healthy process killed. Readiness uses
+          # `/health/ready`, which answers 503 only when MongoDB is unreachable;
+          # an upstream outage reports `degraded` with 200, because restarting
+          # the service would not fix Blizzard.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            {{- include "rankwarden.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "rankwarden.labels" . | nindent 4 }}
+spec:
+  # Cluster-internal only. There is no Ingress and no LoadBalancer for this
+  # service anywhere in the chart: the backend reaches it at
+  #   http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local:3000
+  type: ClusterIP
+  selector:
+    {{- include "rankwarden.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

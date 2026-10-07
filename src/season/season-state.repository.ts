@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import {
@@ -6,13 +6,10 @@ import {
   type SeasonTransitionDocument,
 } from './entities/season-state.entity.js';
 import { SEASON_STATE_COLLECTION, SEASON_TRANSITIONS_COLLECTION } from '../database/collections.js';
-import { SEASON_STATE_INDEXES, SEASON_TRANSITIONS_INDEXES } from './season.indexes.js';
 
 /** Owns the two small collections that make season transitions durable. */
 @Injectable()
-export class SeasonStateRepository implements OnModuleInit {
-  private readonly logger = new Logger(SeasonStateRepository.name);
-
+export class SeasonStateRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get state() {
@@ -21,13 +18,6 @@ export class SeasonStateRepository implements OnModuleInit {
 
   private get transitions() {
     return this.mongo.collection<SeasonTransitionDocument>(SEASON_TRANSITIONS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.state.createIndexes(SEASON_STATE_INDEXES);
-    await this.transitions.createIndexes(SEASON_TRANSITIONS_INDEXES);
-
-    this.logger.log(`Indexes ensured on "${SEASON_STATE_COLLECTION}"`);
   }
 
   async loadAll(): Promise<SeasonStateDocument[]> {

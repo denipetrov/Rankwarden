@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../config/env.schema.js';
@@ -18,10 +18,6 @@ import {
   MPLUS_RUNS_COLLECTION,
   MPLUS_SPEC_REPRESENTATION_COLLECTION,
 } from '../database/collections.js';
-import {
-  LEGACY_MPLUS_SPEC_REPRESENTATION_INDEX,
-  MPLUS_SPEC_REPRESENTATION_INDEXES,
-} from './mplus-representation.indexes.js';
 
 /** Runs to count: a collection and the rows of it that belong to this computation. */
 interface RunSource {
@@ -51,7 +47,7 @@ interface RunSource {
  * region over every dungeon, every region together — is summed from those.
  */
 @Injectable()
-export class MplusSpecRepresentationService implements OnModuleInit {
+export class MplusSpecRepresentationService {
   private readonly logger = new Logger(MplusSpecRepresentationService.name);
   private readonly regions: RaiderIoRegion[];
 
@@ -67,17 +63,6 @@ export class MplusSpecRepresentationService implements OnModuleInit {
     return this.mongo.collection<MplusSpecRepresentationDocument>(
       MPLUS_SPEC_REPRESENTATION_COLLECTION,
     );
-  }
-
-  async onModuleInit(): Promise<void> {
-    // The old identity allowed one document per season and region, so every
-    // per-dungeon document would collide with it. Dropped before the new one is
-    // built; absent on a fresh database, which is not an error.
-    await this.collection.dropIndex(LEGACY_MPLUS_SPEC_REPRESENTATION_INDEX).catch(() => undefined);
-
-    await this.collection.createIndexes(MPLUS_SPEC_REPRESENTATION_INDEXES);
-
-    this.logger.log(`Indexes ensured on "${MPLUS_SPEC_REPRESENTATION_COLLECTION}"`);
   }
 
   /**

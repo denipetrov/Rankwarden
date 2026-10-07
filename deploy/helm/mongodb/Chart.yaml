@@ -1,0 +1,10 @@
+apiVersion: v2
+name: mongodb
+description: >-
+  A single self-hosted MongoDB for Rankwarden: one StatefulSet on one persistent
+  volume, its database users, and a daily off-cluster backup.
+type: application
+version: 0.1.0
+# The MongoDB server version. Changing it is a database upgrade: read the
+# release notes, and take a backup first.
+appVersion: '8.3.8'

@@ -26,6 +26,8 @@
     "db:reset": "docker compose down -v",
     "db:logs": "docker compose logs -f mongo",
     "db:shell": "docker compose exec mongo mongosh rankwarden",
+    "db:schema": "node --env-file-if-exists=.env dist/schema.main.js",
+    "config:check": "node --env-file-if-exists=.env dist/config-check.main.js",
     "db:check": "node --env-file-if-exists=.env scripts/db-check.mjs",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate-to-characters.mjs"
   },

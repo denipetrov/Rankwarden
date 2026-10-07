@@ -1,0 +1,26 @@
+# Keep the build context to what the image is built from. Above all: no local
+# environment files and no git history ever reach the Docker daemon.
+.git
+.github
+.vscode
+.idea
+
+node_modules
+dist
+coverage
+.vitest
+*.tsbuildinfo
+*.log
+
+.env
+.env.*
+!.env.example
+
+test
+scripts
+deploy
+*.md
+*.mjs
+docker-compose.yml
+crosscheck-plan.json
+vitest.config.ts

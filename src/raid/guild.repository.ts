@@ -1,9 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import { type GuildDocument } from './entities/guild.entity.js';
 import { GUILDS_COLLECTION } from '../database/collections.js';
-import { GUILDS_INDEXES } from './raid.indexes.js';
 
 const DUPLICATE_KEY = 11000;
 
@@ -21,19 +20,11 @@ function unknown(guild: GuildDocument): GuildFields {
 
 /** Storage for guilds: one document per guild. */
 @Injectable()
-export class GuildRepository implements OnModuleInit {
-  private readonly logger = new Logger(GuildRepository.name);
-
+export class GuildRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get guilds() {
     return this.mongo.collection<GuildDocument>(GUILDS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.guilds.createIndexes(GUILDS_INDEXES);
-
-    this.logger.log(`Indexes ensured on "${GUILDS_COLLECTION}"`);
   }
 
   /**

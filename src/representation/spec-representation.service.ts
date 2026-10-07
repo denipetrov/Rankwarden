@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
@@ -18,7 +18,6 @@ import {
   type SpecShare,
 } from './entities/spec-representation.entity.js';
 import { CHARACTERS_COLLECTION, SPEC_REPRESENTATION_COLLECTION } from '../database/collections.js';
-import { SPEC_REPRESENTATION_INDEXES } from './representation.indexes.js';
 
 interface HeroTalentRef {
   id: number;
@@ -57,7 +56,7 @@ export interface SnapshotSummary {
  * totals and the hero talent totals can never disagree.
  */
 @Injectable()
-export class SpecRepresentationService implements OnModuleInit {
+export class SpecRepresentationService {
   private readonly logger = new Logger(SpecRepresentationService.name);
   private readonly regions: Region[];
   private readonly minRatings: number[];
@@ -77,11 +76,6 @@ export class SpecRepresentationService implements OnModuleInit {
 
   private get characters() {
     return this.mongo.collection(CHARACTERS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.collection.createIndexes(SPEC_REPRESENTATION_INDEXES);
-    this.logger.log(`Indexes ensured on "${SPEC_REPRESENTATION_COLLECTION}"`);
   }
 
   /**

@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-users
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+data:
+  users.js: |
+    // Creates or updates the database users. Run on every release, so a new
+    // user, a changed role or a rotated password takes effect by redeploying.
+    // Passwords come from the environment and are never printed.
+    const database = process.env.MONGODB_DATABASE;
+    const admin = db.getSiblingDB('admin');
+
+    // The service's own role. Deliberately not the built-in `readWrite`, which
+    // also allows creating and dropping indexes and dropping collections: the
+    // structure belongs to the schema step, and the service must not be able to
+    // change it even by mistake. (MongoDB lets anything that may insert create
+    // a collection by doing so; that cannot be withheld separately.)
+    const appPrivileges = [
+      {
+        resource: { db: database, collection: '' },
+        actions: [
+          'find', 'insert', 'update', 'remove',
+          'listIndexes', 'listCollections', 'collStats', 'dbStats', 'killCursors',
+        ],
+      },
+    ];
+
+    if (admin.getRole('rankwardenApp')) {
+      admin.updateRole('rankwardenApp', { privileges: appPrivileges, roles: [] });
+    } else {
+      admin.createRole({ role: 'rankwardenApp', privileges: appPrivileges, roles: [] });
+    }
+
+    const users = [
+      {
+        name: 'rankwarden_schema',
+        password: process.env.SCHEMA_PASSWORD,
+        // Creates collections and indexes, and applies the one-off data repairs.
+        roles: [{ role: 'readWrite', db: database }, { role: 'dbAdmin', db: database }],
+      },
+      {
+        name: 'rankwarden_app',
+        password: process.env.APP_PASSWORD,
+        roles: [{ role: 'rankwardenApp', db: 'admin' }],
+      },
+      {
+        name: 'rankwarden_backup',
+        password: process.env.BACKUP_PASSWORD,
+        roles: [{ role: 'read', db: database }],
+      },
+      {
+        name: 'rankwarden_backend',
+        password: process.env.BACKEND_PASSWORD,
+        roles: [{ role: 'read', db: database }],
+      },
+    ];
+
+    for (const { name, password, roles } of users) {
+      if (!password) {
+        print(`skipped ${name}: no password in the secret`);
+        continue;
+      }
+
+      if (admin.getUser(name)) {
+        admin.updateUser(name, { pwd: password, roles });
+        print(`updated ${name}`);
+      } else {
+        admin.createUser({ user: name, pwd: password, roles });
+        print(`created ${name}`);
+      }
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-users
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+  annotations:
+    # After the StatefulSet is up, on first install and on every upgrade.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "mongodb.labels" . | nindent 8 }}
+        app.kubernetes.io/component: users
+        rankwarden.io/mongodb-client: 'true'
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "mongodb.jobSecurity" . | nindent 8 }}
+      containers:
+        - name: users
+          image: {{ include "mongodb.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The password reaches mongosh through the environment, not the
+          # command line, where it would show in the process list.
+          command:
+            - bash
+            - -ec
+            - >-
+              mongosh --quiet
+              "mongodb://root:${ROOT_PASSWORD}@{{ include "mongodb.host" . }}/admin"
+              /scripts/users.js
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MONGODB_DATABASE
+              value: {{ .Values.database | quote }}
+            - name: ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.authSecret }}, key: root-password }
+            - name: SCHEMA_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.authSecret }}, key: schema-password }
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.authSecret }}, key: app-password }
+            - name: BACKUP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.authSecret }}, key: backup-password, optional: true }
+            - name: BACKEND_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.authSecret }}, key: backend-password, optional: true }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ .Release.Name }}-users
+        - name: tmp
+          emptyDir: {}

@@ -5,7 +5,6 @@ import { MongoService } from '../src/database/mongo.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { type MplusSpecRepresentationDocument } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
-import { MplusSpecRepresentationService } from '../src/mplus-representation/mplus-spec-representation.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
@@ -13,6 +12,7 @@ import {
   MPLUS_SEASONS_COLLECTION,
   MPLUS_SPEC_REPRESENTATION_COLLECTION,
 } from '../src/database/collections.js';
+import { SchemaService } from '../src/database/schema/schema.service.js';
 
 /**
  * Mythic+ spec representation: live for the current season, recomputed after
@@ -219,14 +219,14 @@ describe('Mythic+ spec representation', () => {
       expect(await names()).toContain('mplus_representation_key');
       expect(await names()).not.toContain('mplus_representation_identity');
 
-      // A database from before the split still carries it; the next boot drops it.
+      // A database from before the split still carries it; the schema step drops it.
       const snapshot = await collection.find({}).toArray();
       await collection.deleteMany({});
       await collection.createIndex(
         { season: 1, region: 1 },
         { name: 'mplus_representation_identity', unique: true },
       );
-      await app.app.get(MplusSpecRepresentationService).onModuleInit();
+      await app.app.get(SchemaService).apply();
 
       expect(await names()).not.toContain('mplus_representation_identity');
       await collection.insertMany(snapshot);

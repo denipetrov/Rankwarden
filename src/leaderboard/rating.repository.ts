@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { AnyBulkWriteOperation, Collection } from 'mongodb';
 
 import {
@@ -12,7 +12,6 @@ import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 import { type RatingDocument } from './entities/rating.entity.js';
 import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../database/collections.js';
-import { RATING_INDEXES } from './leaderboard.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -25,21 +24,13 @@ const BULK_CHUNK_SIZE = 1_000;
  * with display data joined from `characters` afterwards.
  */
 @Injectable()
-export class RatingRepository implements OnModuleInit {
+export class RatingRepository {
   private readonly logger = new Logger(RatingRepository.name);
 
   constructor(private readonly mongo: MongoService) {}
 
   private collection(family: RatingFamily): Collection<RatingDocument> {
     return this.mongo.collection<RatingDocument>(RATING_COLLECTIONS[family]);
-  }
-
-  async onModuleInit(): Promise<void> {
-    for (const family of RATING_FAMILIES) {
-      await this.collection(family).createIndexes(RATING_INDEXES);
-    }
-
-    this.logger.log(`Indexes ensured on ${RATING_FAMILIES.length} ratings collections`);
   }
 
   /** Mirrors one bracket's leaderboard into its family's collection. */

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { AnyBulkWriteOperation } from 'mongodb';
 
 import type { Bracket, Region } from '../blizzard/blizzard.constants.js';
@@ -14,18 +14,11 @@ import {
   ARCHIVE_ENTRIES_COLLECTION,
   ARCHIVE_SEASONS_COLLECTION,
 } from '../database/collections.js';
-import {
-  ARCHIVE_BRACKETS_INDEXES,
-  ARCHIVE_ENTRIES_INDEXES,
-  ARCHIVE_SEASONS_INDEXES,
-} from './archive.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
 @Injectable()
-export class ArchiveRepository implements OnModuleInit {
-  private readonly logger = new Logger(ArchiveRepository.name);
-
+export class ArchiveRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get entries() {
@@ -38,16 +31,6 @@ export class ArchiveRepository implements OnModuleInit {
 
   private get brackets() {
     return this.mongo.collection<ArchiveBracketDocument>(ARCHIVE_BRACKETS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.entries.createIndexes(ARCHIVE_ENTRIES_INDEXES);
-
-    await this.seasons.createIndexes(ARCHIVE_SEASONS_INDEXES);
-
-    await this.brackets.createIndexes(ARCHIVE_BRACKETS_INDEXES);
-
-    this.logger.log(`Indexes ensured on "${ARCHIVE_ENTRIES_COLLECTION}"`);
   }
 
   /**

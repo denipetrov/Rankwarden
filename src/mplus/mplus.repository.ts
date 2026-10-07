@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { AnyBulkWriteOperation } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
@@ -16,11 +16,6 @@ import {
   MPLUS_CHARACTERS_COLLECTION,
   MPLUS_RUNS_COLLECTION,
 } from '../database/collections.js';
-import {
-  MPLUS_AFFIXES_INDEXES,
-  MPLUS_CHARACTERS_INDEXES,
-  MPLUS_RUNS_INDEXES,
-} from './mplus.indexes.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -33,7 +28,7 @@ const BULK_CHUNK_SIZE = 1_000;
  * the ordering in the service, where it is easier to get wrong.
  */
 @Injectable()
-export class MplusRepository implements OnModuleInit {
+export class MplusRepository {
   private readonly logger = new Logger(MplusRepository.name);
 
   constructor(private readonly mongo: MongoService) {}
@@ -48,17 +43,6 @@ export class MplusRepository implements OnModuleInit {
 
   private get affixes() {
     return this.mongo.collection<MplusAffixDocument>(MPLUS_AFFIXES_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.runs.createIndexes(MPLUS_RUNS_INDEXES);
-    await this.characters.createIndexes(MPLUS_CHARACTERS_INDEXES);
-    await this.affixes.createIndexes(MPLUS_AFFIXES_INDEXES);
-
-    this.logger.log(
-      `Indexes ensured on "${MPLUS_RUNS_COLLECTION}", "${MPLUS_CHARACTERS_COLLECTION}" ` +
-        `and "${MPLUS_AFFIXES_COLLECTION}"`,
-    );
   }
 
   /** Upserts the affixes seen in a batch of runs. Cheap: there are three a week. */
