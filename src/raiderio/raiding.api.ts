@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
+import type { Env } from '../config/env.schema.js';
 import { RaiderIoHttpService } from './http/raiderio-http.service.js';
 import {
   RAID_RANKING_PAGE_SIZE,
@@ -9,10 +11,23 @@ import {
 import { raidRankingsSchema, type RaidRanking } from './schemas/raid-rankings.schema.js';
 import { raidStaticDataSchema, type RaidStaticData } from './schemas/raid-static-data.schema.js';
 
-/** Typed access to the raiding slice of the Raider.io API. */
+/**
+ * Typed access to the raiding slice of the Raider.io API.
+ *
+ * Endpoint paths come from configuration (`RAIDERIO_PATH_*`), not from here.
+ */
 @Injectable()
 export class RaidingApi {
-  constructor(private readonly http: RaiderIoHttpService) {}
+  private readonly staticDataPath: string;
+  private readonly rankingsPath: string;
+
+  constructor(
+    private readonly http: RaiderIoHttpService,
+    config: ConfigService<Env, true>,
+  ) {
+    this.staticDataPath = config.get('RAIDERIO_PATH_RAID_STATIC_DATA', { infer: true });
+    this.rankingsPath = config.get('RAIDERIO_PATH_RAID_RANKINGS', { infer: true });
+  }
 
   /**
    * One expansion's raids, each with its encounters.
@@ -24,7 +39,7 @@ export class RaidingApi {
    * so a caller walking expansions reads that 400 as the end of the list.
    */
   async getStaticData(expansionId: number): Promise<RaidStaticData> {
-    const payload = await this.http.get('raiding/static-data', {
+    const payload = await this.http.get(this.staticDataPath, {
       searchParams: { expansion_id: expansionId },
     });
 
@@ -50,7 +65,7 @@ export class RaidingApi {
     page: number,
     timeoutMs?: number,
   ): Promise<RaidRanking[]> {
-    const payload = await this.http.get('raiding/raid-rankings', {
+    const payload = await this.http.get(this.rankingsPath, {
       region,
       timeoutMs,
       healthProvider: 'raiderioRankings',

@@ -1554,6 +1554,17 @@ Non-2xx becomes `BlizzardApiError` with `statusCode` and `isNotFound`.
 | `/profile/wow/character/{realm}/{name}`                 | profile   | race, class, realm, title, guild             |
 | `/profile/wow/character/{realm}/{name}/specializations` | profile   | spec, hero tree, loadouts                    |
 
+**No address is written in the code.** The host is `BLIZZARD_API_HOST_TEMPLATE` and each
+path above is a `BLIZZARD_PATH_*` variable (§8); Raider.io has `RAIDERIO_API_BASE_URL` and
+`RAIDERIO_PATH_*` the same way. `PvpApi`, `ProfileApi`, `MythicPlusApi` and `RaidingApi` read
+them once at construction and fill the `{name}` placeholders per request with `fillPath`
+(`src/common/utils/path-template.ts`). The defaults are the paths the upstreams serve today,
+so a renamed path is corrected in `production.env` and a deploy, with no new image. A new
+endpoint gets a variable declared with `pathTemplate(default, placeholders)` in
+`env.schema.ts`, never a string literal in an API class. Validation refuses a path that
+drops a placeholder, names one the service does not fill, or is more than a path. Only the
+address is configurable: a change in what an endpoint returns still needs its schema changed.
+
 **Quota: 100 requests/second, 36,000/hour.** Everything else follows from that. The hour is
 governed by the shared budget (§4.0); the second by each job's own `RateLimiter`.
 
@@ -1837,7 +1848,15 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)                  |
 | `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above                |
 | `BLIZZARD_LOCALE`                     | `en_US`                             |                                                            |
-| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam                  |
+| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; also the L3 test seam             |
+| `BLIZZARD_PATH_PVP_SEASON_INDEX` | `data/wow/pvp-season/index` | Endpoint paths under the host: see §6 |
+| `BLIZZARD_PATH_PVP_SEASON` | `data/wow/pvp-season/{seasonId}` |  |
+| `BLIZZARD_PATH_PVP_LEADERBOARD_INDEX` | `data/wow/pvp-season/{seasonId}/pvp-leaderboard/index` |  |
+| `BLIZZARD_PATH_PVP_LEADERBOARD` | `data/wow/pvp-season/{seasonId}/pvp-leaderboard/{bracket}` |  |
+| `BLIZZARD_PATH_PVP_REWARD_INDEX` | `data/wow/pvp-season/{seasonId}/pvp-reward/index` |  |
+| `BLIZZARD_PATH_PLAYABLE_SPECIALIZATION` | `data/wow/playable-specialization/{specId}` |  |
+| `BLIZZARD_PATH_CHARACTER_PROFILE` | `profile/wow/character/{realmSlug}/{characterName}` |  |
+| `BLIZZARD_PATH_CHARACTER_SPECIALIZATIONS` | `profile/wow/character/{realmSlug}/{characterName}/specializations` |  |
 | `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                            |
 | `BLIZZARD_RETRY_LIMIT`                | `3`                                 | Ladder and season endpoints                                |
 | `PROFILE_RETRY_LIMIT`                 | `1`                                 | Per-character endpoints; lower on purpose                  |
@@ -1879,7 +1898,12 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `QUOTA_ENRICHMENT_HEADROOM`           | `3`                                 | Enrichment plans at most cap / this                        |
 | `QUOTA_SWEEP_RESERVE`                 | `1000`                              | Held back for the sweep each hour                          |
 | `RAIDER_IO_API_KEY`                   | —                                   | **Required when `MPLUS_ENABLED=true`**                     |
-| `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | The test seam for the second upstream                      |
+| `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | Also the test seam for the second upstream                 |
+| `RAIDERIO_PATH_MPLUS_RUNS` | `mythic-plus/runs` | Endpoint paths under the base url; no placeholders |
+| `RAIDERIO_PATH_MPLUS_SEASON_CUTOFFS` | `mythic-plus/season-cutoffs` |  |
+| `RAIDERIO_PATH_MPLUS_STATIC_DATA` | `mythic-plus/static-data` |  |
+| `RAIDERIO_PATH_RAID_STATIC_DATA` | `raiding/static-data` |  |
+| `RAIDERIO_PATH_RAID_RANKINGS` | `raiding/raid-rankings` |  |
 | `RAIDERIO_REGIONS`                    | `us,eu,kr,tw,cn`                    | Includes `cn`; `world` is rejected                         |
 | `RAIDERIO_REQUEST_TIMEOUT_MS`         | `30000`                             | Also caps `Retry-After`                                    |
 | `RAIDERIO_RETRY_LIMIT`                | `2`                                 | 408/429/5xx only — never 400                               |

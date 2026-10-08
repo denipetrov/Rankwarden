@@ -14,9 +14,6 @@ const SECRETS = [
   'MONGODB_URI',
 ];
 
-/** Seams for pointing the service at a fake upstream; production uses the defaults. */
-const TEST_ONLY = ['BLIZZARD_API_HOST_TEMPLATE', 'RAIDERIO_API_BASE_URL'];
-
 function parseEnvFile(path: string): Record<string, string> {
   return Object.fromEntries(
     readFileSync(path, 'utf8')
@@ -54,7 +51,7 @@ describe('production.env', () => {
   it('sets every variable, so none is left to a default by omission', () => {
     // A variable added to the schema must be decided for production on purpose,
     // not inherited from a default chosen for development.
-    const expected = known.filter((name) => !SECRETS.includes(name) && !TEST_ONLY.includes(name));
+    const expected = known.filter((name) => !SECRETS.includes(name));
 
     expect(expected.filter((name) => !(name in production))).toEqual([]);
   });
@@ -76,6 +73,16 @@ describe('production.env', () => {
 
     expect(env.NODE_ENV).toBe('production');
     expect(env.DB_SCHEMA_MODE).toBe('verify');
+  });
+
+  it('points at the real upstreams', () => {
+    // The same two variables are what tests use to reach a fake server, so a
+    // value copied from a rehearsal would leave production ingesting nothing.
+    const placeholders = Object.fromEntries(SECRETS.map((name) => [name, 'placeholder']));
+    const env = validateEnv({ ...production, ...placeholders });
+
+    expect(env.BLIZZARD_API_HOST_TEMPLATE).toBe('https://{region}.api.blizzard.com');
+    expect(env.RAIDERIO_API_BASE_URL).toBe('https://raider.io/api/v1');
   });
 
   it('retires finished seasons for real', () => {

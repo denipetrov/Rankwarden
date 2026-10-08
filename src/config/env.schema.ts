@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { REGIONS, type Region } from '../blizzard/blizzard.constants.js';
+import { placeholdersIn } from '../common/utils/path-template.js';
 import {
   AGGREGATE_REGION,
   MAX_RUNS_PAGE,
@@ -24,6 +25,56 @@ const trimTrailingSlashes = (value: string) => {
 
   return trimmed;
 };
+
+/**
+ * The path of one upstream endpoint, relative to that upstream's host.
+ *
+ * Configuration rather than code, so a path the upstream renames can be
+ * corrected in the deployment without a new build. `placeholders` are the
+ * `{name}` parts the service fills in per request. A template must use each of
+ * them and no other: one left out would send every request to the same
+ * address, and a misspelt one would fail on the first call, mid-run, instead of
+ * at boot.
+ */
+const pathTemplate = (fallback: string, placeholders: readonly string[] = []) =>
+  z
+    .string()
+    .default(fallback)
+    .transform((value, ctx) => {
+      let path = trimTrailingSlashes(value.trim());
+      while (path.startsWith('/')) path = path.slice(1);
+
+      if (path.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'must not be empty' });
+        return z.NEVER;
+      }
+
+      if (/[\s?#]/.test(path) || path.includes('://')) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'must be a path only: no host, query string, fragment or whitespace',
+        });
+        return z.NEVER;
+      }
+
+      const used = placeholdersIn(path);
+      const braces = (names: readonly string[]) => names.map((name) => `{${name}}`).join(', ');
+      const missing = placeholders.filter((name) => !used.includes(name));
+      const unknown = used.filter((name) => !placeholders.includes(name));
+
+      if (missing.length > 0 || unknown.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `expects ${placeholders.length > 0 ? braces(placeholders) : 'no placeholders'}` +
+            (missing.length > 0 ? `; missing ${braces(missing)}` : '') +
+            (unknown.length > 0 ? `; unknown ${braces(unknown)}` : ''),
+        });
+        return z.NEVER;
+      }
+
+      return path;
+    });
 
 /**
  * Comma-separated regions, every one of which must be a region we actually
@@ -218,7 +269,7 @@ export const envSchema = z.object({
   BLIZZARD_REGIONS: regionCsv('us,eu,kr,tw'),
   /**
    * Host template for the Game Data API; `{region}` is substituted per call.
-   * Exists so a runtime rehearsal can point a running binary at a fake server.
+   * Also what lets a runtime rehearsal point a running binary at a fake server.
    * Left unset it produces exactly the production URLs.
    */
   BLIZZARD_API_HOST_TEMPLATE: z
@@ -231,6 +282,31 @@ export const envSchema = z.object({
       message: 'must start with http:// or https://',
     })
     .transform(trimTrailingSlashes),
+  // Endpoint paths under that host. See `pathTemplate`.
+  BLIZZARD_PATH_PVP_SEASON_INDEX: pathTemplate('data/wow/pvp-season/index'),
+  BLIZZARD_PATH_PVP_SEASON: pathTemplate('data/wow/pvp-season/{seasonId}', ['seasonId']),
+  BLIZZARD_PATH_PVP_LEADERBOARD_INDEX: pathTemplate(
+    'data/wow/pvp-season/{seasonId}/pvp-leaderboard/index',
+    ['seasonId'],
+  ),
+  BLIZZARD_PATH_PVP_LEADERBOARD: pathTemplate(
+    'data/wow/pvp-season/{seasonId}/pvp-leaderboard/{bracket}',
+    ['seasonId', 'bracket'],
+  ),
+  BLIZZARD_PATH_PVP_REWARD_INDEX: pathTemplate('data/wow/pvp-season/{seasonId}/pvp-reward/index', [
+    'seasonId',
+  ]),
+  BLIZZARD_PATH_PLAYABLE_SPECIALIZATION: pathTemplate('data/wow/playable-specialization/{specId}', [
+    'specId',
+  ]),
+  BLIZZARD_PATH_CHARACTER_PROFILE: pathTemplate(
+    'profile/wow/character/{realmSlug}/{characterName}',
+    ['realmSlug', 'characterName'],
+  ),
+  BLIZZARD_PATH_CHARACTER_SPECIALIZATIONS: pathTemplate(
+    'profile/wow/character/{realmSlug}/{characterName}/specializations',
+    ['realmSlug', 'characterName'],
+  ),
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
@@ -393,7 +469,7 @@ export const envSchema = z.object({
    * key is rejected below, which is the case that actually matters.
    */
   RAIDER_IO_API_KEY: z.string().default(''),
-  /** Base url. Exists so the integration harness can point at a dead port. */
+  /** Base url. Also what lets the integration harness point at a dead port. */
   RAIDERIO_API_BASE_URL: z
     .string()
     .default('https://raider.io/api/v1')
@@ -401,6 +477,12 @@ export const envSchema = z.object({
       message: 'must start with http:// or https://',
     })
     .transform(trimTrailingSlashes),
+  // Endpoint paths under that base url. See `pathTemplate`.
+  RAIDERIO_PATH_MPLUS_RUNS: pathTemplate('mythic-plus/runs'),
+  RAIDERIO_PATH_MPLUS_SEASON_CUTOFFS: pathTemplate('mythic-plus/season-cutoffs'),
+  RAIDERIO_PATH_MPLUS_STATIC_DATA: pathTemplate('mythic-plus/static-data'),
+  RAIDERIO_PATH_RAID_STATIC_DATA: pathTemplate('raiding/static-data'),
+  RAIDERIO_PATH_RAID_RANKINGS: pathTemplate('raiding/raid-rankings'),
   /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
   RAIDERIO_REGIONS: raiderIoRegionCsv('us,eu,kr,tw,cn'),
   RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),

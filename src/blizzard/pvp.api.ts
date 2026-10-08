@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
+import { fillPath } from '../common/utils/path-template.js';
+import type { Env } from '../config/env.schema.js';
 import type { Bracket, Region } from './blizzard.constants.js';
 import { BlizzardHttpService } from './http/blizzard-http.service.js';
 import {
@@ -15,15 +18,40 @@ import {
   type PvpReward,
 } from './schemas/pvp-reward.schema.js';
 
-/** Typed access to the PvP slice of the Game Data API. */
+/**
+ * Typed access to the PvP slice of the Game Data API.
+ *
+ * Endpoint paths come from configuration (`BLIZZARD_PATH_*`), not from here.
+ */
 @Injectable()
 export class PvpApi {
   private readonly logger = new Logger(PvpApi.name);
 
-  constructor(private readonly http: BlizzardHttpService) {}
+  private readonly paths: {
+    seasonIndex: string;
+    season: string;
+    leaderboardIndex: string;
+    leaderboard: string;
+    rewardIndex: string;
+    specialization: string;
+  };
+
+  constructor(
+    private readonly http: BlizzardHttpService,
+    config: ConfigService<Env, true>,
+  ) {
+    this.paths = {
+      seasonIndex: config.get('BLIZZARD_PATH_PVP_SEASON_INDEX', { infer: true }),
+      season: config.get('BLIZZARD_PATH_PVP_SEASON', { infer: true }),
+      leaderboardIndex: config.get('BLIZZARD_PATH_PVP_LEADERBOARD_INDEX', { infer: true }),
+      leaderboard: config.get('BLIZZARD_PATH_PVP_LEADERBOARD', { infer: true }),
+      rewardIndex: config.get('BLIZZARD_PATH_PVP_REWARD_INDEX', { infer: true }),
+      specialization: config.get('BLIZZARD_PATH_PLAYABLE_SPECIALIZATION', { infer: true }),
+    };
+  }
 
   async getSeasonIndex(region: Region): Promise<PvpSeasonIndex> {
-    const payload = await this.http.get(region, 'data/wow/pvp-season/index');
+    const payload = await this.http.get(region, fillPath(this.paths.seasonIndex));
     return pvpSeasonIndexSchema.parse(payload);
   }
 
@@ -35,7 +63,7 @@ export class PvpApi {
     region: Region,
     seasonId: number,
   ): Promise<{ id: number; name?: string; startsAt: Date; endsAt: Date | null }> {
-    const payload = await this.http.get(region, `data/wow/pvp-season/${seasonId}`);
+    const payload = await this.http.get(region, fillPath(this.paths.season, { seasonId }));
     const season = pvpSeasonSchema.parse(payload);
 
     return {
@@ -50,7 +78,7 @@ export class PvpApi {
   async getBrackets(region: Region, seasonId: number): Promise<string[]> {
     const payload = await this.http.get(
       region,
-      `data/wow/pvp-season/${seasonId}/pvp-leaderboard/index`,
+      fillPath(this.paths.leaderboardIndex, { seasonId }),
     );
     const { leaderboards } = pvpLeaderboardIndexSchema.parse(payload);
 
@@ -65,7 +93,7 @@ export class PvpApi {
   ): Promise<PvpLeaderboard> {
     const payload = await this.http.get(
       region,
-      `data/wow/pvp-season/${seasonId}/pvp-leaderboard/${bracket}`,
+      fillPath(this.paths.leaderboard, { seasonId, bracket }),
     );
     const leaderboard = pvpLeaderboardSchema.parse(payload);
 
@@ -80,7 +108,7 @@ export class PvpApi {
    * running season too, but the cutoffs only settle once it has ended.
    */
   async getSeasonRewards(region: Region, seasonId: number): Promise<PvpReward[]> {
-    const payload = await this.http.get(region, `data/wow/pvp-season/${seasonId}/pvp-reward/index`);
+    const payload = await this.http.get(region, fillPath(this.paths.rewardIndex, { seasonId }));
 
     return pvpRewardIndexSchema.parse(payload).rewards;
   }
@@ -95,7 +123,7 @@ export class PvpApi {
     region: Region,
     specId: number,
   ): Promise<{ id: number; name: string; className: string }> {
-    const payload = await this.http.get(region, `data/wow/playable-specialization/${specId}`, {
+    const payload = await this.http.get(region, fillPath(this.paths.specialization, { specId }), {
       namespace: 'static',
     });
     const spec = playableSpecializationSchema.parse(payload);
