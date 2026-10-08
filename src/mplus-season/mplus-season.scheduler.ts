@@ -2,7 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 
-import { withRunId } from '../common/logging/run-context.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -83,7 +83,7 @@ export class MplusSeasonScheduler implements OnApplicationBootstrap, OnModuleDes
     this.running = true;
 
     try {
-      await withRunId('mplus-season', async () => {
+      await withRunId(RunKind.MplusSeason, async () => {
         await this.seasons.ensureCatalogue();
         await this.seasons.observe();
       });

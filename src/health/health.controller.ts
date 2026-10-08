@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import {
   DependencyHealth,
+  UpstreamProvider,
   type DependencyObservation,
   type DependencyStatus,
 } from '../common/health/dependency-health.service.js';
@@ -94,7 +95,7 @@ export class HealthController {
     // memory exactly like Blizzard's, so a second upstream adds no I/O to a probe.
     const { mplus: mplusOutlook, ...raiderIoQuota } = this.raiderIo.snapshot();
     const mplus = mplusVerdict(mplusOutlook);
-    const raiderIoStatus = this.dependencies.statusFor('raiderio');
+    const raiderIoStatus = this.dependencies.statusFor(UpstreamProvider.RaiderIo);
 
     const mongo: DependencyObservation & { host: string } = {
       host: this.mongoHost,
@@ -134,16 +135,16 @@ export class HealthController {
         },
         raiderio: {
           status: raiderIoStatus,
-          failingRegions: this.dependencies.failingRegionsFor('raiderio'),
-          regions: this.dependencies.byRegion('raiderio'),
+          failingRegions: this.dependencies.failingRegionsFor(UpstreamProvider.RaiderIo),
+          regions: this.dependencies.byRegion(UpstreamProvider.RaiderIo),
         },
         // Reported, never judged: the ranking endpoint times out on its own on
         // some boards, the job reading it is the lowest priority there is, and
         // the boards it has already stored still serve.
         raiderioRankings: {
-          status: this.dependencies.statusFor('raiderioRankings'),
-          failingRegions: this.dependencies.failingRegionsFor('raiderioRankings'),
-          regions: this.dependencies.byRegion('raiderioRankings'),
+          status: this.dependencies.statusFor(UpstreamProvider.RaiderIoRankings),
+          failingRegions: this.dependencies.failingRegionsFor(UpstreamProvider.RaiderIoRankings),
+          regions: this.dependencies.byRegion(UpstreamProvider.RaiderIoRankings),
         },
       },
       jobs: this.jobs(),

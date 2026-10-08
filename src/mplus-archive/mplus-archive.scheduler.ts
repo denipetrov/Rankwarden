@@ -4,12 +4,13 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
+import { RunKind } from '../common/logging/run-context.js';
 import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MplusArchiveService } from './mplus-archive.service.js';
 
-const INTERVAL_NAME = 'mplus-archive';
+const INTERVAL_NAME = RunKind.MplusArchive;
 
 /**
  * Runs the Mythic+ archive in whatever time every other job leaves.

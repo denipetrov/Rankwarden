@@ -4,13 +4,13 @@ import got, { HTTPError, RequestError, type Got } from 'got';
 
 import {
   DependencyHealth,
-  type UpstreamProvider,
+  UpstreamProvider,
 } from '../../common/health/dependency-health.service.js';
 import { currentRunKind } from '../../common/logging/run-context.js';
 import {
   RaiderIoBudget,
   raiderIoConsumerFor,
-  type RaiderIoConsumer,
+  RaiderIoConsumer,
 } from '../../common/quota/raiderio-budget.service.js';
 import { RateLimiter } from '../../common/utils/rate-limiter.js';
 import type { Env } from '../../config/env.schema.js';
@@ -112,7 +112,7 @@ export class RaiderIoHttpService {
             // runs again for every retry, and a retry is a real request against
             // the per-minute ceiling exactly like a first attempt.
             const consumer = (options.context as { consumer?: RaiderIoConsumer }).consumer;
-            this.budget.record(consumer ?? 'other');
+            this.budget.record(consumer ?? RaiderIoConsumer.Other);
 
             // Added at the last possible moment so the key is in no url this
             // class built, logged or handed to an error.
@@ -139,7 +139,7 @@ export class RaiderIoHttpService {
     // The url without the key, which is what every message below quotes.
     const url = `${this.baseUrl}/${path.replace(/^\//, '')}`;
     const region = options.region ?? 'global';
-    const provider = options.healthProvider ?? 'raiderio';
+    const provider = options.healthProvider ?? UpstreamProvider.RaiderIo;
 
     // Paced before the request rather than inside the hook: the hook also runs
     // for retries, and sleeping in it would hold got's own backoff open on top

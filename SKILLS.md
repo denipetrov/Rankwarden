@@ -1429,7 +1429,7 @@ and 244 encounters**; `id` and `slug` are each unique across all of them.
   a refresh.
 - The scheduler ticks at boot and then every `RAID_CATALOGUE_CHECK_INTERVAL_MS`. It takes no
   part in the coordinator's ordering: six requests and thirty writes compete with nothing.
-  Requests are charged to the Raider.io budget's `other` consumer.
+  Requests are charged to the Raider.io budget's `raidCatalogue` consumer.
 - `POST /admin/raid-catalogue` (development only) re-reads it now, ignoring the TTL.
 - `RaidCatalogueRepository.allRaids()` and `findBySlug()` project the boards (`guilds`) out:
   they are the bulk of a raid document and nothing in the catalogue reads them.
@@ -1526,7 +1526,11 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
   `refreshDue(now, control)`): callers of one kind share a run, the kinds never do, or a
   hand-started run would wait on a paused scheduled one and a scheduled one riding a
   hand-started run would stop yielding. Requests are charged to
-  the Raider.io budget's `other` consumer. Needs `RAID_CATALOGUE_ENABLED`, refused at boot
+  the Raider.io budget's `raidRankings` consumer: counted against the same per-minute window
+  the Mythic+ jobs draw on (so their allowances shrink by it) and reported under
+  `raiderIoQuota.spent` on `/health/ready`, but not capped by a share of its own — the
+  client's shared token bucket keeps the total under the limit, and the job steps aside for
+  a Mythic+ pass anyway. Needs `RAID_CATALOGUE_ENABLED`, refused at boot
   otherwise; each run checks the catalogue first, so a first boot finds its raids.
 - **Health.** `/health` `jobs` carries `raidCatalogue` (`running`, `lastWalk` with
   `complete`), `raidRankingsRunning` and `raidRankings` (the last run's `boards`, `failed`,

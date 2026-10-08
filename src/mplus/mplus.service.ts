@@ -2,8 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunLogger, withRunId } from '../common/logging/run-context.js';
-import { RaiderIoBudget, type MplusOutlook } from '../common/quota/raiderio-budget.service.js';
+import { RunKind, RunLogger, withRunId } from '../common/logging/run-context.js';
+import {
+  RaiderIoBudget,
+  RaiderIoConsumer,
+  type MplusOutlook,
+} from '../common/quota/raiderio-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -144,8 +148,8 @@ export class MplusService {
     const startedAt = new Date();
 
     try {
-      return await withRunId('mplus', () => {
-        const requestsBefore = this.budget.spent('mplus');
+      return await withRunId(RunKind.Mplus, () => {
+        const requestsBefore = this.budget.spent(RaiderIoConsumer.Mplus);
 
         return this.coordinator.duringMplus(() => this.runSweep(startedAt, requestsBefore));
       });
@@ -227,7 +231,7 @@ export class MplusService {
       new Map(results.map((result) => [result.region, result.season] as const)),
     );
     const durationMs = Date.now() - startedAt.getTime();
-    const requests = this.budget.spent('mplus') - requestsBefore;
+    const requests = this.budget.spent(RaiderIoConsumer.Mplus) - requestsBefore;
     const summary: MplusSweepResult = {
       seasons,
       startedAt: startedAt.toISOString(),
@@ -286,7 +290,7 @@ export class MplusService {
       // pass began, and stopping on that would skip the prune and report the
       // pass degraded for a whole interval. Only a window that stays spent past
       // `RAIDERIO_BUDGET_WAIT_MS` — something genuinely over-spending — stops it.
-      if (!(await this.budget.waitForAllowance('mplus', 1, this.budgetWaitMs))) {
+      if (!(await this.budget.waitForAllowance(RaiderIoConsumer.Mplus, 1, this.budgetWaitMs))) {
         result.stoppedEarly = 'Raider.io budget spent';
         this.logger.warn(
           `Raider.io budget for the current minute is spent; stopping ${region} at page ${first}`,

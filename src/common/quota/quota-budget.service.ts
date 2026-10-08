@@ -2,16 +2,22 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../../config/env.schema.js';
-import type { RunKind } from '../logging/run-context.js';
+import { RunKind } from '../logging/run-context.js';
 import { RollingWindow } from './rolling-window.js';
 
 /** Who spent a request. Anything outside a known job is `other`. */
-export type QuotaConsumer = 'sweep' | 'enrichment' | 'archive' | 'other';
+export const QuotaConsumer = {
+  Sweep: 'sweep',
+  Enrichment: 'enrichment',
+  Archive: 'archive',
+  Other: 'other',
+} as const;
+export type QuotaConsumer = (typeof QuotaConsumer)[keyof typeof QuotaConsumer];
 
 /** The jobs that ask permission before spending; the sweep never does. */
-export type BudgetedConsumer = 'enrichment' | 'archive';
+export type BudgetedConsumer = typeof QuotaConsumer.Enrichment | typeof QuotaConsumer.Archive;
 
-const CONSUMERS: readonly QuotaConsumer[] = ['sweep', 'enrichment', 'archive', 'other'];
+const CONSUMERS: readonly QuotaConsumer[] = Object.values(QuotaConsumer);
 
 export const HOUR_MS = 3_600_000;
 const BUCKET_MS = 60_000;
@@ -21,25 +27,25 @@ const WINDOW_MINUTES = 60;
 /** Maps a run to the consumer its requests are charged to. */
 export function quotaConsumerFor(kind: RunKind | undefined): QuotaConsumer {
   switch (kind) {
-    case 'sweep':
-      return 'sweep';
-    case 'enrich':
-      return 'enrichment';
-    case 'archive':
-      return 'archive';
-    case 'mplus':
-    case 'mplus-archive':
+    case RunKind.Sweep:
+      return QuotaConsumer.Sweep;
+    case RunKind.Enrich:
+      return QuotaConsumer.Enrichment;
+    case RunKind.Archive:
+      return QuotaConsumer.Archive;
+    case RunKind.Mplus:
+    case RunKind.MplusArchive:
       // Unreachable in practice, and deliberately listed rather than left to
       // the default: the M+ job talks only to Raider.io, which has its own
       // budget, so nothing of its should ever be charged against Blizzard's
       // cap. If a Blizzard call is ever made inside an M+ run this says where
       // it lands — in the counted-but-never-throttled bucket — instead of
       // leaving it to be discovered from a quota that mysteriously runs short.
-      return 'other';
+      return QuotaConsumer.Other;
     default:
       // Season refreshes, snapshots, transitions and admin calls outside a job.
       // Tiny, never throttled, but counted so they cannot hide from the total.
-      return 'other';
+      return QuotaConsumer.Other;
   }
 }
 
@@ -160,11 +166,11 @@ export class QuotaBudget {
   /** Requests a job may still spend right now without eating a higher share. */
   allowance(consumer: BudgetedConsumer): number {
     const total = this.spent();
-    const sweepHeld = Math.max(0, this.sweepReserve - this.spent('sweep'));
-    const enrichmentSpent = this.spent('enrichment');
+    const sweepHeld = Math.max(0, this.sweepReserve - this.spent(QuotaConsumer.Sweep));
+    const enrichmentSpent = this.spent(QuotaConsumer.Enrichment);
     const room = this.usable - total - sweepHeld;
 
-    if (consumer === 'enrichment') {
+    if (consumer === QuotaConsumer.Enrichment) {
       return Math.max(0, Math.min(this.enrichmentShare - enrichmentSpent, room));
     }
 
@@ -194,8 +200,8 @@ export class QuotaBudget {
       usable: this.usable,
       spent: { ...spent, total: this.spent() },
       allowance: {
-        enrichment: this.allowance('enrichment'),
-        archive: this.allowance('archive'),
+        [QuotaConsumer.Enrichment]: this.allowance(QuotaConsumer.Enrichment),
+        [QuotaConsumer.Archive]: this.allowance(QuotaConsumer.Archive),
       },
       shares: { sweepReserve: this.sweepReserve, enrichment: this.enrichmentShare },
       enrichment: this.outlook,

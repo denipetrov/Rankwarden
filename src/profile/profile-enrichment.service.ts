@@ -8,8 +8,8 @@ import {
   type CharacterSpecializationsPayload,
 } from '../blizzard/schemas/character-profile.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunLogger, withRunId } from '../common/logging/run-context.js';
-import { HOUR_MS, QuotaBudget } from '../common/quota/quota-budget.service.js';
+import { RunKind, RunLogger, withRunId } from '../common/logging/run-context.js';
+import { HOUR_MS, QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
@@ -113,7 +113,7 @@ export class ProfileEnrichmentService {
     const startedAt = Date.now();
 
     // Announced so the archive holds off: enrichment is live data and wins.
-    return withRunId('enrich', (runId) =>
+    return withRunId(RunKind.Enrich, (runId) =>
       this.coordinator
         .duringEnrichment(async () => {
           const summaryStaleBefore = new Date(startedAt - this.summaryTtlMs);
@@ -208,7 +208,7 @@ export class ProfileEnrichmentService {
 
     const perRunPace = Math.ceil((this.budget.enrichmentShare * this.intervalMs) / HOUR_MS);
     const requestBudget = Math.min(
-      this.budget.allowance('enrichment'),
+      this.budget.allowance(QuotaConsumer.Enrichment),
       perRunPace * CATCH_UP_FACTOR,
     );
     const costPerCharacter = demand.characters > 0 ? demand.requests / demand.characters : 1;

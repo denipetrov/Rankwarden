@@ -374,7 +374,9 @@ describe('RaiderIoHttpService — against a real listener', () => {
 
     expect(payload).toEqual({ raidRankings: [] });
     expect(server.hitsFor('raiding/raid-rankings')).toHaveLength(2);
-    expect(budget.spent('other'), 'both attempts, to the general allowance').toBe(2);
+    expect(budget.spent('raidRankings'), 'both attempts, to the rankings').toBe(2);
+    expect(budget.spent('other')).toBe(0);
+    expect(budget.spent(), 'and to the one minute every consumer shares').toBe(2);
     expect(budget.spent('mplus')).toBe(0);
     expect(health.byRegion('raiderioRankings').eu).toMatchObject({ status: 'ok' });
     expect(health.byRegion('raiderio'), 'nothing is held against Raider.io itself').toEqual({});

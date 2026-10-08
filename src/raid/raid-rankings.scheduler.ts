@@ -4,13 +4,13 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { withRunId } from '../common/logging/run-context.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { RaidRankingsService } from './raid-rankings.service.js';
 
-const INTERVAL_NAME = 'raid-rankings';
+const INTERVAL_NAME = RunKind.RaidRankings;
 
 /**
  * Reads the raid boards in whatever time every other job leaves: the lowest
@@ -136,7 +136,7 @@ export class RaidRankingsScheduler implements OnApplicationBootstrap, OnModuleDe
         return;
       }
 
-      await withRunId('raid-rankings', () =>
+      await withRunId(RunKind.RaidRankings, () =>
         this.rankings.refreshDue(new Date(), {
           shouldStop: () => this.stopping,
           whenClear: () => this.whenClearMidRun(),

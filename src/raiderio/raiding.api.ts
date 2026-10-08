@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+
+import { UpstreamProvider } from '../common/health/dependency-health.service.js';
 import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../config/env.schema.js';
@@ -68,7 +70,7 @@ export class RaidingApi {
     const payload = await this.http.get(this.rankingsPath, {
       region,
       timeoutMs,
-      healthProvider: 'raiderioRankings',
+      healthProvider: UpstreamProvider.RaiderIoRankings,
       searchParams: {
         raid,
         difficulty,

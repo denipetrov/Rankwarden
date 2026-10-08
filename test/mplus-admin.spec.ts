@@ -303,7 +303,7 @@ describe('Mythic+ admin routes and health', () => {
 
     // The quota block: spend by consumer, and both allowances.
     expect(Object.keys(stopped.body.raiderIoQuota.spent).sort()).toEqual(
-      ['mplus', 'mplusArchive', 'other', 'total'].sort(),
+      ['mplus', 'mplusArchive', 'raidCatalogue', 'raidRankings', 'other', 'total'].sort(),
     );
     expect(stopped.body.raiderIoQuota.allowance.mplus).toBeGreaterThan(0);
     expect(stopped.body.raiderIoQuota.allowance.mplusArchive).toBeGreaterThan(0);

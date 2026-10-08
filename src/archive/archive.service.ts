@@ -6,7 +6,7 @@ import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import type { PvpReward } from '../blizzard/schemas/pvp-reward.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { QuotaBudget } from '../common/quota/quota-budget.service.js';
+import { QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import { describeError } from '../common/utils/errors.js';
@@ -323,7 +323,10 @@ export class ArchiveService {
     for (const [index, { seasonId, region }] of awaiting.entries()) {
       // Yields for the same reasons a bracket does. What is left over stays
       // pending and is picked up by the next pass.
-      if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
+      if (
+        this.coordinator.isLiveIngestionActive ||
+        this.budget.allowance(QuotaConsumer.Archive) <= 0
+      ) {
         result.pending += awaiting.length - index;
         break;
       }
@@ -449,7 +452,10 @@ export class ArchiveService {
     // the quota it runs on. Leaving the bracket unfinished keeps the season
     // pending, and the fetch record means the resumed run picks up exactly
     // where this one stopped.
-    if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
+    if (
+      this.coordinator.isLiveIngestionActive ||
+      this.budget.allowance(QuotaConsumer.Archive) <= 0
+    ) {
       return { bracket, entries: 0, failed: true };
     }
 

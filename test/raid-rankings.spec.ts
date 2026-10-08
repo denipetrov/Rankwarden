@@ -8,7 +8,7 @@ import { RaidCatalogueRepository } from '../src/raid/raid-catalogue.repository.j
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { RaidRankingsService } from '../src/raid/raid-rankings.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
-import { postJson } from './support/http.js';
+import { getJson, postJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld, type WorldGuild } from './support/mplus-world.js';
@@ -589,7 +589,12 @@ describe('Raid rankings', () => {
 
   it('POST /admin/raid-rankings runs what is due; ?raid= re-reads one raid whole', async () => {
     const budget = app.app.get(RaiderIoBudget);
-    const before = { other: budget.spent('other'), mplus: budget.spent('mplus') };
+    const before = {
+      rankings: budget.spent('raidRankings'),
+      other: budget.spent('other'),
+      mplus: budget.spent('mplus'),
+      total: budget.spent(),
+    };
 
     const due = await postJson<{ boards: number; settled: number }>(
       app.url(),
@@ -607,11 +612,19 @@ describe('Raid rankings', () => {
     expect(started().slice(15)).toEqual(boardsOf('manaforge-omega'));
 
     // Thirty boards, and a second page for each of the ten with guilds on it.
-    expect(budget.spent('other') - before.other, 'charged to the general allowance').toBe(
+    expect(budget.spent('raidRankings') - before.rankings, 'charged to the rankings').toBe(
       requests().length,
     );
     expect(requests().length).toBeGreaterThan(30);
+    expect(budget.spent('other'), 'named, not lost in the catch-all').toBe(before.other);
     expect(budget.spent('mplus')).toBe(before.mplus);
+    // And spent from the same minute the Mythic+ jobs draw on.
+    expect(budget.spent() - before.total).toBe(requests().length);
+    const ready = await getJson<{
+      raiderIoQuota: { spent: Record<string, number>; allowance: { mplus: number } };
+    }>(app.url(), '/health/ready');
+    expect(ready.body.raiderIoQuota.spent.raidRankings).toBe(budget.spent('raidRankings'));
+    expect(ready.body.raiderIoQuota.allowance.mplus).toBe(budget.usable - budget.spent());
 
     const unknown = await postJson(app.url(), '/admin/raid-rankings?raid=no-such-raid');
     expect(unknown.status).toBe(404);
