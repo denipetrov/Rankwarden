@@ -178,11 +178,21 @@ export class SeasonService implements OnModuleInit {
   /**
    * Whether the region's season has finished but no new one has started yet.
    * A region that has never been refreshed is not "ended" — it is unknown.
+   *
+   * The end date has to have passed, not merely exist: one published ahead of
+   * time describes a season that is still being played.
+   *
+   * Pass `seasonId` to ask about one particular season. What is cached is the
+   * season last observed, which for a while after a rollover is the finished
+   * one. A caller holding a fresher season id would otherwise be told that the
+   * new, running season has ended.
    */
-  hasEnded(region: Region): boolean {
+  hasEnded(region: Region, seasonId?: number): boolean {
     const season = this.currentSeasons.get(region);
+    if (season === undefined || season.endsAt === null) return false;
+    if (seasonId !== undefined && season.id !== seasonId) return false;
 
-    return season !== undefined && season.endsAt !== null;
+    return season.endsAt.getTime() <= Date.now();
   }
 
   /** Everything known about each region's season, for the health endpoint. */

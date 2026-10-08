@@ -230,8 +230,13 @@ export class ArchiveService {
   private async archivableSeasons(region: Region): Promise<number[]> {
     const index = await this.pvpApi.getSeasonIndex(region);
     const current = index.current_season.id;
-    // The active season is archived only once it has actually ended.
-    const currentHasEnded = this.seasons.hasEnded(region);
+    // The active season is archived only once it has actually ended. Asked
+    // about `current` by id: the index is read fresh, while the season record
+    // is cached from the last sweep, so right after a rollover the cache still
+    // holds the finished season, and its end date must not be read as the new
+    // season's. An archive is written once and never refreshed, so taking a
+    // season on its first day would keep those standings for good.
+    const currentHasEnded = this.seasons.hasEnded(region, current);
 
     return index.seasons
       .map((season) => season.id)

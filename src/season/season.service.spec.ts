@@ -101,7 +101,7 @@ describe('SeasonService', () => {
     getSeason.mockResolvedValue({
       id: 42,
       startsAt: new Date('2026-08-18T15:00:00.000Z'),
-      endsAt: new Date('2027-01-12T06:00:00.000Z'),
+      endsAt: new Date('2026-09-22T06:00:00.000Z'),
     });
 
     await service.refresh('eu');
@@ -109,11 +109,50 @@ describe('SeasonService', () => {
 
     await service.refresh('eu');
     expect(service.hasEnded('eu')).toBe(true);
-    expect(service.getSeasonEnd('eu')?.toISOString()).toBe('2027-01-12T06:00:00.000Z');
+    expect(service.getSeasonEnd('eu')?.toISOString()).toBe('2026-09-22T06:00:00.000Z');
 
     // Settled now: nothing about a finished season can change again.
     await service.refresh('eu');
     expect(getSeason).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not report a season as ended before its end date has passed', async () => {
+    const endsAt = new Date(Date.now() + 60 * 60 * 1000);
+    getSeasonIndex.mockResolvedValue({ seasons: [], current_season: { id: 42 } });
+    getSeason.mockResolvedValue({
+      id: 42,
+      startsAt: new Date('2026-08-18T15:00:00.000Z'),
+      endsAt,
+    });
+
+    await service.refresh('eu');
+
+    // Announced, but still being played for another hour.
+    expect(service.getSeasonEnd('eu')).toEqual(endsAt);
+    expect(service.hasEnded('eu')).toBe(false);
+
+    vi.useFakeTimers({ now: endsAt.getTime() + 1 });
+    try {
+      expect(service.hasEnded('eu')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not lend the end date of a finished season to the one that replaced it', async () => {
+    getSeasonIndex.mockResolvedValue({ seasons: [], current_season: { id: 42 } });
+    getSeason.mockResolvedValue({
+      id: 42,
+      startsAt: new Date('2026-03-17T15:00:00.000Z'),
+      endsAt: new Date('2026-08-11T05:00:00.000Z'),
+    });
+
+    await service.refresh('eu');
+
+    // 43 has begun, but this region has not been refreshed since: what is
+    // cached still describes 42.
+    expect(service.hasEnded('eu', 42)).toBe(true);
+    expect(service.hasEnded('eu', 43)).toBe(false);
   });
 
   it('records the last completed season when Blizzard publishes one', async () => {

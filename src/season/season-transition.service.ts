@@ -138,11 +138,16 @@ export class SeasonTransitionService {
     }
 
     const purged = await this.state.purgedPairs();
-    const archived = this.requireArchive ? await this.completedArchives() : null;
+    const archived = this.requireArchive ? await this.completedArchives(now) : null;
     const candidates: PurgeCandidate[] = [];
     const blockedByArchive: PurgeCandidate[] = [];
 
     for (const entry of states) {
+      // The gate above opens on the earliest region. Each region is checked
+      // again against its own start: one already listed on the new season but
+      // not yet playing it still has the old season as its live board.
+      if (now < entry.startsAt) continue;
+
       const stale = (
         await this.mongo
           .collection(CHARACTERS_COLLECTION)
@@ -241,14 +246,26 @@ export class SeasonTransitionService {
     return { region, seasonId, removed, dryRun: this.dryRun };
   }
 
-  /** Season/region pairs the archive holds with nothing outstanding. */
-  private async completedArchives(): Promise<Set<string>> {
+  /**
+   * Season/region pairs the archive holds with nothing outstanding.
+   *
+   * An archive whose season ends after `now` does not count. Its end date was
+   * published ahead of time and the standings in it are not final, so deleting
+   * the live copy would leave an unfinished season as the only record. A
+   * marker with no end date is one whose season record could not be read; the
+   * archive only ever takes seasons that are over, so it is trusted.
+   */
+  private async completedArchives(now: Date): Promise<Set<string>> {
     const done = await this.mongo
       .collection<ArchiveSeasonDocument>(ARCHIVE_SEASONS_COLLECTION)
-      .find({ failedBrackets: { $size: 0 } }, { projection: { seasonId: 1, region: 1 } })
+      .find({ failedBrackets: { $size: 0 } }, { projection: { seasonId: 1, region: 1, endsAt: 1 } })
       .toArray();
 
-    return new Set(done.map((entry) => `${entry.seasonId}:${entry.region}`));
+    return new Set(
+      done
+        .filter((entry) => !entry.endsAt || entry.endsAt <= now)
+        .map((entry) => `${entry.seasonId}:${entry.region}`),
+    );
   }
 }
 
