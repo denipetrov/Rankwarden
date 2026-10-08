@@ -45,7 +45,7 @@ describe('CharacterRepository — upsert races on identity', () => {
   };
 
   const repositoryOver = (bulkWrite: ReturnType<typeof vi.fn>) => {
-    const collection = { bulkWrite, createIndexes: vi.fn(), listIndexes: vi.fn() };
+    const collection = { bulkWrite };
 
     return new CharacterRepository({ collection: () => collection } as unknown as MongoService);
   };

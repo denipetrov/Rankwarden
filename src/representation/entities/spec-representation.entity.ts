@@ -53,8 +53,6 @@ export interface SpecRepresentationDocument {
   computedAt: Date;
 }
 
-export const SPEC_REPRESENTATION_COLLECTION = 'spec_representation';
-
 /** Blizzard's own bracket slugs: lowercase, letters only ("Death Knight" -> "deathknight"). */
 export function toSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z]/g, '');

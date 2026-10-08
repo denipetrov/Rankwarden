@@ -131,8 +131,6 @@ export interface MplusCharacterDocument {
   updatedAt: Date;
 }
 
-export const MPLUS_CHARACTERS_COLLECTION = 'mplus_characters';
-
 /** Identity key for a character, independent of either upstream's ids. */
 export function mplusCharacterKey(region: string, realmSlug: string, name: string): string {
   return `${region}/${realmSlug.toLowerCase()}/${mplusNameKey(name)}`;

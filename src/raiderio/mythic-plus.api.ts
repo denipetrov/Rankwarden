@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
+import type { Env } from '../config/env.schema.js';
 import { RaiderIoHttpService } from './http/raiderio-http.service.js';
 import type { RaiderIoRegion } from './raiderio.constants.js';
 import {
@@ -9,10 +11,25 @@ import {
 import { seasonCutoffsSchema, type SeasonCutoffs } from './schemas/season-cutoffs.schema.js';
 import { staticDataSchema, type StaticData } from './schemas/static-data.schema.js';
 
-/** Typed access to the Mythic+ slice of the Raider.io API. */
+/**
+ * Typed access to the Mythic+ slice of the Raider.io API.
+ *
+ * Endpoint paths come from configuration (`RAIDERIO_PATH_*`), not from here.
+ */
 @Injectable()
 export class MythicPlusApi {
-  constructor(private readonly http: RaiderIoHttpService) {}
+  private readonly runsPath: string;
+  private readonly seasonCutoffsPath: string;
+  private readonly staticDataPath: string;
+
+  constructor(
+    private readonly http: RaiderIoHttpService,
+    config: ConfigService<Env, true>,
+  ) {
+    this.runsPath = config.get('RAIDERIO_PATH_MPLUS_RUNS', { infer: true });
+    this.seasonCutoffsPath = config.get('RAIDERIO_PATH_MPLUS_SEASON_CUTOFFS', { infer: true });
+    this.staticDataPath = config.get('RAIDERIO_PATH_MPLUS_STATIC_DATA', { infer: true });
+  }
 
   /**
    * One page of the top runs for a season and region, 20 runs at a time.
@@ -29,7 +46,7 @@ export class MythicPlusApi {
     page: number,
     dungeon = 'all',
   ): Promise<MythicPlusRunsPage> {
-    const payload = await this.http.get('mythic-plus/runs', {
+    const payload = await this.http.get(this.runsPath, {
       region,
       searchParams: { season, region, dungeon, page },
     });
@@ -45,7 +62,7 @@ export class MythicPlusApi {
    * "nothing here" in a shape a caller has to tell apart for itself.
    */
   async getSeasonCutoffs(season: string, region: RaiderIoRegion): Promise<SeasonCutoffs> {
-    const payload = await this.http.get('mythic-plus/season-cutoffs', {
+    const payload = await this.http.get(this.seasonCutoffsPath, {
       region,
       searchParams: { season, region },
     });
@@ -60,7 +77,7 @@ export class MythicPlusApi {
    * seasons and nothing else, so the full history is one call per expansion.
    */
   async getStaticData(expansionId: number): Promise<StaticData> {
-    const payload = await this.http.get('mythic-plus/static-data', {
+    const payload = await this.http.get(this.staticDataPath, {
       searchParams: { expansion_id: expansionId },
     });
 

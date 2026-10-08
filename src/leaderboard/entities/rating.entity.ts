@@ -1,9 +1,4 @@
-import {
-  RATING_FAMILIES,
-  type Bracket,
-  type Region,
-  type RatingFamily,
-} from '../../blizzard/blizzard.constants.js';
+import type { Bracket, Region } from '../../blizzard/blizzard.constants.js';
 
 /**
  * One rating, in one bracket, for one character.
@@ -23,8 +18,3 @@ export interface RatingDocument {
   rating: number;
   fetchedAt: Date;
 }
-
-/** One collection per family, so each board is its own sorted range. */
-export const RATING_COLLECTIONS = Object.fromEntries(
-  RATING_FAMILIES.map((family) => [family, `${family}_ratings`]),
-) as Record<RatingFamily, string>;

@@ -4,7 +4,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { withRunId } from '../common/logging/run-context.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
 import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -111,7 +111,7 @@ export class MplusSeasonTransitionScheduler implements OnApplicationBootstrap, O
         return;
       }
 
-      await withRunId('transition', async () => {
+      await withRunId(RunKind.Transition, async () => {
         const { plan, purged } = await this.transitions.run();
 
         if (purged.length > 0) {

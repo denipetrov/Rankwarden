@@ -2,11 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { LoggerService } from '@nestjs/common';
 import type { Db } from 'mongodb';
 
-import { ARCHIVE_SEASONS_COLLECTION } from '../src/archive/entities/archive.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../src/representation/entities/spec-representation.entity.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { AGGREGATE_BRACKETS, CORE_BRACKETS, World } from './support/world.js';
+import {
+  ARCHIVE_SEASONS_COLLECTION,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const SEASON = 42;
 const OLDER = 41;

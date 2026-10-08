@@ -2,15 +2,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { LoggerService } from '@nestjs/common';
 import type { Db } from 'mongodb';
 
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../src/representation/entities/spec-representation.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { SeasonService } from '../src/season/season.service.js';
 import { SeasonTransitionService } from '../src/season/season-transition.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { CORE_BRACKETS, World } from './support/world.js';
+import {
+  CHARACTERS_COLLECTION,
+  RATING_COLLECTIONS,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const SEASON = 42;
 const NEXT = 43;

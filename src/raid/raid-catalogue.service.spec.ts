@@ -32,7 +32,13 @@ const unsupported = (expansionId: number) =>
  */
 function serviceOver(
   byExpansion: Record<number, StaticRaid[]>,
-  options: { failing?: number[]; empty?: number[]; updatedAt?: Date | null; first?: number } = {},
+  options: {
+    failing?: number[];
+    empty?: number[];
+    updatedAt?: Date | null;
+    first?: number;
+    newest?: number;
+  } = {},
 ) {
   const getStaticData = vi.fn(async (expansionId: number): Promise<RaidStaticData> => {
     if (options.failing?.includes(expansionId)) {
@@ -55,7 +61,12 @@ function serviceOver(
     service: new RaidCatalogueService(
       { get: (key: string) => env[key] } as unknown as ConfigService<never, true>,
       { getStaticData } as unknown as RaidingApi,
-      { upsertRaids, markUnlisted, catalogueUpdatedAt } as unknown as RaidCatalogueRepository,
+      {
+        upsertRaids,
+        markUnlisted,
+        catalogueUpdatedAt,
+        highestListedExpansion: vi.fn(async () => options.newest ?? null),
+      } as unknown as RaidCatalogueRepository,
     ),
     getStaticData,
     upsertRaids,
@@ -187,5 +198,54 @@ describe('RaidCatalogueService.refreshIfDue', () => {
     );
 
     expect((await service.refreshIfDue(now)).refreshed).toBe(true);
+  });
+});
+
+describe('RaidCatalogueService — a 400 that is not the end', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('walks past a 400 below the newest stored expansion, and unlists nothing', async () => {
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    // Expansion 10 answers 400 this once; raids of 11 are stored.
+    const { service, getStaticData, markUnlisted } = serviceOver(
+      { 9: [raid(1, 'nine')], 11: [raid(3, 'eleven')] },
+      { first: 9, newest: 11 },
+    );
+
+    const result = await service.refresh();
+
+    expect(getStaticData.mock.calls.map(([expansion]) => expansion)).toEqual([9, 10, 11, 12]);
+    expect(result).toMatchObject({ expansions: [9, 11], unlisted: 0 });
+    expect(
+      markUnlisted,
+      'a walk with a hole in it knows nothing about what is gone',
+    ).not.toHaveBeenCalled();
+    expect(warn.mock.calls[0][0]).toMatch(
+      /lists no raids for expansion 10, though raids of expansion 11 are stored/,
+    );
+    expect(service.lastStatus.lastWalk).toMatchObject({ complete: false, expansions: [9, 11] });
+  });
+
+  it('still ends on the 400 past the newest stored expansion', async () => {
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const { service, getStaticData, markUnlisted } = serviceOver(
+      { 10: [raid(2, 'ten')], 11: [raid(3, 'eleven')] },
+      { first: 10, newest: 11 },
+    );
+
+    await service.refresh();
+
+    expect(getStaticData.mock.calls.map(([expansion]) => expansion)).toEqual([10, 11, 12]);
+    expect(markUnlisted).toHaveBeenCalledTimes(1);
+    expect(service.lastStatus).toMatchObject({ running: false, lastWalk: { complete: true } });
+  });
+
+  it('reports no walk before the first one', () => {
+    const { service } = serviceOver({});
+
+    expect(service.lastStatus).toEqual({ running: false, lastWalk: null });
   });
 });

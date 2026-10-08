@@ -1,34 +1,38 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
-import { GUILDS_COLLECTION, type GuildDocument } from './entities/guild.entity.js';
+import { type GuildDocument } from './entities/guild.entity.js';
+import { GUILDS_COLLECTION } from '../database/collections.js';
 
 const DUPLICATE_KEY = 11000;
 
+type GuildFields = Partial<GuildDocument>;
+
+/** The fields of a description that carry a value. */
+function known(guild: GuildDocument): GuildFields {
+  return Object.fromEntries(Object.entries(guild).filter(([, value]) => value !== null));
+}
+
+/** The fields it leaves out, written as null only when the guild is new. */
+function unknown(guild: GuildDocument): GuildFields {
+  return Object.fromEntries(Object.entries(guild).filter(([, value]) => value === null));
+}
+
 /** Storage for guilds: one document per guild. */
 @Injectable()
-export class GuildRepository implements OnModuleInit {
-  private readonly logger = new Logger(GuildRepository.name);
-
+export class GuildRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get guilds() {
     return this.mongo.collection<GuildDocument>(GUILDS_COLLECTION);
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.guilds.createIndexes([
-      // The identity, and what a raid's board points at.
-      { key: { id: 1 }, name: 'guild_identity', unique: true },
-      { key: { region: 1, 'realm.slug': 1, name: 1 }, name: 'guild_region_realm_name' },
-    ]);
-
-    this.logger.log(`Indexes ensured on "${GUILDS_COLLECTION}"`);
-  }
-
   /**
    * Writes guilds by id, field-level: a guild is described again by every board
-   * that lists it, and the latest description wins.
+   * that lists it, and the latest description wins — field by field, and only
+   * where it says something. A field a later answer leaves out keeps what an
+   * earlier one gave: upstream ceasing to send a realm is not the guild
+   * ceasing to have one.
    */
   async upsertGuilds(guilds: readonly GuildDocument[]): Promise<number> {
     if (guilds.length === 0) return 0;
@@ -36,7 +40,11 @@ export class GuildRepository implements OnModuleInit {
     const write = () =>
       this.guilds.bulkWrite(
         guilds.map((guild) => ({
-          updateOne: { filter: { id: guild.id }, update: { $set: guild }, upsert: true },
+          updateOne: {
+            filter: { id: guild.id },
+            update: { $set: known(guild), $setOnInsert: unknown(guild) },
+            upsert: true,
+          },
         })),
         { ordered: false },
       );

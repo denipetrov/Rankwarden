@@ -96,6 +96,12 @@ export class FakeRaiderIo {
     RequestMatcher,
     { status?: number; empty?: boolean; times?: number }
   >();
+  /**
+   * Requests that are slow, and by how much, on top of `delayMs`. Keyed by a
+   * `RequestMatcher`, so one board — or every ranking — can be made to take as
+   * long as a cold one does upstream while everything else stays instant.
+   */
+  readonly slowed = new Map<RequestMatcher, number>();
   /** Requests answered with an arbitrary body instead of the world's. */
   readonly corruptions = new Map<RequestMatcher, { payload: unknown; times?: number }>();
   /**
@@ -113,6 +119,7 @@ export class FakeRaiderIo {
     this.beforeServe = undefined;
     this.requests.length = 0;
     this.failures.clear();
+    this.slowed.clear();
     this.corruptions.clear();
     this.delayMs = 0;
     this.peakInFlight = 0;
@@ -129,6 +136,11 @@ export class FakeRaiderIo {
     options: { status?: number; empty?: boolean; times?: number },
   ): void {
     this.failures.set(matcher, options);
+  }
+
+  /** Makes every matching request take `ms` longer to answer. */
+  slow(matcher: RequestMatcher, ms: number): void {
+    this.slowed.set(matcher, ms);
   }
 
   /**
@@ -166,9 +178,14 @@ export class FakeRaiderIo {
 
     const startedAt = Date.now();
     const url = `https://raider.io/api/v1/${path}`;
+    const provider = options.healthProvider ?? 'raiderio';
 
     try {
-      if (this.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      const extra = [...this.slowed]
+        .filter(([matcher]) => matches(matcher, request))
+        .reduce((total, [, ms]) => total + ms, 0);
+      const wait = this.delayMs + extra;
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 
       this.beforeServe?.(request);
 
@@ -195,13 +212,19 @@ export class FakeRaiderIo {
         throw new RaiderIoEmptyResponseError(url);
       }
 
-      this.health?.recordSuccess('raiderio', options.region ?? 'global', Date.now() - startedAt);
+      this.health?.recordSuccess(provider, options.region ?? 'global', Date.now() - startedAt);
 
       return payload;
     } catch (error) {
       const status = error instanceof RaiderIoApiError ? error.statusCode : null;
       const reason = error instanceof Error ? error.message : String(error);
-      this.health?.recordFailure('raiderio', options.region ?? 'global', reason, status);
+
+      // As the real client: a 400 is an answer, not a failure of the upstream.
+      if (status === 400) {
+        this.health?.recordSuccess(provider, options.region ?? 'global', Date.now() - startedAt);
+      } else {
+        this.health?.recordFailure(provider, options.region ?? 'global', reason, status);
+      }
 
       throw error;
     } finally {

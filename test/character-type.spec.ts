@@ -2,16 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { CharacterRepository, enrichmentFilter } from '../src/leaderboard/character.repository.js';
-import {
-  CHARACTERS_COLLECTION,
-  type CharacterDocument,
-} from '../src/leaderboard/entities/character.entity.js';
+import { type CharacterDocument } from '../src/leaderboard/entities/character.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { ProfileEnrichmentService } from '../src/profile/profile-enrichment.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectIndexInventory, expectInvariants } from './support/invariants.js';
 import { World } from './support/world.js';
+import { CHARACTERS_COLLECTION } from '../src/database/collections.js';
 
 const DAY = 86_400_000;
 const MYTHIC_PLUS = 300;

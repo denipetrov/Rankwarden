@@ -2,14 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { RATING_FAMILIES } from '../src/blizzard/blizzard.constants.js';
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
-import { ARCHIVE_ENTRIES_COLLECTION } from '../src/archive/entities/archive.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../src/representation/entities/spec-representation.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { SeasonService } from '../src/season/season.service.js';
-import { SEASON_STATE_COLLECTION } from '../src/season/entities/season-state.entity.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import {
   CHARACTER_INDEXES,
@@ -18,6 +13,13 @@ import {
   expectNoUnrankedCharacters,
 } from './support/invariants.js';
 import { World } from './support/world.js';
+import {
+  ARCHIVE_ENTRIES_COLLECTION,
+  CHARACTERS_COLLECTION,
+  RATING_COLLECTIONS,
+  SEASON_STATE_COLLECTION,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 /**
  * S1 — cold start and first fill.

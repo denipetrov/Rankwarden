@@ -61,6 +61,8 @@ exits at boot with a zod error naming the missing variables — that is by desig
 | `npm run build` / `start:prod`           | Compile to `dist/`, run compiled output                  |
 | `npm run db:up` / `db:down` / `db:reset` | Start / stop stack; `db:reset` drops the volume          |
 | `npm run db:check`                       | Connectivity plus a full ingestion report                |
+| `npm run db:schema`                      | Build collections and indexes; `-- --verify` only checks |
+| `npm run config:check`                   | Validate the environment with the service's own schema   |
 | `npm run db:shell`                       | `mongosh` inside the container                           |
 | `npm run db:migrate`                     | One-off legacy `leaderboard_entries` → `characters` fold |
 
@@ -773,6 +775,40 @@ through the gap between seasons.
 
 ## 5. Data model
 
+Every collection name is declared in one file, [`src/database/collections.ts`](src/database/collections.ts),
+grouped by area (PvP live and archive, Mythic+ live and archive, raiding, infrastructure).
+It is the single source of truth: the document interfaces stay in each module's
+`entities/`, but no module declares a collection name of its own. `ALL_COLLECTIONS` lists
+them all for diagnostics and census-style checks. A name is a wire contract, since data
+already sits under it, so renaming one is a migration rather than an edit. The standalone
+`scripts/*.mjs` cannot import TypeScript and repeat the names as literals.
+
+Indexes follow the same idea one level down. Each folder that owns collections has a single
+`<folder>.indexes.ts` declaring every index on them, one constant per collection named after
+it (`ARCHIVE_ENTRIES_COLLECTION` → `ARCHIVE_ENTRIES_INDEXES`), with the comment saying which
+query each index serves. Index names retired by a later build are declared in the same
+file, so it shows what was removed as well as what exists.
+
+**No repository creates an index.** `src/database/schema/schema.definition.ts` pairs every
+collection with its indexes (`DATABASE_SCHEMA`), and `SchemaService` does two things with
+that list, kept apart because in production two different actors perform them:
+
+- `apply()` creates missing collections, builds indexes, drops retired ones (always after
+  their replacements exist), and runs the one-off data repairs in `data-fixes.ts`.
+  Idempotent. This is `npm run db:schema`, the deploy step.
+- `verify()` reads only, and returns every difference between the database and the
+  declaration: a missing collection or index, an index of the right name over the wrong
+  fields or without its uniqueness, a retired index still present. An index nobody
+  declared is left alone, so an operator can add one without blocking a start.
+
+`DB_SCHEMA_MODE` decides what startup does (`SchemaBootstrap`, in `onModuleInit`, so before
+any scheduler). `ensure`, the default, calls `apply()`: development and every test start
+from an empty database. `verify` calls `verify()` and **refuses to start** when anything
+is reported: production, where the service runs as a database user with no right to
+create or drop an index, and a restart must never alter the structure. Refusing matters as
+much as not building: a service without its unique indexes does not fail, it writes
+duplicates and reports success.
+
 ### 5.1 `characters` — one document per character per season+region
 
 ```js
@@ -811,7 +847,7 @@ Indexes: `character_identity` (unique `seasonId+region+characterId`), `character
 from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
 (§4.2). The sweep sets it with `$setOnInsert`, so a document another source created is never
 reclassified into the enrichment queue. Documents from before the field existed are
-backfilled to `PvP` at boot, in `onModuleInit` and so before any scheduler starts. The sweep
+backfilled to `PvP` by the schema step (`data-fixes.ts`), before any scheduler starts. The sweep
 was the only writer then. The sync endpoint never touches the type.
 
 > **In practice `characters` holds only `PvP` today.** M+ characters live in their own
@@ -849,7 +885,8 @@ prefix costs nothing.
 > never gets a timestamp, and an absent field sorts ahead of every date. Keyed on the
 > timestamp alone, every M+ character would sit at the front of the index order, and each
 > enrichment run would read all of them before reaching one it can use. The superseded
-> `specs_staleness` / `profile_staleness` are dropped at boot, after their replacements exist.
+> `specs_staleness` / `profile_staleness` are dropped by the schema step, after their
+> replacements exist.
 
 > **Why the wildcard.** MongoDB caps a collection at 64 indexes; one per bracket would need
 > 85+. Mirroring only `rating` (the sole searchable field) into a flat map lets a single
@@ -1277,7 +1314,7 @@ old document is replaced rather than kept beside the new one. An archived season
 again **once** by the backfill, which looks for archived seasons with no per-dungeon document:
 the one time an archived season's figures are recomputed. The old unique index
 `mplus_representation_identity` (`season+region`) would reject every per-dungeon document, so
-`onModuleInit` drops it before building the new one.
+the schema step drops it (`mplus-representation.indexes.ts`).
 
 Indexes: `mplus_representation_key` (unique `season+region+dungeonId`, also the front end's
 filter), `mplus_representation_by_region`.
@@ -1372,6 +1409,13 @@ and 244 encounters**; `id` and `slug` are each unique across all of them.
   static data answers 200 with no seasons. The walk reads that 400, and only that, as the
   end; any other failure stops the walk without reaching it, so later expansions are left as
   they were rather than taken for gone. `expansion_id` is required: without it, 400 too.
+- **A 400 below the newest stored expansion is a hole, not the end.** If expansion 10
+  answers 400 while raids of 11 are stored, the walk warns, carries on to 11 and 12, and is
+  not "complete": nothing is marked unlisted on the strength of it. One bad answer must not
+  take two expansions' raids — and the boards read for them — out of service until the next
+  walk.
+- **That 400 is not a failure of Raider.io.** The HTTP client records a 400 as the upstream
+  answering (§9.18); before it did, every successful walk left readiness `degraded`.
 - **A re-release is a raid of its own.** Fated (Shadowlands) and Awakened (Dragonflight)
   raids have their own id — the original's plus 100,000,000 — their own slug, dates and
   encounter slugs (`fated-shriekwing`). They are stored as separate documents: each had its
@@ -1385,7 +1429,7 @@ and 244 encounters**; `id` and `slug` are each unique across all of them.
   a refresh.
 - The scheduler ticks at boot and then every `RAID_CATALOGUE_CHECK_INTERVAL_MS`. It takes no
   part in the coordinator's ordering: six requests and thirty writes compete with nothing.
-  Requests are charged to the Raider.io budget's `other` consumer.
+  Requests are charged to the Raider.io budget's `raidCatalogue` consumer.
 - `POST /admin/raid-catalogue` (development only) re-reads it now, ignoring the TTL.
 - `RaidCatalogueRepository.allRaids()` and `findBySlug()` project the boards (`guilds`) out:
   they are the bulk of a raid document and nothing in the catalogue reads them.
@@ -1434,9 +1478,10 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
   by raid and, within a raid, in the configured difficulty order. Two boards read together
   name the same guilds, so `GuildRepository.upsertGuilds` retries a duplicate-key once: the
   guild the other board inserted is by then there to update.
-- **Read twenty at a time, five pages a board** (§9.17). The pages are read in order and stop
-  at the first short one; a guild appearing on two pages (the board moved between them) is
-  kept once, at its first place.
+- **Read twenty at a time, up to five pages a board** (§9.17). The pages are read in order
+  and stop at the first **empty** one — never at a short one (§9.19): a page is a window of
+  ranks, and a rank upstream does not show leaves its page with 19. A guild appearing on two
+  pages (the board moved between them) is kept once, at its first place.
 - **A board is replaced whole or not at all.** If any page fails, the stored board and its
   stamp stay as they were and the board is due again next run. Guilds are written before the
   board that names them, so a `guildId` always resolves (invariant I26).
@@ -1455,10 +1500,18 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
 - **Ranks are as served**, never the position in the list: a board can skip a rank (The
   Emerald Nightmare's top 100 has 97 entries). A board nobody is ranked on — Blackrock Depths
   has Normal and Heroic and no Mythic — is an empty board, stored as `[]` with its stamp.
-- **Failures.** A 400 (a raid, region or difficulty upstream does not know) is logged and
-  the run moves on. Anything else is logged, the board keeps what it had, and after three
+- **A refused board is an answer.** A 400 or a 404 (a raid, region or difficulty upstream
+  does not know) is logged, counted (`refused`), and stamped in
+  `guildsRefusedAt.<region>.<difficulty>`; any board stored before is kept. The refusal
+  settles the board as a read does: a closed raid's is not asked for again, an open raid's
+  once a day, where it used to be asked — and warned about — every hour for ever. Reading the
+  board clears the stamp, and `?raid=<slug>` asks regardless.
+- **Other failures.** Anything else is logged, the board keeps what it had, and after three
   failures with no board succeeding in between the run starts no more boards until the next
   interval (those already in flight finish). A guild is never deleted.
+- **A guild's description never blanks what is known.** `upsertGuilds` sets only the fields
+  an answer carries a value for; one it leaves out (`realm`, `faction`, …) keeps what an
+  earlier answer gave, and is written as null only for a guild that is new.
 - **Size.** A raid document with all fifteen boards is a few megabytes — the Mythic boards
   alone reached 1.0 MB on the largest raid when checked live — against MongoDB's 16 MB cap.
   Read a raid with a projection (`guilds.world.mythic`), never whole, unless every board is
@@ -1466,10 +1519,27 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
 - **Lowest priority in the service** (§4): no run at boot; the first comes after the first
   sweep, enrichment pass and Mythic+ pass, then one per interval, each waiting for every
   other job to be idle and pausing between boards for any that starts. A run still going is
-  not stacked on, and a shutdown ends it at the next board. `POST /admin/raid-rankings` is
-  not held back: an operator asked for it now. Requests are charged to
-  the Raider.io budget's `other` consumer. Needs `RAID_CATALOGUE_ENABLED`, refused at boot
+  not stacked on, and a shutdown ends it at the next board — also when it comes while the
+  run is paused. The scheduler logs once when a run pauses and once when it resumes or gives
+  up. `POST /admin/raid-rankings` is not held back: an operator asked for it now. That holds
+  because a run by hand and a scheduled run are **two runs** (`refreshDue()` against
+  `refreshDue(now, control)`): callers of one kind share a run, the kinds never do, or a
+  hand-started run would wait on a paused scheduled one and a scheduled one riding a
+  hand-started run would stop yielding. Requests are charged to
+  the Raider.io budget's `raidRankings` consumer: counted against the same per-minute window
+  the Mythic+ jobs draw on (so their allowances shrink by it) and reported under
+  `raiderIoQuota.spent` on `/health/ready`, but not capped by a share of its own — the
+  client's shared token bucket keeps the total under the limit, and the job steps aside for
+  a Mythic+ pass anyway. Needs `RAID_CATALOGUE_ENABLED`, refused at boot
   otherwise; each run checks the catalogue first, so a first boot finds its raids.
+- **Health.** `/health` `jobs` carries `raidCatalogue` (`running`, `lastWalk` with
+  `complete`), `raidRankingsRunning` and `raidRankings` (the last run's `boards`, `failed`,
+  `refused`, `settled`, `raids`, `guilds`, `stopped`, `finishedAt`). Ranking requests are
+  observed as their own upstream, `raiderioRankings`, shown on `/health/ready` and **never
+  folded into its status**: the endpoint times out on its own, and a failing `eu` board must
+  not read as Raider.io being down for Mythic+ in `eu`.
+- **A configured difficulty or region that is later removed** leaves its boards where they
+  are: stale, never refreshed, never deleted.
 
 ---
 
@@ -1487,6 +1557,17 @@ Non-2xx becomes `BlizzardApiError` with `statusCode` and `isNotFound`.
 | `/data/wow/pvp-season/{id}/pvp-leaderboard/{bracket}`   | dynamic   | the ladder                                   |
 | `/profile/wow/character/{realm}/{name}`                 | profile   | race, class, realm, title, guild             |
 | `/profile/wow/character/{realm}/{name}/specializations` | profile   | spec, hero tree, loadouts                    |
+
+**No address is written in the code.** The host is `BLIZZARD_API_HOST_TEMPLATE` and each
+path above is a `BLIZZARD_PATH_*` variable (§8); Raider.io has `RAIDERIO_API_BASE_URL` and
+`RAIDERIO_PATH_*` the same way. `PvpApi`, `ProfileApi`, `MythicPlusApi` and `RaidingApi` read
+them once at construction and fill the `{name}` placeholders per request with `fillPath`
+(`src/common/utils/path-template.ts`). The defaults are the paths the upstreams serve today,
+so a renamed path is corrected in `production.env` and a deploy, with no new image. A new
+endpoint gets a variable declared with `pathTemplate(default, placeholders)` in
+`env.schema.ts`, never a string literal in an API class. Validation refuses a path that
+drops a placeholder, names one the service does not fill, or is more than a path. Only the
+address is configurable: a change in what an endpoint returns still needs its schema changed.
 
 **Quota: 100 requests/second, 36,000/hour.** Everything else follows from that. The hour is
 governed by the shared budget (§4.0); the second by each job's own `RateLimiter`.
@@ -1603,6 +1684,7 @@ Pings Mongo (cached ~3s) and reports what real traffic has already observed of B
 | everything healthy                      | `ok`       | **200** |
 | Blizzard failing (any/all regions)      | `degraded` | **200** |
 | **Raider.io failing (any/all regions)** | `degraded` | **200** |
+| raid-ranking endpoint failing           | unchanged  | **200** |
 | no sweep for 2× `INGEST_INTERVAL_MS`    | `degraded` | **200** |
 | enrichment infeasible or behind         | `degraded` | **200** |
 | **M+ infeasible, failing or cut short** | `degraded` | **200** |
@@ -1770,13 +1852,22 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)                  |
 | `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above                |
 | `BLIZZARD_LOCALE`                     | `en_US`                             |                                                            |
-| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; the L3 test seam                  |
+| `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; also the L3 test seam             |
+| `BLIZZARD_PATH_PVP_SEASON_INDEX` | `data/wow/pvp-season/index` | Endpoint paths under the host: see §6 |
+| `BLIZZARD_PATH_PVP_SEASON` | `data/wow/pvp-season/{seasonId}` |  |
+| `BLIZZARD_PATH_PVP_LEADERBOARD_INDEX` | `data/wow/pvp-season/{seasonId}/pvp-leaderboard/index` |  |
+| `BLIZZARD_PATH_PVP_LEADERBOARD` | `data/wow/pvp-season/{seasonId}/pvp-leaderboard/{bracket}` |  |
+| `BLIZZARD_PATH_PVP_REWARD_INDEX` | `data/wow/pvp-season/{seasonId}/pvp-reward/index` |  |
+| `BLIZZARD_PATH_PLAYABLE_SPECIALIZATION` | `data/wow/playable-specialization/{specId}` |  |
+| `BLIZZARD_PATH_CHARACTER_PROFILE` | `profile/wow/character/{realmSlug}/{characterName}` |  |
+| `BLIZZARD_PATH_CHARACTER_SPECIALIZATIONS` | `profile/wow/character/{realmSlug}/{characterName}/specializations` |  |
 | `BLIZZARD_REQUEST_TIMEOUT_MS`         | `30000`                             |                                                            |
 | `BLIZZARD_RETRY_LIMIT`                | `3`                                 | Ladder and season endpoints                                |
 | `PROFILE_RETRY_LIMIT`                 | `1`                                 | Per-character endpoints; lower on purpose                  |
 | `BLIZZARD_CONCURRENCY`                | `8`                                 | Parallel bracket fetches per sweep                         |
 | `MONGODB_URI`                         | —                                   | **Required**                                               |
 | `MONGODB_DB`                          | `rankwarden`                        |                                                            |
+| `DB_SCHEMA_MODE`                      | `ensure`                            | `ensure` builds the structure at startup; `verify` checks it and refuses to start (§5) |
 | `MONGODB_SOCKET_TIMEOUT_MS`           | `300000`                            | Longest wait on one socket read; the driver's default is none |
 | `INGEST_INTERVAL_MS`                  | `3600000`                           |                                                            |
 | `INGEST_RUN_ON_STARTUP`               | `true`                              |                                                            |
@@ -1811,7 +1902,12 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `QUOTA_ENRICHMENT_HEADROOM`           | `3`                                 | Enrichment plans at most cap / this                        |
 | `QUOTA_SWEEP_RESERVE`                 | `1000`                              | Held back for the sweep each hour                          |
 | `RAIDER_IO_API_KEY`                   | —                                   | **Required when `MPLUS_ENABLED=true`**                     |
-| `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | The test seam for the second upstream                      |
+| `RAIDERIO_API_BASE_URL`               | `https://raider.io/api/v1`          | Also the test seam for the second upstream                 |
+| `RAIDERIO_PATH_MPLUS_RUNS` | `mythic-plus/runs` | Endpoint paths under the base url; no placeholders |
+| `RAIDERIO_PATH_MPLUS_SEASON_CUTOFFS` | `mythic-plus/season-cutoffs` |  |
+| `RAIDERIO_PATH_MPLUS_STATIC_DATA` | `mythic-plus/static-data` |  |
+| `RAIDERIO_PATH_RAID_STATIC_DATA` | `raiding/static-data` |  |
+| `RAIDERIO_PATH_RAID_RANKINGS` | `raiding/raid-rankings` |  |
 | `RAIDERIO_REGIONS`                    | `us,eu,kr,tw,cn`                    | Includes `cn`; `world` is rejected                         |
 | `RAIDERIO_REQUEST_TIMEOUT_MS`         | `30000`                             | Also caps `Retry-After`                                    |
 | `RAIDERIO_RETRY_LIMIT`                | `2`                                 | 408/429/5xx only — never 400                               |
@@ -2051,11 +2147,37 @@ and no other failure — as the end.
 like the obvious read. Its cost is per guild and far from flat: checked live (2026-10-02),
 a hundred guilds of an older raid took 40-60s in one request, Amirdrassil's world board
 answered 504 from upstream's gateway at 60s on every attempt, and asking again a minute
-later was just as slow. The same boards twenty at a time took 1-2s a page. So a board is
+later was just as slow. The same boards twenty at a time took 1-2s a page when probed one
+by one — and 2.6 to 25s for a page nothing had asked for lately, during a real backfill
+(2026-10-05), which the 75s timeout covers. So a board is
 five requests of twenty (`RAID_RANKING_PAGE_SIZE`), several boards at a time rather than
 several pages of one, with a timeout of its own
 (`RAID_RANKINGS_REQUEST_TIMEOUT_MS`) through `RaiderIoGetOptions.timeoutMs`. Raising the page
 size to save requests brings the 504s back.
+
+### 9.18 A 400 from Raider.io is an answer, not an outage
+
+Two callers read a 400 as the end of a list: the Mythic+ pass past page 1000 and the raid
+catalogue past the last expansion. `RaiderIoHttpService` used to record every non-2xx as a
+failure of the upstream, so the last request of every successful catalogue walk left the
+`global` region with a consecutive failure and `/health/ready` saying `degraded` until some
+other `global` request succeeded — found by running it (2026-10-05). A 400 is now recorded
+as a success: the upstream answered. Everything else non-2xx is still a failure.
+
+### 9.19 A short ranking page is not the last page
+
+`/raiding/raid-rankings` pages by **rank**, not by position: page 0 is ranks 1-20, page 1 is
+21-40. A rank Raider.io does not show is simply left out, so its page comes back with 19
+guilds and the board carries on — The Emerald Nightmare's world Mythic board serves 19, 20,
+20, 19 and 19. Ending a board at the first page shorter than twenty, the obvious rule, cut
+54 of 450 boards when checked live, most to 19 guilds of about 97, and marked them read for
+good because their raids are finished. A board ends at an **empty** page or after five. The
+cost is one request more for a board that really is shorter than a hundred. A whole window
+of twenty hidden ranks would still end a board early; that has not been seen.
+
+The fake paged by position until this was found, which is why no test caught it:
+`WorldGuild.notServed` and rank-window paging in `MplusWorld.raidRankings()` are the fix on
+the harness side, and invariant I28 compares stored boards with what the world serves.
 
 ---
 
@@ -2073,13 +2195,23 @@ size to save requests brings the 504s back.
 > asserted (`RAID_RANKINGS_CONCURRENCY=1` in the harness); `test/raid-rankings-parallel.spec.ts`
 > reads five at once; `test/raid-rankings-scheduler.spec.ts` has the real gates (nothing at
 > boot, after the Mythic+ pass, pausing mid-run for each job above). The ranking files open
-> the gates with a sweep in `beforeAll`, as the harness runs none at startup. Unit specs sit beside the service, mapper, scheduler and guild
+> the gates with a sweep in `beforeAll`, as the harness runs none at startup. The raid test
+> plan's cases are in `test/raid-plan-*.spec.ts`: `findings` (one regression guard per defect
+> found, RG1-RG6), `catalogue` (R1), `boards` (R2-R7: rank windows, what is due, guilds,
+> failures, health), `scheduling` (R5: a slow backfill pausing, a shutdown mid-pause, the
+> restart after it) and `config` (a `cn` board, a difficulty no longer configured);
+> `raid-disabled.spec.ts` is both jobs off. `FakeRaiderIo.slow(matcher, ms)` makes chosen
+> requests slow. Unit specs sit beside the service, mapper, scheduler and guild
 > repository. `MplusWorld.guilds` (`progress` is Mythic; `heroic`, `normal`) and
 > `raidRankings()` serve the boards; `raid:<slug>` and `difficulty:<d>` are `RequestMatcher`
 > keys. Invariants
-> **I26** (every ranked `guildId` is a guild document) and **I27** (a board is best first, no
-> rank or guild twice, at most a hundred, stamped, each boss tied to its raid's encounter)
-> run with every `expectInvariants`.
+> **I26** (every ranked `guildId` is a guild document), **I27** (a board is best first, no
+> rank or guild twice, at most a hundred, stamped, each boss tied to its raid's encounter),
+> **I29** (a guild document is whole) and **I30** (a raid document keeps its catalogue
+> fields and stays well under 16 MB) run with every `expectInvariants`. **I28** (a stored
+> board holds exactly what the world serves for ranks 1-100) is opt-in — pass the
+> `MplusWorld` as the third argument, straight after the boards were read — because
+> self-consistency cannot see a board cut short.
 
 > **Mythic+ specifically:** [`MPLUS-TESTING.md`](MPLUS-TESTING.md) maps every Mythic+ part to
 > the rule it promises, the spec that pins it, and what is still unpinned. It is the file to
@@ -2235,7 +2367,7 @@ new attribution side by side.
 
 **Adding a bracket family.** `RATING_FAMILIES` in `blizzard.constants.ts` drives collection
 names, the sweep's mirroring, the sync endpoint's fan-out, and the representation job. Add
-the family and the collection appears with its indexes on next boot. `specSplitFamilyOf`
+the family and the collection appears with its indexes on the next schema step. `specSplitFamilyOf`
 decides whether a family is spec-split (spec from the bracket name) or core (spec from the
 profile).
 
@@ -2251,8 +2383,18 @@ appropriate key list (`PROFILE_SUMMARY_KEYS` or `PROFILE_SPEC_KEYS` — they are
 and the sync DTO. Existing characters need `profileFetchedAt`/`specsFetchedAt` cleared to
 pick the field up before the TTL expires.
 
-**Adding an index.** `characters` is near no cap, but remember the 64-index limit and prefer
-extending the wildcard-covered maps over adding per-key indexes.
+**Adding a collection.** Declare its name in `src/database/collections.ts` and add it to
+`ALL_COLLECTIONS`; put the document interface in the module's `entities/`; declare its indexes
+in the folder's `<folder>.indexes.ts`; and pair the two in `DATABASE_SCHEMA`
+(`src/database/schema/schema.definition.ts`). A unit test fails until the last step is done:
+a collection left out would still be created in production, by its first insert, with no
+indexes at all.
+
+**Adding an index.** Declare it in the folder's `<folder>.indexes.ts`, with a comment naming the
+query it serves; never inline in a repository. Replacing one means adding the old name to the
+retired list in the same file, or it lingers and costs write throughput. `characters` is near
+no cap, but remember the 64-index limit and prefer extending the wildcard-covered maps over
+adding per-key indexes.
 
 **Adding a third upstream.** The pattern is now established rather than improvised, and
 Raider.io is the worked example: a module under `src/<upstream>/` with `http/`, `schemas/`
@@ -2278,7 +2420,33 @@ afterwards.
 
 ---
 
-## 12. Known limitations
+## 12. Deployment
+
+The decisions and their reasons are in [DEPLOYMENT-PLAN.md](DEPLOYMENT-PLAN.md); the procedure
+is in [deploy/README.md](deploy/README.md). What an agent changing this service has to keep
+true:
+
+- **One image, three commands.** `Dockerfile` builds it on Node 24, non-root. It runs the
+  service (`dist/main.js`), the schema step (`dist/schema.main.js`) and the configuration
+  check (`dist/config-check.main.js`). The private `@denipetrov/blizz-auth` token is a
+  build secret and reaches no layer.
+- **Exactly one instance.** The Deployment is hard-coded to one replica with the `Recreate`
+  strategy, because the schedulers, the coordinator and the Blizzard budget are in-process.
+  Anything that would let two run together — a rolling update, an autoscaler — is a bug.
+- **Structure belongs to the deploy.** A schema Job runs before the service on every
+  release; the service starts with `DB_SCHEMA_MODE=verify` (§5). A change that needs a new
+  index needs nothing extra: declare it, and the next release builds it.
+- **Production settings live in `deploy/helm/rankwarden/env/production.env`.** A new
+  variable in `env.schema.ts` must be added there too; `production-env.spec.ts` fails until
+  it is. The four credentials never go in that file.
+- **No public entry.** The service is `ClusterIP` only, and a NetworkPolicy admits just the
+  `backend` namespace, because its endpoints have no authentication.
+- **CI runs with no `.env`.** A test that passes only because a developer's `.env` supplied a
+  value fails there; set what a test needs in the test.
+
+---
+
+## 13. Known limitations
 
 - **No authentication** on `POST /characters/sync` or on the health endpoints. The
   `/admin/*` triggers are unauthenticated too, which is why they 404 outside development.
@@ -2297,8 +2465,10 @@ afterwards.
 - **Enrichment backlog.** At default batch size a full pass over ~138k characters takes
   roughly two days, and the archive yields to enrichment, so a backfill running alongside it
   progresses only in the gaps.
-- **The season purge is irreversible and fires at boot on a first deploy** (§4.8). Ship
-  behind `SEASON_PURGE_DRY_RUN=true` and read the logged plan before flipping it.
+- **The season purge is irreversible and fires at boot on a first deploy** (§4.8). Production
+  runs with `SEASON_PURGE_DRY_RUN=false` (`production.env`). That is harmless on a database
+  that starts empty, which has no finished season to retire. A first deploy over **restored**
+  data should override it to `true` once and read the logged plan (`deploy/README.md`).
 - **Cross-region boards need four queries merged**, or a `seasonId + rating` index; the
   current index is prefixed by region.
 - **`mplus_characters.mythicScore` is not Raider.io's mythic+ score** (§5.5). It sums only

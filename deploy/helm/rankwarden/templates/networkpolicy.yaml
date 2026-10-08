@@ -1,0 +1,35 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "rankwarden.labels" . | nindent 4 }}
+spec:
+  # `POST /characters/sync` and the health endpoints carry no authentication.
+  # Inside the cluster this policy is therefore the access control: only the
+  # namespaces listed may open a connection, and everything else — including
+  # other pods in this namespace — is refused. Kubelet probes come from the
+  # node itself and are not subject to it.
+  #
+  # Outbound traffic is not restricted: the service has to reach Blizzard,
+  # Raider.io, DNS and the database.
+  podSelector:
+    matchLabels:
+      {{- include "rankwarden.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    {{- if .Values.networkPolicy.allowedNamespaces }}
+    - ports:
+        - protocol: TCP
+          port: 3000
+      from:
+        {{- range .Values.networkPolicy.allowedNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+    {{- else }}
+    []
+    {{- end }}
+{{- end }}

@@ -106,7 +106,3 @@ export interface ArchiveBracketDocument {
   entries: number;
   fetchedAt: Date;
 }
-
-export const ARCHIVE_ENTRIES_COLLECTION = 'archive_entries';
-export const ARCHIVE_SEASONS_COLLECTION = 'archive_seasons';
-export const ARCHIVE_BRACKETS_COLLECTION = 'archive_brackets';

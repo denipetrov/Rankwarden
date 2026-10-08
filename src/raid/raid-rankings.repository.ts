@@ -3,11 +3,11 @@ import { Injectable } from '@nestjs/common';
 import { MongoService } from '../database/mongo.service.js';
 import type { RaidDifficulty, RaidRankingRegion } from '../raiderio/raiderio.constants.js';
 import {
-  RAIDS_COLLECTION,
   type RaidDocument,
   type RaidEncounter,
   type RaidRankedGuild,
 } from './entities/raid.entity.js';
+import { RAIDS_COLLECTION } from '../database/collections.js';
 
 /** What the rankings job needs to know about a raid to decide what to read. */
 export interface RaidRankingTarget {
@@ -16,10 +16,19 @@ export interface RaidRankingTarget {
   ends: RaidDocument['ends'];
   encounters: RaidEncounter[];
   guildsUpdatedAt?: RaidDocument['guildsUpdatedAt'];
+  guildsRefusedAt?: RaidDocument['guildsRefusedAt'];
 }
 
 const TARGET_FIELDS = {
-  projection: { _id: 0, id: 1, slug: 1, ends: 1, encounters: 1, guildsUpdatedAt: 1 },
+  projection: {
+    _id: 0,
+    id: 1,
+    slug: 1,
+    ends: 1,
+    encounters: 1,
+    guildsUpdatedAt: 1,
+    guildsRefusedAt: 1,
+  },
 } as const;
 
 /**
@@ -55,8 +64,25 @@ export class RaidRankingsRepository {
   }
 
   /**
-   * Replaces one board of one raid and stamps it. Only that board: the others,
-   * and everything the catalogue wrote, are left as they are.
+   * Records that Raider.io refused one board. The board itself, if one was
+   * ever stored, is left as it was.
+   */
+  async markRefused(
+    raidId: number,
+    region: RaidRankingRegion,
+    difficulty: RaidDifficulty,
+    refusedAt: Date,
+  ): Promise<void> {
+    await this.raids.updateOne(
+      { id: raidId },
+      { $set: { [`guildsRefusedAt.${region}.${difficulty}`]: refusedAt } },
+    );
+  }
+
+  /**
+   * Replaces one board of one raid and stamps it, clearing any refusal. Only
+   * that board: the others, and everything the catalogue wrote, are left as
+   * they are.
    */
   async setBoard(
     raidId: number,
@@ -72,6 +98,7 @@ export class RaidRankingsRepository {
           [`guilds.${region}.${difficulty}`]: guilds,
           [`guildsUpdatedAt.${region}.${difficulty}`]: readAt,
         },
+        $unset: { [`guildsRefusedAt.${region}.${difficulty}`]: '' },
       },
     );
   }

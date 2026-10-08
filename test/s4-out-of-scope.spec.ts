@@ -2,8 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { RATING_FAMILIES, ratingFamilyOf } from '../src/blizzard/blizzard.constants.js';
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
 import { CharacterRepository } from '../src/leaderboard/character.repository.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { RatingRepository } from '../src/leaderboard/rating.repository.js';
@@ -12,6 +10,7 @@ import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectInvariants, expectNoUnrankedCharacters } from './support/invariants.js';
 import { World, type WorldPlayer } from './support/world.js';
+import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../src/database/collections.js';
 
 /**
  * S4 — falling out of scope.

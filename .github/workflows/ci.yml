@@ -1,0 +1,121 @@
+name: CI
+
+# Everything that has to hold before a change is merged or released: the code,
+# the production configuration, the charts, and the image itself.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Node version the image runs (Dockerfile, NODE_VERSION). Tests run on it
+  # so that what is tested is what is deployed.
+  NODE_VERSION: '24'
+  # `@denipetrov/blizz-auth` is a private GitHub package. The workflow token can
+  # read it once this repository is granted access under the package's
+  # "Manage Actions access" setting; otherwise store a personal access token
+  # with `read:packages` as the PACKAGES_TOKEN secret.
+  NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+
+jobs:
+  test:
+    name: Lint, build and test
+    runs-on: ubuntu-latest
+    services:
+      # The integration suite runs against a real MongoDB, the same version the
+      # chart deploys. Every test file uses its own `rankwarden_test_*` database.
+      mongo:
+        image: mongo:8.3.8
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval \"db.adminCommand('ping').ok\""
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          registry-url: https://npm.pkg.github.com
+          scope: '@denipetrov'
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Not `npm run lint`, which rewrites files with --fix: CI must report a
+      # problem, never repair it out of sight.
+      - name: Lint
+        run: npx eslint "{src,test}/**/*.ts"
+
+      - name: Formatting
+        run: npx prettier --check "src/**/*.ts" "test/**/*.ts"
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:int
+
+      # The production settings, checked by the service's own validation. A
+      # value that would crash-loop the pod fails here instead. The four secret
+      # variables are placeholders: only their presence is validated.
+      - name: Validate production configuration
+        run: node --env-file=deploy/helm/rankwarden/env/production.env dist/config-check.main.js
+        env:
+          BLIZZARD_CLIENT_ID: placeholder
+          BLIZZARD_CLIENT_SECRET: placeholder
+          RAIDER_IO_API_KEY: placeholder
+          MONGODB_URI: mongodb://placeholder:27017
+
+  charts:
+    name: Helm charts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Lint
+        run: |
+          helm lint deploy/helm/mongodb
+          helm lint deploy/helm/rankwarden --set image.tag=ci
+
+      - name: Render
+        run: |
+          helm template mongodb deploy/helm/mongodb --namespace rankwarden > /dev/null
+          helm template rankwarden deploy/helm/rankwarden --namespace rankwarden --set image.tag=ci > /dev/null
+
+      - name: Deploy scripts parse
+        run: for script in deploy/scripts/*.sh; do bash -n "$script"; done
+
+  image:
+    name: Container image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # Built, not pushed: this only proves the Dockerfile still works. Images
+      # are published by the release workflow, from a version tag.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          secrets: |
+            npm_token=${{ env.NODE_AUTH_TOKEN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -6,11 +6,11 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 
+import { QUOTA_WINDOWS_COLLECTION } from '../../database/collections.js';
 import { MongoService } from '../../database/mongo.service.js';
 import { describeError } from '../utils/errors.js';
 import { RaiderIoBudget, type RaiderIoConsumer } from './raiderio-budget.service.js';
 
-export const QUOTA_WINDOWS_COLLECTION = 'quota_windows';
 const DOCUMENT_ID = 'raiderio';
 /** How often a changed minute is written. Well inside the minute it describes. */
 const FLUSH_MS = 5_000;

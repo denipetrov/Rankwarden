@@ -3,8 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import type { MongoService } from '../database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../mplus/entities/mplus-run.entity.js';
 import type { MplusSeasonDocument } from './entities/mplus-season.entity.js';
 import type { MplusCatalogueRepository } from './mplus-catalogue.repository.js';
 import type { MplusSeasonStateRepository } from './mplus-season-state.repository.js';
@@ -12,6 +10,7 @@ import {
   MplusSeasonTransitionService,
   supersededSeasons,
 } from './mplus-season-transition.service.js';
+import { MPLUS_CHARACTERS_COLLECTION, MPLUS_RUNS_COLLECTION } from '../database/collections.js';
 
 const now = new Date('2026-09-14T00:00:00Z');
 

@@ -107,9 +107,13 @@ export interface RaidDocument {
   guilds?: Partial<Record<RaidRankingRegion, RaidBoards<RaidRankedGuild[]>>>;
   /** When each board was last read, in the same shape. */
   guildsUpdatedAt?: Partial<Record<RaidRankingRegion, RaidBoards<Date>>>;
+  /**
+   * When Raider.io last refused a board (a 400 or a 404), in the same shape;
+   * cleared when the board is next read. A refusal settles a board as a read
+   * does, so it is not asked for again every run.
+   */
+  guildsRefusedAt?: Partial<Record<RaidRankingRegion, RaidBoards<Date>>>;
 }
 
 /** A raid without its boards, which is all the catalogue itself ever needs. */
-export type RaidCatalogueDocument = Omit<RaidDocument, 'guilds'>;
-
-export const RAIDS_COLLECTION = 'raids';
+export type RaidCatalogueDocument = Omit<RaidDocument, 'guilds' | 'guildsRefusedAt'>;

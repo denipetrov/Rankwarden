@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
+import { fillPath } from '../common/utils/path-template.js';
+import type { Env } from '../config/env.schema.js';
 import type { Region } from './blizzard.constants.js';
 import { BlizzardApiError } from './http/blizzard-api.error.js';
 import { BlizzardHttpService } from './http/blizzard-http.service.js';
@@ -10,20 +13,37 @@ import {
   type CharacterSpecializationsPayload,
 } from './schemas/character-profile.schema.js';
 
-/** Typed access to the per-character profile endpoints. */
+/**
+ * Typed access to the per-character profile endpoints.
+ *
+ * Endpoint paths come from configuration (`BLIZZARD_PATH_*`), not from here.
+ */
 @Injectable()
 export class ProfileApi {
   private readonly logger = new Logger(ProfileApi.name);
 
-  constructor(private readonly http: BlizzardHttpService) {}
+  private readonly profilePath: string;
+  private readonly specializationsPath: string;
+
+  constructor(
+    private readonly http: BlizzardHttpService,
+    config: ConfigService<Env, true>,
+  ) {
+    this.profilePath = config.get('BLIZZARD_PATH_CHARACTER_PROFILE', { infer: true });
+    this.specializationsPath = config.get('BLIZZARD_PATH_CHARACTER_SPECIALIZATIONS', {
+      infer: true,
+    });
+  }
 
   /**
    * Character names are case-insensitive in the API but must be lowercased and
    * percent-encoded — ladders are full of names like "Zëph".
    */
-  private path(realmSlug: string, characterName: string, suffix = ''): string {
-    const name = encodeURIComponent(characterName.toLowerCase());
-    return `profile/wow/character/${realmSlug}/${name}${suffix}`;
+  private path(template: string, realmSlug: string, characterName: string): string {
+    return fillPath(template, {
+      realmSlug,
+      characterName: encodeURIComponent(characterName.toLowerCase()),
+    });
   }
 
   /** Resolves to null when the character no longer exists (renamed, transferred, deleted). */
@@ -32,7 +52,11 @@ export class ProfileApi {
     realmSlug: string,
     characterName: string,
   ): Promise<CharacterProfilePayload | null> {
-    return this.fetch(region, this.path(realmSlug, characterName), characterProfileSchema.parse);
+    return this.fetch(
+      region,
+      this.path(this.profilePath, realmSlug, characterName),
+      characterProfileSchema.parse,
+    );
   }
 
   async getSpecializations(
@@ -42,7 +66,7 @@ export class ProfileApi {
   ): Promise<CharacterSpecializationsPayload | null> {
     return this.fetch(
       region,
-      this.path(realmSlug, characterName, '/specializations'),
+      this.path(this.specializationsPath, realmSlug, characterName),
       characterSpecializationsSchema.parse,
     );
   }

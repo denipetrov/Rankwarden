@@ -22,4 +22,15 @@ async function bootstrap(): Promise<void> {
   new Logger('Bootstrap').log(`Rankwarden listening on port ${port}`);
 }
 
-void bootstrap();
+// A failed start is reported once, readably, and exits non-zero. Left unhandled,
+// the rejection prints a source excerpt and a stack around the one line that
+// matters — and a refused start (see `SchemaBootstrap`) is exactly when an
+// operator needs to read that line.
+bootstrap().catch((error: unknown) => {
+  // `console.error`, not the Nest logger: with `bufferLogs` on, a failure before
+  // the logger is attached would leave this line in a buffer nobody flushes.
+  console.error(
+    `Rankwarden failed to start: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(1);
+});

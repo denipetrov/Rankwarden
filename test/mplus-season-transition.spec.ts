@@ -3,14 +3,7 @@ import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
-import {
-  MPLUS_SEASON_STATE_COLLECTION,
-  MPLUS_SEASON_TRANSITIONS_COLLECTION,
-  MPLUS_SEASONS_COLLECTION,
-} from '../src/mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import {
   MplusSeasonEvents,
@@ -23,6 +16,13 @@ import { bootTestApp, type TestApp } from './support/app.js';
 import { expectInvariants, expectNoOrphanMplusCharacters } from './support/invariants.js';
 import { MplusWorld, type MplusWorldSeason } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+  MPLUS_SEASON_STATE_COLLECTION,
+  MPLUS_SEASON_TRANSITIONS_COLLECTION,
+} from '../src/database/collections.js';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;

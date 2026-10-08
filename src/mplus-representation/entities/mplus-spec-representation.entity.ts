@@ -70,5 +70,3 @@ export interface MplusSpecRepresentationDocument {
   specs: MplusSpecShare[];
   computedAt: Date;
 }
-
-export const MPLUS_SPEC_REPRESENTATION_COLLECTION = 'mplus_spec_representation';

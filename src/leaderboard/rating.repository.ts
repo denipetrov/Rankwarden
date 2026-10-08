@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { AnyBulkWriteOperation, Collection } from 'mongodb';
 
 import {
@@ -10,8 +10,8 @@ import {
 } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
-import { CHARACTERS_COLLECTION } from './entities/character.entity.js';
-import { RATING_COLLECTIONS, type RatingDocument } from './entities/rating.entity.js';
+import { type RatingDocument } from './entities/rating.entity.js';
+import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -24,31 +24,13 @@ const BULK_CHUNK_SIZE = 1_000;
  * with display data joined from `characters` afterwards.
  */
 @Injectable()
-export class RatingRepository implements OnModuleInit {
+export class RatingRepository {
   private readonly logger = new Logger(RatingRepository.name);
 
   constructor(private readonly mongo: MongoService) {}
 
   private collection(family: RatingFamily): Collection<RatingDocument> {
     return this.mongo.collection<RatingDocument>(RATING_COLLECTIONS[family]);
-  }
-
-  async onModuleInit(): Promise<void> {
-    for (const family of RATING_FAMILIES) {
-      await this.collection(family).createIndexes([
-        // The board itself: a sorted range scan across every spec at once.
-        { key: { seasonId: 1, region: 1, rating: -1 }, name: 'board_order' },
-        {
-          key: { seasonId: 1, region: 1, bracket: 1, characterId: 1 },
-          name: 'entry_identity',
-          unique: true,
-        },
-        // "Every rating this character holds", for a character page.
-        { key: { characterId: 1 }, name: 'character' },
-      ]);
-    }
-
-    this.logger.log(`Indexes ensured on ${RATING_FAMILIES.length} ratings collections`);
   }
 
   /** Mirrors one bracket's leaderboard into its family's collection. */

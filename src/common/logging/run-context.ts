@@ -2,17 +2,19 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '@nestjs/common';
 
 /** The kinds of run that get their own correlation id. */
-export type RunKind =
-  | 'sweep'
-  | 'enrich'
-  | 'archive'
-  | 'mplus'
-  | 'mplus-archive'
-  | 'mplus-season'
-  | 'raid-catalogue'
-  | 'raid-rankings'
-  | 'snapshot'
-  | 'transition';
+export const RunKind = {
+  Sweep: 'sweep',
+  Enrich: 'enrich',
+  Archive: 'archive',
+  Mplus: 'mplus',
+  MplusArchive: 'mplus-archive',
+  MplusSeason: 'mplus-season',
+  RaidCatalogue: 'raid-catalogue',
+  RaidRankings: 'raid-rankings',
+  Snapshot: 'snapshot',
+  Transition: 'transition',
+} as const;
+export type RunKind = (typeof RunKind)[keyof typeof RunKind];
 
 interface RunContext {
   kind: RunKind;

@@ -4,13 +4,13 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { withRunId } from '../common/logging/run-context.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { RaidRankingsService } from './raid-rankings.service.js';
 
-const INTERVAL_NAME = 'raid-rankings';
+const INTERVAL_NAME = RunKind.RaidRankings;
 
 /**
  * Reads the raid boards in whatever time every other job leaves: the lowest
@@ -40,6 +40,8 @@ export class RaidRankingsScheduler implements OnApplicationBootstrap, OnModuleDe
   /** A tick in progress, waiting included, so ticks never stack while one waits. */
   private running = false;
   private stopping = false;
+  /** Whether a run is waiting on a higher-priority job, so it is said once. */
+  private paused = false;
 
   constructor(
     config: ConfigService<Env, true>,
@@ -93,6 +95,32 @@ export class RaidRankingsScheduler implements OnApplicationBootstrap, OnModuleDe
     );
   }
 
+  /**
+   * The same wait, for a run already under way: it says once that the run has
+   * paused and once how the pause ended, however many boards were waiting.
+   */
+  private async whenClearMidRun(): Promise<boolean> {
+    if (!this.coordinator.isAboveRaidRankingsActive) return true;
+
+    if (!this.paused) {
+      this.paused = true;
+      this.logger.log('Raid rankings paused: a higher-priority job is running');
+    }
+
+    const clear = await this.whenClear();
+
+    if (this.paused) {
+      this.paused = false;
+      this.logger.log(
+        clear
+          ? 'Raid rankings resumed'
+          : 'Raid rankings gave up waiting; the boards not read are due at the next tick',
+      );
+    }
+
+    return clear;
+  }
+
   private async tick(): Promise<void> {
     if (this.running) return;
 
@@ -108,10 +136,10 @@ export class RaidRankingsScheduler implements OnApplicationBootstrap, OnModuleDe
         return;
       }
 
-      await withRunId('raid-rankings', () =>
+      await withRunId(RunKind.RaidRankings, () =>
         this.rankings.refreshDue(new Date(), {
           shouldStop: () => this.stopping,
-          whenClear: () => this.whenClear(),
+          whenClear: () => this.whenClearMidRun(),
         }),
       );
     } catch (error) {

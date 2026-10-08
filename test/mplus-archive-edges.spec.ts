@@ -2,14 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import {
-  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
-  MPLUS_ARCHIVE_RUNS_COLLECTION,
-} from '../src/mplus-archive/entities/mplus-archive.entity.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../src/mplus-representation/entities/mplus-spec-representation.entity.js';
 import { MplusSpecRepresentationService } from '../src/mplus-representation/mplus-spec-representation.service.js';
-import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { MplusCutoffsService } from '../src/mplus-season/mplus-cutoffs.service.js';
 import { MplusSeasonTransitionService } from '../src/mplus-season/mplus-season-transition.service.js';
@@ -21,6 +15,12 @@ import {
 } from './support/invariants.js';
 import { MplusWorld, type MplusWorldSeason } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const DROPPED = 'season-mn-1';
 const EMPTY = 'season-tww-1';

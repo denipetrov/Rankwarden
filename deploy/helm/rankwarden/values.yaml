@@ -1,0 +1,75 @@
+# Defaults are the production values for DigitalOcean Kubernetes.
+#
+# There is no `replicas` setting, on purpose. The service is a singleton by
+# design — in-process schedulers, an in-memory job coordinator and an in-memory
+# Blizzard quota — and a second instance would double every request it makes.
+# The Deployment hard-codes one replica and the `Recreate` strategy.
+
+image:
+  repository: ghcr.io/denipetrov/rankwarden
+  # Set by the deploy: `--set image.tag=v1.2.3`. There is no default, so a
+  # release can never ship "whatever latest happens to be".
+  tag: ''
+  pullPolicy: IfNotPresent
+
+# Pull secret for the private registry. Created by create-secrets.sh.
+imagePullSecrets:
+  - name: ghcr
+
+# Non-secret configuration: an env file inside this chart, turned into the
+# ConfigMap. Every production setting is therefore reviewable in git.
+envFile: env/production.env
+
+# Values laid over the file, for a one-off change without editing it:
+#   --set-string envOverrides.LOG_LEVEL=debug
+envOverrides: {}
+
+secrets:
+  # BLIZZARD_CLIENT_ID, BLIZZARD_CLIENT_SECRET, RAIDER_IO_API_KEY, and
+  # MONGODB_URI for `rankwarden_app` — a user that can read and write documents
+  # but cannot create or drop an index, or drop a collection.
+  app: rankwarden-app
+  # MONGODB_URI for `rankwarden_schema`, which can. Mounted into the schema Job
+  # only, never into the service.
+  schema: rankwarden-schema
+
+# Measured under a full sweep, an enrichment pass and a Mythic+ pass: about
+# 195 MB steady, 398 MB peak; 0.09 CPU average, 0.40 peak (DEPLOYMENT-PLAN §2.1).
+resources:
+  requests:
+    cpu: 150m
+    memory: 384Mi
+  limits:
+    # No CPU limit: the service waits on the network far more than it computes,
+    # and throttling it would only add latency.
+    memory: 768Mi
+
+# Node's own heap ceiling, kept below the container limit so a leak ends as a
+# readable JavaScript out-of-memory error instead of a silent kill.
+nodeOptions: --max-old-space-size=512
+
+# Time between SIGTERM and SIGKILL. An idle service stops in under a second; a
+# job in flight is cut short and resumes on the next start.
+terminationGracePeriodSeconds: 60
+
+schemaJob:
+  # Building an index on a large collection takes minutes, not seconds.
+  activeDeadlineSeconds: 3600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+
+# Who may call the service. It has no authentication of its own — the sync and
+# health endpoints are open to anything that can reach them — so this policy is
+# the only thing standing in front of it. Each entry is a whole namespace.
+networkPolicy:
+  enabled: true
+  allowedNamespaces:
+    - backend
+
+# Extra environment for the service container, as a name/value list. For local
+# clusters; production needs none.
+extraEnv: []

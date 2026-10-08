@@ -6,7 +6,7 @@ import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import type { PvpReward } from '../blizzard/schemas/pvp-reward.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { QuotaBudget } from '../common/quota/quota-budget.service.js';
+import { QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import { describeError } from '../common/utils/errors.js';
@@ -230,8 +230,13 @@ export class ArchiveService {
   private async archivableSeasons(region: Region): Promise<number[]> {
     const index = await this.pvpApi.getSeasonIndex(region);
     const current = index.current_season.id;
-    // The active season is archived only once it has actually ended.
-    const currentHasEnded = this.seasons.hasEnded(region);
+    // The active season is archived only once it has actually ended. Asked
+    // about `current` by id: the index is read fresh, while the season record
+    // is cached from the last sweep, so right after a rollover the cache still
+    // holds the finished season, and its end date must not be read as the new
+    // season's. An archive is written once and never refreshed, so taking a
+    // season on its first day would keep those standings for good.
+    const currentHasEnded = this.seasons.hasEnded(region, current);
 
     return index.seasons
       .map((season) => season.id)
@@ -318,7 +323,10 @@ export class ArchiveService {
     for (const [index, { seasonId, region }] of awaiting.entries()) {
       // Yields for the same reasons a bracket does. What is left over stays
       // pending and is picked up by the next pass.
-      if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
+      if (
+        this.coordinator.isLiveIngestionActive ||
+        this.budget.allowance(QuotaConsumer.Archive) <= 0
+      ) {
         result.pending += awaiting.length - index;
         break;
       }
@@ -444,7 +452,10 @@ export class ArchiveService {
     // the quota it runs on. Leaving the bracket unfinished keeps the season
     // pending, and the fetch record means the resumed run picks up exactly
     // where this one stopped.
-    if (this.coordinator.isLiveIngestionActive || this.budget.allowance('archive') <= 0) {
+    if (
+      this.coordinator.isLiveIngestionActive ||
+      this.budget.allowance(QuotaConsumer.Archive) <= 0
+    ) {
       return { bracket, entries: 0, failed: true };
     }
 

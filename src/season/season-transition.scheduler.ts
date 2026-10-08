@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
 
-import { withRunId } from '../common/logging/run-context.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
 import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -82,7 +82,7 @@ export class SeasonTransitionScheduler implements OnApplicationBootstrap, OnModu
     this.running = true;
 
     try {
-      await withRunId('transition', async () => {
+      await withRunId(RunKind.Transition, async () => {
         const { plan, purged } = await this.transitions.run();
 
         if (purged.length > 0) {

@@ -1,16 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
-import {
-  ARCHIVE_ENTRIES_COLLECTION,
-  ARCHIVE_SEASONS_COLLECTION,
-} from '../src/archive/entities/archive.entity.js';
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
-import {
-  SPEC_REPRESENTATION_COLLECTION,
-  startOfUtcDay,
-} from '../src/representation/entities/spec-representation.entity.js';
+import { startOfUtcDay } from '../src/representation/entities/spec-representation.entity.js';
 import { ArchiveService } from '../src/archive/archive.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { ProfileEnrichmentService } from '../src/profile/profile-enrichment.service.js';
@@ -21,6 +12,13 @@ import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectNoOrphanRatingRows } from './support/invariants.js';
 import { World } from './support/world.js';
+import {
+  ARCHIVE_ENTRIES_COLLECTION,
+  ARCHIVE_SEASONS_COLLECTION,
+  CHARACTERS_COLLECTION,
+  RATING_COLLECTIONS,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 const SEASON = 42;
 const NEXT = 43;

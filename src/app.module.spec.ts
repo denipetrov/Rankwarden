@@ -1,7 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { AppModule } from './app.module.js';
 import { AdminController } from './admin/admin.controller.js';
 import { HealthController } from './health/health.controller.js';
 import { SeasonTransitionService } from './season/season-transition.service.js';
@@ -16,6 +15,10 @@ import { SeasonTransitionService } from './season/season-transition.service.js';
  * across a boundary that does not export it, or a cycle between two modules.
  */
 describe('AppModule', () => {
+  // Set before `app.module.js` is imported, which is why that import is dynamic:
+  // `ConfigModule.forRoot()` validates the environment the moment the module is
+  // evaluated, and a static import would run it before any hook. With one, this
+  // test passed only where a developer's own `.env` happened to supply the values.
   beforeAll(() => {
     process.env.BLIZZARD_CLIENT_ID ??= 'test-id';
     process.env.BLIZZARD_CLIENT_SECRET ??= 'test-secret';
@@ -23,6 +26,7 @@ describe('AppModule', () => {
   });
 
   it('resolves every provider and controller', async () => {
+    const { AppModule } = await import('./app.module.js');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
 
     expect(moduleRef.get(HealthController)).toBeInstanceOf(HealthController);

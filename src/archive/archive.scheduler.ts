@@ -5,8 +5,8 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Region } from '../blizzard/blizzard.constants.js';
 import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { withRunId } from '../common/logging/run-context.js';
-import { QuotaBudget } from '../common/quota/quota-budget.service.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
+import { QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -117,7 +117,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
       // Registered with the coordinator only so the Mythic+ archive, the one job
       // below this one, can yield to it; nothing above waits on it.
       await this.coordinator.duringArchive(() =>
-        withRunId('archive', async () => {
+        withRunId(RunKind.Archive, async () => {
           for (;;) {
             // Re-checked between seasons: a sweep or enrichment pass starting mid
             // backlog takes the quota back immediately. A Mythic+ pass takes no
@@ -133,7 +133,7 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
             // The archive gets only what the sweep and enrichment leave, so it
             // is the job that waits when the hour runs short. The interval
             // brings it back once the window has rolled.
-            if (this.budget.allowance('archive') <= 0) {
+            if (this.budget.allowance(QuotaConsumer.Archive) <= 0) {
               this.logger.log(
                 'Archive share of the hourly quota is spent; pausing until the window rolls',
               );

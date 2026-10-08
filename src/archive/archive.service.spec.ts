@@ -172,6 +172,17 @@ describe('ArchiveService', () => {
     await expect(service.nextPending()).resolves.toEqual({ seasonId: 42, region: 'us' });
   });
 
+  it('asks whether the season the index calls current has ended, not whichever is cached', async () => {
+    // Right after a rollover the cached season is the finished one. Only the
+    // id from the index says which season the question is about.
+    settledSeasons.mockResolvedValue(new Set(['41:us', '40:us', '41:eu', '40:eu']));
+    hasEnded.mockImplementation((_region: string, seasonId?: number) => seasonId === 41);
+
+    await expect(service.nextPending()).resolves.toBeNull();
+    expect(hasEnded).toHaveBeenCalledWith('us', 42);
+    expect(hasEnded).toHaveBeenCalledWith('eu', 42);
+  });
+
   it('honours a season range so one season can be targeted', async () => {
     env.ARCHIVE_MIN_SEASON = 40;
     env.ARCHIVE_MAX_SEASON = 40;

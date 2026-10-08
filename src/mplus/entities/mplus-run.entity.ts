@@ -101,5 +101,3 @@ export interface MplusRunDocument {
    */
   missedSince?: Date;
 }
-
-export const MPLUS_RUNS_COLLECTION = 'mplus_runs';

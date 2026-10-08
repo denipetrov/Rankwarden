@@ -1,21 +1,21 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
 import {
-  MPLUS_SEASON_STATE_COLLECTION,
-  MPLUS_SEASON_TRANSITIONS_COLLECTION,
   type MplusSeasonStateDocument,
   type MplusSeasonTransitionDocument,
 } from './entities/mplus-season.entity.js';
+import {
+  MPLUS_SEASON_STATE_COLLECTION,
+  MPLUS_SEASON_TRANSITIONS_COLLECTION,
+} from '../database/collections.js';
 
 /**
  * Owns the two small collections that make Mythic+ season transitions durable.
  * The counterpart of `SeasonStateRepository`.
  */
 @Injectable()
-export class MplusSeasonStateRepository implements OnModuleInit {
-  private readonly logger = new Logger(MplusSeasonStateRepository.name);
-
+export class MplusSeasonStateRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get state() {
@@ -25,21 +25,6 @@ export class MplusSeasonStateRepository implements OnModuleInit {
   private get transitions() {
     return this.mongo.collection<MplusSeasonTransitionDocument>(
       MPLUS_SEASON_TRANSITIONS_COLLECTION,
-    );
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.state.createIndexes([
-      { key: { region: 1 }, name: 'mplus_state_region', unique: true },
-    ]);
-    await this.transitions.createIndexes([
-      { key: { season: 1, region: 1 }, name: 'mplus_transition_identity', unique: true },
-      { key: { purgedAt: -1 }, name: 'mplus_transition_recent' },
-    ]);
-
-    this.logger.log(
-      `Indexes ensured on "${MPLUS_SEASON_STATE_COLLECTION}" and ` +
-        `"${MPLUS_SEASON_TRANSITIONS_COLLECTION}"`,
     );
   }
 

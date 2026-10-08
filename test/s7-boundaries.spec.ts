@@ -1,12 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../src/leaderboard/entities/rating.entity.js';
-import {
-  SPEC_REPRESENTATION_COLLECTION,
-  startOfUtcDay,
-} from '../src/representation/entities/spec-representation.entity.js';
+import { startOfUtcDay } from '../src/representation/entities/spec-representation.entity.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { ProfileEnrichmentService } from '../src/profile/profile-enrichment.service.js';
 import { SpecRepresentationService } from '../src/representation/spec-representation.service.js';
@@ -14,6 +9,11 @@ import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { expectRepresentationCoherent } from './support/invariants.js';
 import { SPECS, World } from './support/world.js';
+import {
+  CHARACTERS_COLLECTION,
+  RATING_COLLECTIONS,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../src/database/collections.js';
 
 /**
  * S7 — boundaries: the shapes and edges the ordinary path never reaches.

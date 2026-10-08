@@ -31,7 +31,7 @@ describe('SeasonTransitionService', () => {
   /** Seasons per region present in `characters`. */
   let storedSeasons: Record<string, number[]>;
   /** Season/region pairs the archive holds in full. */
-  let archived: { seasonId: number; region: string }[];
+  let archived: { seasonId: number; region: string; endsAt?: Date | null }[];
   let deleted: { name: string; filter: unknown }[];
   let counts: Record<string, number>;
 
@@ -130,6 +130,72 @@ describe('SeasonTransitionService', () => {
     const plan = await service.plan(new Date('2026-09-01T16:00:00.000Z'));
 
     expect(plan.candidates).toEqual([{ region: 'us', seasonId: 42, archived: true }]);
+  });
+
+  it('keeps an ended season live for the whole gap before the next one starts', async () => {
+    // 42 ended two weeks ago and is archived in full, but 43 has not begun:
+    // Blizzard still names 42 as current, and its boards are still the ones
+    // to show.
+    const ended = {
+      ...state('us', 42, '2026-05-01T15:00:00.000Z'),
+      endsAt: new Date('2026-08-11T05:00:00.000Z'),
+    };
+    loadAll.mockResolvedValue([ended, { ...ended, region: 'eu' }]);
+    storedSeasons = { us: [42], eu: [42] };
+    archived = [
+      { seasonId: 42, region: 'us', endsAt: ended.endsAt },
+      { seasonId: 42, region: 'eu', endsAt: ended.endsAt },
+    ];
+    const service = await build();
+
+    const { plan, purged } = await service.run(new Date('2026-08-25T00:00:00.000Z'));
+
+    expect(plan.candidates).toEqual([]);
+    expect(purged).toEqual([]);
+    expect(deleted).toEqual([]);
+  });
+
+  it('leaves a region alone until its own new season has started', async () => {
+    // EU is already listed on 43, but does not start playing it until the
+    // next day. Until then 42 is still its live board.
+    loadAll.mockResolvedValue([
+      state('us', 43, '2026-09-01T15:00:00.000Z'),
+      state('eu', 43, '2026-09-02T23:00:00.000Z'),
+    ]);
+    storedSeasons = { us: [42, 43], eu: [42] };
+    archived = [
+      { seasonId: 42, region: 'us' },
+      { seasonId: 42, region: 'eu' },
+    ];
+    const service = await build();
+
+    const before = await service.plan(new Date('2026-09-01T16:00:00.000Z'));
+    const after = await service.plan(new Date('2026-09-02T23:00:00.000Z'));
+
+    expect(before.candidates).toEqual([{ region: 'us', seasonId: 42, archived: true }]);
+    expect(after.candidates).toEqual([
+      { region: 'us', seasonId: 42, archived: true },
+      { region: 'eu', seasonId: 42, archived: true },
+    ]);
+  });
+
+  it('holds back a season whose archived end date has not passed', async () => {
+    // An end date that exists is not an end date that has been reached.
+    loadAll.mockResolvedValue([
+      state('us', 43, '2026-09-01T15:00:00.000Z'),
+      state('eu', 43, '2026-09-01T15:00:00.000Z'),
+    ]);
+    storedSeasons = { us: [42, 43], eu: [42, 43] };
+    archived = [
+      { seasonId: 42, region: 'us', endsAt: new Date('2026-08-25T05:00:00.000Z') },
+      { seasonId: 42, region: 'eu', endsAt: new Date('2026-09-05T05:00:00.000Z') },
+    ];
+    const service = await build();
+
+    const plan = await service.plan(new Date('2026-09-02T00:00:00.000Z'));
+
+    expect(plan.candidates).toEqual([{ region: 'us', seasonId: 42, archived: true }]);
+    expect(plan.blockedByArchive).toEqual([{ region: 'eu', seasonId: 42, archived: false }]);
   });
 
   it('holds back a season the archive does not hold in full', async () => {

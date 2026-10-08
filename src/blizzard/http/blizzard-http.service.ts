@@ -7,7 +7,7 @@ import { currentRunKind } from '../../common/logging/run-context.js';
 import {
   QuotaBudget,
   quotaConsumerFor,
-  type QuotaConsumer,
+  QuotaConsumer,
 } from '../../common/quota/quota-budget.service.js';
 import type { Env } from '../../config/env.schema.js';
 import { apiHost, namespaceFor, type NamespaceKind, type Region } from '../blizzard.constants.js';
@@ -76,7 +76,7 @@ export class BlizzardHttpService {
             // runs again for every retry, and Blizzard counts retries against
             // the quota exactly like first attempts.
             const consumer = (options.context as { consumer?: QuotaConsumer }).consumer;
-            this.budget.record(consumer ?? 'other');
+            this.budget.record(consumer ?? QuotaConsumer.Other);
 
             const token = await this.tokens.getAccessToken();
             options.headers.authorization = `Bearer ${token}`;

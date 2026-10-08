@@ -2,7 +2,7 @@ import { Controller, Logger, NotFoundException, OnModuleInit, Post, Query } from
 import { ConfigService } from '@nestjs/config';
 
 import type { Region } from '../blizzard/blizzard.constants.js';
-import { withRunId } from '../common/logging/run-context.js';
+import { RunKind, withRunId } from '../common/logging/run-context.js';
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { ArchiveService } from '../archive/archive.service.js';
@@ -65,14 +65,14 @@ export class AdminController implements OnModuleInit {
     }
   }
 
-  @Post('sweep')
+  @Post(RunKind.Sweep)
   async sweep() {
     this.guard();
 
     return (await this.leaderboards.sweep()) ?? { skipped: 'a sweep is already in progress' };
   }
 
-  @Post('enrich')
+  @Post(RunKind.Enrich)
   async enrich() {
     this.guard();
 
@@ -81,20 +81,20 @@ export class AdminController implements OnModuleInit {
     );
   }
 
-  @Post('snapshot')
+  @Post(RunKind.Snapshot)
   async snapshot() {
     this.guard();
 
     return this.representation.snapshot();
   }
 
-  @Post('archive')
+  @Post(RunKind.Archive)
   async archiveOne() {
     this.guard();
 
     // Charged to the archive's share like a scheduled pass, so a rehearsal
     // driven from here sees the same budget the scheduler would.
-    return withRunId('archive', async () => {
+    return withRunId(RunKind.Archive, async () => {
       const pending = await this.archive.nextPending();
 
       if (!pending) return { archived: null, reason: 'nothing pending' };
@@ -108,7 +108,7 @@ export class AdminController implements OnModuleInit {
   async archiveRewards() {
     this.guard();
 
-    return withRunId('archive', () => this.archive.archivePendingRewards());
+    return withRunId(RunKind.Archive, () => this.archive.archivePendingRewards());
   }
 
   /**
@@ -116,7 +116,7 @@ export class AdminController implements OnModuleInit {
    * region — so drive it with `RAIDERIO_MAX_PAGES` lowered unless a full
    * rehearsal is the point.
    */
-  @Post('mplus')
+  @Post(RunKind.Mplus)
   async mplusSweep() {
     this.guard();
 
@@ -130,11 +130,11 @@ export class AdminController implements OnModuleInit {
    * season is current in each region — announcing an end or a rollover exactly
    * as the scheduled check would.
    */
-  @Post('mplus-season')
+  @Post(RunKind.MplusSeason)
   async mplusSeason() {
     this.guard();
 
-    return withRunId('mplus-season', async () => {
+    return withRunId(RunKind.MplusSeason, async () => {
       const catalogue = await this.mplusCatalogue.refresh();
       await this.mplusSeasons.observe();
 
@@ -147,7 +147,7 @@ export class AdminController implements OnModuleInit {
   async mplusSeasonTransition() {
     this.guard();
 
-    return withRunId('transition', () => this.mplusTransitions.run());
+    return withRunId(RunKind.Transition, () => this.mplusTransitions.run());
   }
 
   /**
@@ -155,7 +155,7 @@ export class AdminController implements OnModuleInit {
    * directly, so it runs whatever else is active — a rehearsal is the point.
    * It still yields between batches if a higher-priority job starts.
    */
-  @Post('mplus-archive')
+  @Post(RunKind.MplusArchive)
   async mplusArchiveTick() {
     this.guard();
 
@@ -171,15 +171,15 @@ export class AdminController implements OnModuleInit {
   async mplusCatalogueRefresh() {
     this.guard();
 
-    return withRunId('mplus-season', () => this.mplusCatalogue.refresh());
+    return withRunId(RunKind.MplusSeason, () => this.mplusCatalogue.refresh());
   }
 
   /** Re-reads the raid catalogue now, ignoring its TTL. */
-  @Post('raid-catalogue')
+  @Post(RunKind.RaidCatalogue)
   async raidCatalogueRefresh() {
     this.guard();
 
-    return withRunId('raid-catalogue', () => this.raidCatalogue.refresh());
+    return withRunId(RunKind.RaidCatalogue, () => this.raidCatalogue.refresh());
   }
 
   /**
@@ -187,11 +187,11 @@ export class AdminController implements OnModuleInit {
    * `?raid=<slug>` it re-reads every board of that one raid instead, due or
    * not — the only way a finished raid's settled board is read again.
    */
-  @Post('raid-rankings')
+  @Post(RunKind.RaidRankings)
   async raidRankingsRefresh(@Query('raid') raid?: string) {
     this.guard();
 
-    return withRunId('raid-rankings', async () => {
+    return withRunId(RunKind.RaidRankings, async () => {
       if (!raid) return this.raidRankings.refreshDue();
 
       const result = await this.raidRankings.refreshRaid(raid);

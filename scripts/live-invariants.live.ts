@@ -53,6 +53,8 @@ describe(`invariants over ${name}`, () => {
     ['I23 cutoffs well formed', (d) => inv.expectMplusCutoffsWellFormed(d, regions)],
     ['I24 regions coherent', (d) => inv.expectMplusRegionsCoherent(d)],
     ['I25 archive rows owned', inv.expectMplusArchiveRowsOwned],
+    ['I26 ranked guilds resolve', inv.expectRaidBoardsResolve],
+    ['I27 raid boards well formed', inv.expectRaidBoardsWellFormed],
   ];
 
   for (const [label, check] of checks) {

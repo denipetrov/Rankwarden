@@ -6,8 +6,19 @@ import { redactSecrets } from './redact.js';
 
 export type DependencyStatus = 'ok' | 'degraded' | 'down' | 'unknown';
 
-/** The upstreams observed here. Both are soft dependencies; only Mongo is hard. */
-export type UpstreamProvider = 'blizzard' | 'raiderio';
+/**
+ * The upstreams observed here. All are soft dependencies; only Mongo is hard.
+ *
+ * `raiderioRankings` is Raider.io's raid-ranking endpoint, observed apart from
+ * the rest of Raider.io: it is slow enough to time out by itself and nothing
+ * live depends on it, so it is reported and never judged.
+ */
+export const UpstreamProvider = {
+  Blizzard: 'blizzard',
+  RaiderIo: 'raiderio',
+  RaiderIoRankings: 'raiderioRankings',
+} as const;
+export type UpstreamProvider = (typeof UpstreamProvider)[keyof typeof UpstreamProvider];
 
 /** Observed state for one dependency, or for one region of one dependency. */
 export interface DependencyObservation {
@@ -118,23 +129,23 @@ export class DependencyHealth {
   // ones; these stay because Blizzard is by far the most-called upstream and
   // naming it at the call site reads better than passing a literal.
   recordBlizzardSuccess(region: string, latencyMs: number): void {
-    this.recordSuccess('blizzard', region, latencyMs);
+    this.recordSuccess(UpstreamProvider.Blizzard, region, latencyMs);
   }
 
   recordBlizzardFailure(region: string, reason: string, statusCode: number | null = null): void {
-    this.recordFailure('blizzard', region, reason, statusCode);
+    this.recordFailure(UpstreamProvider.Blizzard, region, reason, statusCode);
   }
 
   blizzardByRegion(): Record<string, DependencyObservation> {
-    return this.byRegion('blizzard');
+    return this.byRegion(UpstreamProvider.Blizzard);
   }
 
   blizzardStatus(): DependencyStatus {
-    return this.statusFor('blizzard');
+    return this.statusFor(UpstreamProvider.Blizzard);
   }
 
   failingRegions(): string[] {
-    return this.failingRegionsFor('blizzard');
+    return this.failingRegionsFor(UpstreamProvider.Blizzard);
   }
 
   redact(value: string): string {

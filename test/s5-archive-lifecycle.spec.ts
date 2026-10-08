@@ -1,17 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
-import {
-  ARCHIVE_BRACKETS_COLLECTION,
-  ARCHIVE_ENTRIES_COLLECTION,
-  ARCHIVE_SEASONS_COLLECTION,
-} from '../src/archive/entities/archive.entity.js';
 import { ArchiveService } from '../src/archive/archive.service.js';
 import { IngestionCoordinator } from '../src/common/ingestion-coordinator.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { AGGREGATE_BRACKETS, CORE_BRACKETS, SPECS, World } from './support/world.js';
+import {
+  ARCHIVE_BRACKETS_COLLECTION,
+  ARCHIVE_ENTRIES_COLLECTION,
+  ARCHIVE_SEASONS_COLLECTION,
+} from '../src/database/collections.js';
 
 /** Enough spec ladders that a season costs more requests than the token burst. */
 const SPEC_LADDERS = SPECS.slice(0, 6).map((spec) => `shuffle-${spec.classSlug}-${spec.specSlug}`);

@@ -2,13 +2,34 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../../config/env.schema.js';
-import type { RunKind } from '../logging/run-context.js';
+import { RunKind } from '../logging/run-context.js';
 import { RollingWindow } from './rolling-window.js';
 
-/** Who spent a Raider.io request. Anything outside a known job is `other`. */
-export type RaiderIoConsumer = 'mplus' | 'mplusArchive' | 'other';
+/**
+ * Who spent a Raider.io request. Anything outside a known job is `other`.
+ *
+ * The raid jobs are named for what they cost, not because they are rationed:
+ * every consumer spends from the one window, so their requests always counted
+ * against the minute — but as `other`, where a ranking backfill of two
+ * thousand requests could not be told from a stray admin call.
+ */
+export const RaiderIoConsumer = {
+  Mplus: 'mplus',
+  MplusArchive: 'mplusArchive',
+  RaidCatalogue: 'raidCatalogue',
+  RaidRankings: 'raidRankings',
+  Other: 'other',
+} as const;
+export type RaiderIoConsumer = (typeof RaiderIoConsumer)[keyof typeof RaiderIoConsumer];
 
-const CONSUMERS: readonly RaiderIoConsumer[] = ['mplus', 'mplusArchive', 'other'];
+/**
+ * The consumers that ask before they spend: the live pass, which may use the
+ * whole window, and the archive, which is held to a share of it.
+ */
+export type RationedRaiderIoConsumer =
+  typeof RaiderIoConsumer.Mplus | typeof RaiderIoConsumer.MplusArchive;
+
+const CONSUMERS: readonly RaiderIoConsumer[] = Object.values(RaiderIoConsumer);
 
 export const MINUTE_MS = 60_000;
 /**
@@ -26,12 +47,16 @@ const WINDOW_SECONDS = 60;
 /** Maps a run to the consumer its Raider.io requests are charged to. */
 export function raiderIoConsumerFor(kind: RunKind | undefined): RaiderIoConsumer {
   switch (kind) {
-    case 'mplus':
-      return 'mplus';
-    case 'mplus-archive':
-      return 'mplusArchive';
+    case RunKind.Mplus:
+      return RaiderIoConsumer.Mplus;
+    case RunKind.MplusArchive:
+      return RaiderIoConsumer.MplusArchive;
+    case RunKind.RaidCatalogue:
+      return RaiderIoConsumer.RaidCatalogue;
+    case RunKind.RaidRankings:
+      return RaiderIoConsumer.RaidRankings;
     default:
-      return 'other';
+      return RaiderIoConsumer.Other;
   }
 }
 
@@ -73,7 +98,7 @@ export interface RaiderIoQuotaSnapshot {
   /** The most the archive may spend in any one minute. */
   archiveShare: number;
   spent: Record<RaiderIoConsumer | 'total', number>;
-  allowance: Record<'mplus' | 'mplusArchive', number>;
+  allowance: Record<RationedRaiderIoConsumer, number>;
   mplus: MplusOutlook | null;
 }
 
@@ -165,7 +190,7 @@ export class RaiderIoBudget {
 
   /** Requests that may still be spent right now by the live pass. */
   allowance(): number {
-    return this.allowanceFor('mplus');
+    return this.allowanceFor(RaiderIoConsumer.Mplus);
   }
 
   /**
@@ -179,12 +204,15 @@ export class RaiderIoBudget {
    * live pass always inherits at least `usable - archiveShare` the moment it
    * begins, and the rest within one window.
    */
-  allowanceFor(consumer: 'mplus' | 'mplusArchive'): number {
+  allowanceFor(consumer: RationedRaiderIoConsumer): number {
     const room = Math.max(0, this.usable - this.spent());
 
-    if (consumer === 'mplus') return room;
+    if (consumer === RaiderIoConsumer.Mplus) return room;
 
-    return Math.max(0, Math.min(room, this.archiveShare - this.spent('mplusArchive')));
+    return Math.max(
+      0,
+      Math.min(room, this.archiveShare - this.spent(RaiderIoConsumer.MplusArchive)),
+    );
   }
 
   /**
@@ -202,7 +230,7 @@ export class RaiderIoBudget {
    * one-second buckets and something else may spend in the meantime.
    */
   async waitForAllowance(
-    consumer: 'mplus' | 'mplusArchive',
+    consumer: RationedRaiderIoConsumer,
     needed: number,
     maxWaitMs: number,
     abandon: () => boolean = () => false,
@@ -239,8 +267,8 @@ export class RaiderIoBudget {
       archiveShare: this.archiveShare,
       spent: { ...spent, total: this.spent() },
       allowance: {
-        mplus: this.allowanceFor('mplus'),
-        mplusArchive: this.allowanceFor('mplusArchive'),
+        [RaiderIoConsumer.Mplus]: this.allowanceFor(RaiderIoConsumer.Mplus),
+        [RaiderIoConsumer.MplusArchive]: this.allowanceFor(RaiderIoConsumer.MplusArchive),
       },
       mplus: this.outlook,
     };

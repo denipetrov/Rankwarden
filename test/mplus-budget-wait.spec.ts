@@ -3,10 +3,8 @@ import type { Db } from 'mongodb';
 
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { holdActive, releaseAllHolds } from './support/hold.js';
@@ -14,6 +12,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { MPLUS_RUNS_COLLECTION, MPLUS_SEASONS_COLLECTION } from '../src/database/collections.js';
 
 const WAIT_MS = 3_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

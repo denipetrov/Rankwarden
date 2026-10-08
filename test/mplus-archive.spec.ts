@@ -5,25 +5,23 @@ import { IngestionCoordinator } from '../src/common/ingestion-coordinator.servic
 import { QuotaBudget } from '../src/common/quota/quota-budget.service.js';
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_AFFIXES_COLLECTION } from '../src/mplus/entities/mplus-affix.entity.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
-import {
-  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
-  MPLUS_ARCHIVE_RUNS_COLLECTION,
-} from '../src/mplus-archive/entities/mplus-archive.entity.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import {
-  MPLUS_DUNGEONS_COLLECTION,
-  MPLUS_SEASONS_COLLECTION,
-} from '../src/mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_AFFIXES_COLLECTION,
+  MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
+  MPLUS_ARCHIVE_RUNS_COLLECTION,
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_DUNGEONS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+} from '../src/database/collections.js';
 
 /**
  * The Mythic+ archive of finished seasons, driven by hand.

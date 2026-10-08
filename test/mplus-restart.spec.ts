@@ -3,13 +3,8 @@ import type { Db } from 'mongodb';
 
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { MplusArchiveService } from '../src/mplus-archive/mplus-archive.service.js';
-import {
-  MPLUS_SEASON_STATE_COLLECTION,
-  MPLUS_SEASONS_COLLECTION,
-} from '../src/mplus-season/entities/mplus-season.entity.js';
 import {
   MplusSeasonEvents,
   type MplusSeasonTransitionEvent,
@@ -24,6 +19,11 @@ import {
 } from './support/invariants.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+  MPLUS_SEASON_STATE_COLLECTION,
+} from '../src/database/collections.js';
 
 const LIVE = 'season-mn-2';
 const FINISHED = 'season-mn-1';

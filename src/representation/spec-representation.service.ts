@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
@@ -10,15 +10,14 @@ import {
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
-import { CHARACTERS_COLLECTION } from '../leaderboard/entities/character.entity.js';
 import { SeasonService } from '../season/season.service.js';
 import {
-  SPEC_REPRESENTATION_COLLECTION,
   startOfUtcDay,
   toSlug,
   type SpecRepresentationDocument,
   type SpecShare,
 } from './entities/spec-representation.entity.js';
+import { CHARACTERS_COLLECTION, SPEC_REPRESENTATION_COLLECTION } from '../database/collections.js';
 
 interface HeroTalentRef {
   id: number;
@@ -57,7 +56,7 @@ export interface SnapshotSummary {
  * totals and the hero talent totals can never disagree.
  */
 @Injectable()
-export class SpecRepresentationService implements OnModuleInit {
+export class SpecRepresentationService {
   private readonly logger = new Logger(SpecRepresentationService.name);
   private readonly regions: Region[];
   private readonly minRatings: number[];
@@ -77,19 +76,6 @@ export class SpecRepresentationService implements OnModuleInit {
 
   private get characters() {
     return this.mongo.collection(CHARACTERS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.collection.createIndexes([
-      {
-        key: { date: 1, seasonId: 1, region: 1, family: 1, minRating: 1 },
-        name: 'snapshot_identity',
-        unique: true,
-      },
-      // The visualisation's own query: one series over time.
-      { key: { seasonId: 1, region: 1, family: 1, minRating: 1, date: 1 }, name: 'series' },
-    ]);
-    this.logger.log(`Indexes ensured on "${SPEC_REPRESENTATION_COLLECTION}"`);
   }
 
   /**

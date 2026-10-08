@@ -1,0 +1,65 @@
+# Defaults are the production values for DigitalOcean Kubernetes.
+
+image:
+  repository: mongo
+  # Empty means the chart's appVersion. Pinned to an exact patch on purpose: a
+  # floating tag would upgrade the database on whichever restart happened to
+  # pull a newer image.
+  tag: ''
+  pullPolicy: IfNotPresent
+
+# The database the application uses, and where every role below is scoped.
+database: rankwarden
+
+# Secret holding the passwords. Created by deploy/scripts/create-secrets.sh,
+# never by this chart, so no password is ever rendered into a manifest:
+#   root-password      the administrator; used only by the users Job
+#   schema-password    rankwarden_schema  — may create collections and indexes
+#   app-password       rankwarden_app     — reads and writes documents; no index or drop rights
+#   backup-password    rankwarden_backup  — read-only, for mongodump
+#   backend-password   rankwarden_backend — read-only, for the future backend
+authSecret: mongodb-auth
+
+storage:
+  # DigitalOcean block storage. Billed per GiB; can be grown later, never shrunk.
+  className: do-block-storage
+  # The full archive is projected at 4–6 GiB with indexes (DEPLOYMENT-PLAN §2.2).
+  size: 20Gi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    # No CPU limit: throttling a database turns a busy moment into timeouts.
+    memory: 2Gi
+
+# WiredTiger's cache, in GiB. Set explicitly and kept at about half the memory
+# limit: the rest is for connections, aggregation and the filesystem cache.
+wiredTigerCacheSizeGB: 1
+
+# Who may open a connection, besides pods in this namespace that carry the
+# label `rankwarden.io/mongodb-client: "true"` (the service, its schema Job,
+# and this chart's own Jobs). Each entry is a whole namespace, by name.
+allowedNamespaces:
+  - backend
+
+backup:
+  enabled: true
+  # Daily, at an off-peak minute. UTC.
+  schedule: '17 3 * * *'
+  # Archives older than this are deleted from the bucket after each upload.
+  retentionDays: 14
+  # Secret with MONGODB_URI (the backup user), ACCESS_KEY_ID and
+  # SECRET_ACCESS_KEY for the bucket. Created by create-secrets.sh.
+  secret: mongodb-backup
+  # Any S3-compatible store. DigitalOcean Spaces in Frankfurt by default.
+  s3:
+    provider: DigitalOcean
+    endpoint: https://fra1.digitaloceanspaces.com
+    region: fra1
+    bucket: rankwarden-backups
+    prefix: mongodb
+  uploaderImage: rclone/rclone:1
+  # Scratch space for the archive before upload. The dump is compressed.
+  scratchSize: 8Gi

@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidRankingsScheduler } from '../src/raid/raid-rankings.scheduler.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { holdActive, releaseAllHolds, type HeldJob } from './support/hold.js';
@@ -11,6 +10,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { RAIDS_COLLECTION } from '../src/database/collections.js';
 
 /**
  * Where the raid rankings sit among the other jobs: last. With their real
@@ -28,6 +28,8 @@ describe('Raid rankings scheduling', () => {
 
   const rankingRequests = () =>
     app.raiderIo.requests.filter((request) => request.path === 'raiding/raid-rankings');
+  /** The first page of each board: when, and in what order, boards were started. */
+  const boardStarts = () => rankingRequests().filter((request) => request.page === 0);
   const boardsStored = async () =>
     (await db.collection(RAIDS_COLLECTION).find({}).toArray()).reduce(
       (total, raid) =>
@@ -111,11 +113,12 @@ describe('Raid rankings scheduling', () => {
 
       // The job starts as the third board is served: the run could not see it coming.
       app.raiderIo.beforeServe = (request) => {
-        if (request.path !== 'raiding/raid-rankings') return;
+        if (request.path !== 'raiding/raid-rankings' || request.page !== 0) return;
 
+        // A board already being read finishes its pages; no new one starts.
         if (release && releasedAt === 0) askedWhileHeld += 1;
 
-        if (!release && rankingRequests().length === 3) {
+        if (!release && boardStarts().length === 3) {
           release = holdActive(app.app, job);
           setTimeout(() => {
             releasedAt = Date.now();
@@ -128,12 +131,18 @@ describe('Raid rankings scheduling', () => {
       await tick();
 
       // The open raid's five boards, all read: three before the job, two after.
-      expect(rankingRequests()).toHaveLength(5);
-      expect(askedWhileHeld, 'no board was asked for while the job ran').toBe(0);
+      expect(boardStarts()).toHaveLength(5);
+      expect(askedWhileHeld, 'no board was started while the job ran').toBe(0);
       expect(releasedAt - startedAt).toBeGreaterThanOrEqual(140);
-      expect(rankingRequests()[3].at, 'the fourth board waited for it').toBeGreaterThanOrEqual(
+      expect(boardStarts()[3].at, 'the fourth board waited for it').toBeGreaterThanOrEqual(
         releasedAt,
       );
+      // Said once each, however many boards were waiting.
+      expect(
+        logger.matching(/Raid rankings paused: a higher-priority job is running/),
+      ).toHaveLength(1);
+      expect(logger.matching(/Raid rankings resumed/)).toHaveLength(1);
+      logger.clear();
       expect(logger.of('warn', /rank/i)).toEqual([]);
     },
   );
@@ -147,7 +156,7 @@ describe('Raid rankings scheduling', () => {
 
     await release();
     await ticking;
-    expect(rankingRequests()).toHaveLength(5);
+    expect(boardStarts()).toHaveLength(5);
 
     await expectInvariants(db);
   });

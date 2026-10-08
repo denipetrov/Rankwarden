@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+spec:
+  # Authentication is the lock; this is the door. Nothing in the cluster can
+  # even open a connection to the database unless it is listed here.
+  podSelector:
+    matchLabels:
+      {{- include "mongodb.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 27017
+      from:
+        # Pods in this namespace that declare themselves clients: the service,
+        # its schema Job, and this chart's users and backup Jobs.
+        - podSelector:
+            matchLabels:
+              rankwarden.io/mongodb-client: 'true'
+        {{- range .Values.allowedNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}

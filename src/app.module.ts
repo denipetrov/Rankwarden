@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { CommonModule } from './common/common.module.js';
 import { AppConfigModule } from './config/config.module.js';
 import { DatabaseModule } from './database/database.module.js';
+import { SchemaBootstrapModule } from './database/schema/schema.bootstrap.js';
 import { BlizzardModule } from './blizzard/blizzard.module.js';
 import { SeasonModule } from './season/season.module.js';
 import { LeaderboardModule } from './leaderboard/leaderboard.module.js';
@@ -24,6 +25,7 @@ import { AdminModule } from './admin/admin.module.js';
     CommonModule,
     ScheduleModule.forRoot(),
     DatabaseModule,
+    SchemaBootstrapModule,
     BlizzardModule,
     SeasonModule,
     LeaderboardModule,

@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import type { Db } from 'mongodb';
+import { BSON, type Db } from 'mongodb';
 
 import {
   EXCLUDED_BRACKETS,
@@ -7,29 +7,28 @@ import {
   isIngestableBracket,
   ratingFamilyOf,
 } from '../../src/blizzard/blizzard.constants.js';
+import type { MplusWorld } from './mplus-world.js';
 import type { World } from './world.js';
-import { CHARACTERS_COLLECTION } from '../../src/leaderboard/entities/character.entity.js';
-import { RATING_COLLECTIONS } from '../../src/leaderboard/entities/rating.entity.js';
-import { SPEC_REPRESENTATION_COLLECTION } from '../../src/representation/entities/spec-representation.entity.js';
-import { ARCHIVE_ENTRIES_COLLECTION } from '../../src/archive/entities/archive.entity.js';
 import {
-  MPLUS_CHARACTERS_COLLECTION,
   mplusCharacterKey,
   mplusNameKey,
 } from '../../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../../src/mplus/entities/mplus-run.entity.js';
-import { MPLUS_AFFIXES_COLLECTION } from '../../src/mplus/entities/mplus-affix.entity.js';
 import {
+  ARCHIVE_ENTRIES_COLLECTION,
+  CHARACTERS_COLLECTION,
+  GUILDS_COLLECTION,
+  MPLUS_AFFIXES_COLLECTION,
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
-} from '../../src/mplus-archive/entities/mplus-archive.entity.js';
-import {
+  MPLUS_CHARACTERS_COLLECTION,
   MPLUS_DUNGEONS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
   MPLUS_SEASONS_COLLECTION,
-} from '../../src/mplus-season/entities/mplus-season.entity.js';
-import { MPLUS_SPEC_REPRESENTATION_COLLECTION } from '../../src/mplus-representation/entities/mplus-spec-representation.entity.js';
-import { GUILDS_COLLECTION } from '../../src/raid/entities/guild.entity.js';
-import { RAIDS_COLLECTION } from '../../src/raid/entities/raid.entity.js';
+  MPLUS_SPEC_REPRESENTATION_COLLECTION,
+  RAIDS_COLLECTION,
+  RATING_COLLECTIONS,
+  SPEC_REPRESENTATION_COLLECTION,
+} from '../../src/database/collections.js';
 
 /** The six indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
@@ -48,7 +47,11 @@ export const CHARACTER_INDEXES = [
  * the per-case assertions do — a cleanup that removes the wrong thing shows up
  * here even in a test written about something else entirely.
  */
-export async function expectInvariants(db: Db, world?: World): Promise<void> {
+export async function expectInvariants(
+  db: Db,
+  world?: World,
+  mplusWorld?: MplusWorld,
+): Promise<void> {
   await expectRatingsMirrorBrackets(db);
   await expectNoExcludedBrackets(db);
   await expectNoOrphanRatingRows(db);
@@ -78,12 +81,17 @@ export async function expectInvariants(db: Db, world?: World): Promise<void> {
   await expectMplusArchiveRowsOwned(db);
   await expectRaidBoardsResolve(db);
   await expectRaidBoardsWellFormed(db);
+  await expectGuildsWhole(db);
+  await expectRaidDocumentsWhole(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
   // the only one of the ten that can catch a suite that is perfectly coherent
   // and uniformly wrong.
   if (world) await expectStoredMatchesWorld(db, world);
+  // The same for the raid boards, and for the same reason: nineteen guilds in
+  // order are a perfectly well-formed board of a raid that has ninety-seven.
+  if (mplusWorld) await expectRaidBoardsMatchWorld(db, mplusWorld);
 }
 
 /** I1 — `ratings` is the indexed mirror of `brackets`; drift is invisible. */
@@ -1129,5 +1137,93 @@ export async function expectRaidBoardsWellFormed(db: Db): Promise<void> {
       );
       expect(mislinked, `${label} ties each boss to the raid's own encounter`).toEqual([]);
     }
+  }
+}
+
+/**
+ * I28 - a stored board has no hole a further page would fill.
+ *
+ * Opt-in, with the Raider.io world, and only meaningful straight after the
+ * boards were read: every stored board of a listed raid holds exactly the
+ * guilds the world serves for ranks 1 to 100 of it, in order. The
+ * outward-looking check for boards, as I7 is for the ladders - self-consistency
+ * cannot see a board cut short.
+ */
+export async function expectRaidBoardsMatchWorld(db: Db, world: MplusWorld): Promise<void> {
+  const raids = await db
+    .collection<StoredRaid & { unlistedAt?: Date }>(RAIDS_COLLECTION)
+    .find(
+      { guilds: { $exists: true }, unlistedAt: { $exists: false } },
+      { projection: { slug: 1, guilds: 1 } },
+    )
+    .toArray();
+
+  for (const raid of raids) {
+    for (const [name, board] of boardsOf(raid)) {
+      const [region, difficulty] = name.split('/');
+      const served = world
+        .rankedGuilds(raid.slug, region, difficulty)
+        .filter((entry) => entry.rank <= 100 && entry.guild.notServed !== true)
+        .map((entry) => [entry.rank, entry.guild.id]);
+
+      expect(
+        board.map((entry) => [entry.rank, entry.guildId]),
+        `I28: ${raid.slug}/${name} holds every guild served for ranks 1-100`,
+      ).toEqual(served);
+    }
+  }
+}
+
+/** I29 - a guild document is whole. */
+export async function expectGuildsWhole(db: Db): Promise<void> {
+  const guilds = await db.collection(GUILDS_COLLECTION).find({}).toArray();
+  const broken = guilds
+    .filter(
+      (guild) =>
+        !Number.isInteger(guild.id) ||
+        typeof guild.name !== 'string' ||
+        guild.name.length === 0 ||
+        !(guild.region === null || ['us', 'eu', 'kr', 'tw', 'cn'].includes(guild.region)) ||
+        !(guild.realm === null || (typeof guild.realm?.slug === 'string' && guild.realm.slug)) ||
+        !(guild.updatedAt instanceof Date) ||
+        !('faction' in guild) ||
+        !('logo' in guild),
+    )
+    .map((guild) => guild.id);
+
+  expect(broken, 'I29: every guild has an id, a name, a known region, a realm or null').toEqual([]);
+  expect(new Set(guilds.map((guild) => guild.id)).size, 'I29: no guild id twice').toBe(
+    guilds.length,
+  );
+}
+
+/** Half of MongoDB's document limit: "with room to spare". */
+const RAID_DOCUMENT_BUDGET_BYTES = 8 * 1024 * 1024;
+
+/**
+ * I30 - a raid document keeps both halves.
+ *
+ * The catalogue and the rankings write the same document field by field. A
+ * write of one that replaced the document would lose the other, and the boards
+ * are the one thing here that grows.
+ */
+export async function expectRaidDocumentsWhole(db: Db): Promise<void> {
+  const raids = await db.collection(RAIDS_COLLECTION).find({}).toArray();
+
+  for (const raid of raids) {
+    const label = `I30: ${raid.slug ?? raid.id}`;
+
+    expect(
+      Number.isInteger(raid.id) &&
+        typeof raid.slug === 'string' &&
+        Array.isArray(raid.encounters) &&
+        typeof raid.starts === 'object' &&
+        typeof raid.ends === 'object' &&
+        raid.catalogueUpdatedAt instanceof Date,
+      `${label} still has its catalogue fields`,
+    ).toBe(true);
+    expect(BSON.calculateObjectSize(raid), `${label} is well under the 16 MB limit`).toBeLessThan(
+      RAID_DOCUMENT_BUDGET_BYTES,
+    );
   }
 }

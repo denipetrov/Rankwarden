@@ -2,9 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
 
 import { MongoService } from '../src/database/mongo.service.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
-import { MPLUS_SEASONS_COLLECTION } from '../src/mplus-season/entities/mplus-season.entity.js';
 import { MplusCatalogueService } from '../src/mplus-season/mplus-catalogue.service.js';
 import { MplusSeasonTransitionService } from '../src/mplus-season/mplus-season-transition.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -17,6 +15,10 @@ import {
 } from './support/invariants.js';
 import { member, MplusWorld, WORLD_DUNGEONS } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import {
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
+} from '../src/database/collections.js';
 
 const SEASON = 'season-mn-2';
 /** One name, two encodings: precomposed ë, and e followed by a combining diaeresis. */

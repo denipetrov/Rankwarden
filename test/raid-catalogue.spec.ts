@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidCatalogueRepository } from '../src/raid/raid-catalogue.repository.js';
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -12,6 +11,7 @@ import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { RAIDS_COLLECTION } from '../src/database/collections.js';
 
 const DAY = 86_400_000;
 
@@ -256,9 +256,14 @@ describe('Raid catalogue', () => {
     expect(logger.of('warn', /schema issues: raids:/)).toHaveLength(1);
   });
 
-  it('POST /admin/raid-catalogue re-reads it now, charged to nothing but "other"', async () => {
+  it('POST /admin/raid-catalogue re-reads it now, charged to the catalogue and nothing else', async () => {
     const budget = app.app.get(RaiderIoBudget);
-    const before = { other: budget.spent('other'), mplus: budget.spent('mplus') };
+    const before = {
+      catalogue: budget.spent('raidCatalogue'),
+      other: budget.spent('other'),
+      mplus: budget.spent('mplus'),
+      total: budget.spent(),
+    };
 
     const response = await postJson<{ refreshed: boolean; expansions: number[]; raids: number }>(
       app.url(),
@@ -268,8 +273,11 @@ describe('Raid catalogue', () => {
     expect(response.status).toBe(201);
     expect(response.body).toMatchObject({ refreshed: true, expansions: [10, 11] });
     expect(requests(), 'walked even though it was fresh').toHaveLength(3);
-    expect(budget.spent('other') - before.other).toBe(3);
+    expect(budget.spent('raidCatalogue') - before.catalogue).toBe(3);
+    expect(budget.spent('other'), 'named, not lost in the catch-all').toBe(before.other);
     expect(budget.spent('mplus')).toBe(before.mplus);
+    // One window for every consumer: what the catalogue spends, the minute has spent.
+    expect(budget.spent() - before.total).toBe(3);
   });
 
   it('answers a lookup by slug, which is what the raiding endpoints are asked by', async () => {

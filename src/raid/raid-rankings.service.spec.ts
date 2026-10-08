@@ -79,6 +79,9 @@ function serviceOver(
   >(async (...[, region, , board]) => {
     calls.push(`board:${region}:${board.length}`);
   });
+  const markRefused = vi.fn<
+    (id: number, region: string, difficulty: string, refusedAt: Date) => Promise<void>
+  >(async () => undefined);
   const refreshIfDue = vi.fn(async () => ({ refreshed: false }));
   const env: Record<string, unknown> = {
     RAID_RANKINGS_REGIONS: regions,
@@ -96,12 +99,14 @@ function serviceOver(
         targets: vi.fn(async () => targets),
         target: vi.fn(async (slug: string) => targets.find((raid) => raid.slug === slug) ?? null),
         setBoard,
+        markRefused,
       } as unknown as RaidRankingsRepository,
       { upsertGuilds } as unknown as GuildRepository,
     ),
     getRaidRankingsPage,
     upsertGuilds,
     setBoard,
+    markRefused,
     refreshIfDue,
     calls,
     asked: () =>
@@ -187,19 +192,55 @@ describe('RaidRankingsService', () => {
   });
 
   describe('reading a board', () => {
-    it('asks page after page until a short one, with the timeout of its own', async () => {
+    it('asks page after page until an empty one, with the timeout of its own', async () => {
       quiet();
       const { service, asked, getRaidRankingsPage, setBoard } = serviceOver(
         [target('open', OPEN_END)],
-        (_raid, _region, n) => (n < 2 ? page(n * 20 + 1, 20) : page(41, 7)),
+        (_raid, _region, n) => (n < 2 ? page(n * 20 + 1, 20) : n === 2 ? page(41, 7) : []),
         ['eu'],
       );
 
       await service.refreshDue(NOW);
 
-      expect(asked()).toEqual(['open/eu/0', 'open/eu/1', 'open/eu/2']);
+      // The short third page is not the end; the empty fourth is.
+      expect(asked()).toEqual(['open/eu/0', 'open/eu/1', 'open/eu/2', 'open/eu/3']);
       expect(getRaidRankingsPage.mock.calls[0][4]).toBe(60_000);
       expect(setBoard.mock.calls[0][3]).toHaveLength(47);
+    });
+
+    it('goes on past a short page: a rank upstream does not show is not the end', async () => {
+      quiet();
+      // Windows of ranks, as upstream pages: rank 8, 66 and 83 are not served,
+      // so three of the five pages come back with 19.
+      const hidden = new Set([8, 66, 83]);
+      const { service, asked, setBoard } = serviceOver(
+        [target('open', OPEN_END)],
+        (_raid, _region, n) => page(n * 20 + 1, 20).filter((entry) => !hidden.has(entry.rank)),
+        ['eu'],
+      );
+
+      await service.refreshDue(NOW);
+
+      const board = setBoard.mock.calls[0][3] as { rank: number }[];
+      expect(asked()).toHaveLength(5);
+      expect(board).toHaveLength(97);
+      expect(board.at(-1)!.rank).toBe(100);
+    });
+
+    it('ends a board at an empty page, even with ranks beyond it', async () => {
+      quiet();
+      // A whole window not served. Taken for the end: it is how a board that
+      // is over answers, and twenty hidden ranks in a row has not been seen.
+      const { service, asked, setBoard } = serviceOver(
+        [target('open', OPEN_END)],
+        (_raid, _region, n) => (n === 1 ? [] : page(n * 20 + 1, 20)),
+        ['eu'],
+      );
+
+      await service.refreshDue(NOW);
+
+      expect(asked()).toEqual(['open/eu/0', 'open/eu/1']);
+      expect(setBoard.mock.calls[0][3]).toHaveLength(20);
     });
 
     it('stops at the top hundred, without asking for a sixth page', async () => {
@@ -379,9 +420,8 @@ describe('RaidRankingsService', () => {
     it('stops between boards when asked to, saying why', async () => {
       quiet();
       const { service, asked } = serviceOver([target('a', OPEN_END), target('b', OPEN_END)]);
-      let boards = 0;
 
-      const result = await service.refreshDue(NOW, { shouldStop: () => (boards += 1) > 1 });
+      const result = await service.refreshDue(NOW, { shouldStop: () => asked().length >= 1 });
 
       expect(asked()).toEqual(['a/world/0']);
       expect(result.stopped).toBe('the application is shutting down');
@@ -403,14 +443,15 @@ describe('RaidRankingsService', () => {
       quiet();
       const { service, difficulties, setBoard } = serviceOver(
         [target('open', OPEN_END)],
-        (_raid, _region, _page, difficulty) => (difficulty === 'heroic' ? page(1, 2) : []),
+        (_raid, _region, n, difficulty) => (difficulty === 'heroic' && n === 0 ? page(1, 2) : []),
         ['world', 'us'],
         { difficulties: ['mythic', 'heroic', 'normal'] },
       );
 
       const result = await service.refreshDue(NOW);
 
-      expect(difficulties()).toEqual([
+      // In the order first asked for; a board with guilds on it takes a second page.
+      expect([...new Set(difficulties())]).toEqual([
         'mythic/world',
         'mythic/us',
         'heroic/world',
@@ -569,6 +610,202 @@ describe('RaidRankingsService', () => {
       await service.refreshRaid('a', NOW);
 
       expect(asked()).toEqual(['a/world/0', 'a/us/0']);
+    });
+  });
+
+  describe('a board Raider.io refuses', () => {
+    const refusal = (status: number) => () => {
+      throw new RaiderIoApiError(status, 'https://raider.io/x', 'Invalid request query input');
+    };
+    const refusedAt = (raid: RaidRankingTarget, at: Date) => {
+      raid.guildsRefusedAt = { world: { mythic: at }, us: { mythic: at } };
+
+      return raid;
+    };
+
+    it.each([400, 404])(
+      'records a %i as refused, and counts it apart from an outage',
+      async (status) => {
+        quiet();
+        const { service, markRefused, setBoard } = serviceOver(
+          [target('old', CLOSED_END)],
+          refusal(status),
+        );
+
+        const result = await service.refreshDue(NOW);
+
+        expect(result).toMatchObject({ boards: 0, failed: 2, refused: 2, stopped: null });
+        expect(markRefused.mock.calls).toEqual([
+          [3, 'world', 'mythic', NOW],
+          [3, 'us', 'mythic', NOW],
+        ]);
+        expect(setBoard).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not ask again for a closed raid board refused after it closed', async () => {
+      quiet();
+      const { service, asked } = serviceOver([
+        refusedAt(target('old', CLOSED_END), new Date(CLOSED_END.getTime() + 1)),
+      ]);
+
+      const result = await service.refreshDue(NOW);
+
+      expect(asked()).toEqual([]);
+      expect(result).toMatchObject({ settled: 2 });
+    });
+
+    it('asks once more when the refusal came before the raid closed', async () => {
+      quiet();
+      const { service, asked } = serviceOver([
+        refusedAt(target('old', CLOSED_END), new Date(CLOSED_END.getTime() - 86_400_000)),
+      ]);
+
+      await service.refreshDue(NOW);
+
+      expect(asked()).toEqual(['old/world/0', 'old/us/0']);
+    });
+
+    it('asks an open raid refused board again after a day, not every run', async () => {
+      quiet();
+      const hourAgo = new Date(NOW.getTime() - 3_600_000);
+      const { service, asked } = serviceOver([refusedAt(target('open', OPEN_END), hourAgo)]);
+
+      await service.refreshDue(NOW);
+      expect(asked(), 'an hour on').toEqual([]);
+
+      await service.refreshDue(new Date(hourAgo.getTime() + 86_400_000));
+      expect(asked(), 'a day on').toEqual(['open/world/0', 'open/us/0']);
+    });
+
+    it('goes by the read when the board was read after it was refused', async () => {
+      quiet();
+      const raid = target('open', OPEN_END, { world: NOW, us: NOW });
+      refusedAt(raid, new Date(NOW.getTime() - 3_600_000));
+      const { service, asked } = serviceOver([raid]);
+
+      await service.refreshDue(NOW);
+
+      // Open and read since: due as any open raid's board is.
+      expect(asked()).toEqual(['open/world/0', 'open/us/0']);
+    });
+
+    it('is asked for again when the raid is read by hand', async () => {
+      quiet();
+      const { service, asked } = serviceOver([
+        refusedAt(target('old', CLOSED_END), new Date(CLOSED_END.getTime() + 1)),
+      ]);
+
+      await service.refreshRaid('old', NOW);
+
+      expect(asked()).toEqual(['old/world/0', 'old/us/0']);
+    });
+
+    it('carries on when the refusal cannot be recorded', async () => {
+      const warn = quiet();
+      const { service, markRefused, asked } = serviceOver(
+        [target('old', CLOSED_END)],
+        refusal(400),
+      );
+      markRefused.mockRejectedValue(new Error('mongo is gone'));
+
+      const result = await service.refreshDue(NOW);
+
+      expect(asked()).toHaveLength(2);
+      expect(result).toMatchObject({ refused: 2, stopped: null });
+      expect(warn.mock.calls.map(([line]) => line)).toContainEqual(
+        expect.stringMatching(/Could not record the refusal of the world mythic ranking of old/),
+      );
+    });
+  });
+
+  describe('runs by hand and scheduled runs', () => {
+    it('does not hand a run asked for by hand to a scheduled run that is waiting', async () => {
+      quiet();
+      const { service, asked } = serviceOver([target('open', OPEN_END)]);
+      let release!: (clear: boolean) => void;
+      const held = new Promise<boolean>((resolve) => (release = resolve));
+
+      const scheduled = service.refreshDue(NOW, { whenClear: () => held });
+      const byHand = await service.refreshDue(NOW);
+
+      expect(byHand).toMatchObject({ boards: 2 });
+      expect(asked(), 'read while the scheduled run still waits').toHaveLength(2);
+
+      release(true);
+      expect(await scheduled).toMatchObject({ boards: 2 });
+    });
+
+    it('does not let a scheduled run ride on one asked for by hand', async () => {
+      quiet();
+      const { service } = serviceOver([target('open', OPEN_END)]);
+      const whenClear = vi.fn(async () => true);
+
+      const [byHand, scheduled] = await Promise.all([
+        service.refreshDue(NOW),
+        service.refreshDue(NOW, { whenClear }),
+      ]);
+
+      expect(scheduled).not.toBe(byHand);
+      expect(
+        whenClear,
+        'the scheduled run still asked before each of its boards',
+      ).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares one run between scheduled callers, and one between callers by hand', async () => {
+      quiet();
+      const { service } = serviceOver([target('open', OPEN_END)]);
+      const control = { whenClear: async () => true };
+
+      const [a, b, c, d] = await Promise.all([
+        service.refreshDue(NOW, control),
+        service.refreshDue(NOW, control),
+        service.refreshDue(NOW),
+        service.refreshDue(NOW),
+      ]);
+
+      expect(a).toBe(b);
+      expect(c).toBe(d);
+    });
+
+    it('stops after a wait if a shutdown began during it', async () => {
+      quiet();
+      const { service, asked } = serviceOver([target('open', OPEN_END)]);
+      let stopping = false;
+
+      const result = await service.refreshDue(NOW, {
+        shouldStop: () => stopping,
+        whenClear: async () => {
+          stopping = true;
+
+          return true;
+        },
+      });
+
+      expect(asked()).toEqual([]);
+      expect(result.stopped).toBe('the application is shutting down');
+    });
+  });
+
+  describe('status', () => {
+    it('reports whether a run is going, and how the last one ended', async () => {
+      quiet();
+      const { service } = serviceOver([target('open', OPEN_END)], () => page(1, 2).slice(0, 0));
+      expect(service.lastStatus).toEqual({ running: false, lastRun: null });
+
+      let during: boolean | undefined;
+      const result = await service.refreshDue(NOW, {
+        whenClear: async () => {
+          during = service.isRunning;
+
+          return true;
+        },
+      });
+
+      expect(during).toBe(true);
+      expect(service.isRunning).toBe(false);
+      expect(service.lastStatus.lastRun).toEqual({ ...result, finishedAt: expect.any(String) });
     });
   });
 

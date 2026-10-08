@@ -1,9 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { MPLUS_AFFIXES_COLLECTION } from '../src/mplus/entities/mplus-affix.entity.js';
-import { MPLUS_CHARACTERS_COLLECTION } from '../src/mplus/entities/mplus-character.entity.js';
-import { MPLUS_RUNS_COLLECTION } from '../src/mplus/entities/mplus-run.entity.js';
-import { CHARACTERS_COLLECTION } from '../src/leaderboard/entities/character.entity.js';
 import { MplusService } from '../src/mplus/mplus.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
@@ -15,6 +11,12 @@ import {
   expectNoOrphanMplusCharacters,
 } from './support/invariants.js';
 import { World } from './support/world.js';
+import {
+  CHARACTERS_COLLECTION,
+  MPLUS_AFFIXES_COLLECTION,
+  MPLUS_CHARACTERS_COLLECTION,
+  MPLUS_RUNS_COLLECTION,
+} from '../src/database/collections.js';
 
 /**
  * The Mythic+ pass, end to end: real `AppModule`, real Mongo, fake Raider.io at

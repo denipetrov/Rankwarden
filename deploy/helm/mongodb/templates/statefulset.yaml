@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+spec:
+  # Headless: clients resolve straight to the one pod. There is nothing to
+  # balance across, and a virtual IP would only add a hop.
+  clusterIP: None
+  selector:
+    {{- include "mongodb.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}
+  # One node, standalone. The application uses no transactions or change
+  # streams, so it needs no replica set; durability comes from the persistent
+  # volume and the daily backup, not from a second copy. Raising this number
+  # would start a second, unrelated database, not a replica.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "mongodb.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mongodb.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      # Long enough for a clean shutdown with a checkpoint; a database killed
+      # mid-write recovers from its journal, but slowly.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        # Makes the mounted volume writable by the mongodb user.
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mongodb
+          image: {{ include "mongodb.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --auth
+            - --bind_ip_all
+            - --wiredTigerCacheSizeGB
+            - {{ .Values.wiredTigerCacheSizeGB | quote }}
+          env:
+            # Read by the image only on first start, against an empty volume,
+            # to create the administrator. Ignored on every start after that.
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: root
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.authSecret }}
+                  key: root-password
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          # `ping` needs no credentials, so the probes carry none.
+          startupProbe:
+            exec:
+              command: [mongosh, --quiet, --eval, "db.adminCommand('ping').ok"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            # Up to five minutes: journal recovery after an unclean stop.
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: [mongosh, --quiet, --eval, "db.adminCommand('ping').ok"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [mongosh, --quiet, --eval, "db.adminCommand('ping').ok"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

@@ -19,5 +19,3 @@ export interface MplusAffixDocument {
   icon: string | null;
   updatedAt: Date;
 }
-
-export const MPLUS_AFFIXES_COLLECTION = 'mplus_affixes';

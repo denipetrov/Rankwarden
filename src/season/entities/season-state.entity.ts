@@ -31,6 +31,3 @@ export interface SeasonTransitionDocument {
   triggeredBy: number;
   dryRun: boolean;
 }
-
-export const SEASON_STATE_COLLECTION = 'season_state';
-export const SEASON_TRANSITIONS_COLLECTION = 'season_transitions';

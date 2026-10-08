@@ -1,40 +1,22 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
-import {
-  RAIDS_COLLECTION,
-  type RaidCatalogueDocument,
-  type RaidDocument,
-} from './entities/raid.entity.js';
+import { type RaidCatalogueDocument, type RaidDocument } from './entities/raid.entity.js';
+import { RAIDS_COLLECTION } from '../database/collections.js';
 
 /** The catalogue never reads a raid's boards: they are the bulk of the document. */
-const WITHOUT_BOARDS = { projection: { guilds: 0 } } as const;
+const WITHOUT_BOARDS = { projection: { guilds: 0, guildsRefusedAt: 0 } } as const;
 
 /** A raid as a catalogue walk writes it: no boards, and listed. */
 export type CataloguedRaid = Omit<RaidCatalogueDocument, 'unlistedAt' | 'guildsUpdatedAt'>;
 
 /** Storage for the raid catalogue: one document per raid. */
 @Injectable()
-export class RaidCatalogueRepository implements OnModuleInit {
-  private readonly logger = new Logger(RaidCatalogueRepository.name);
-
+export class RaidCatalogueRepository {
   constructor(private readonly mongo: MongoService) {}
 
   private get raids() {
     return this.mongo.collection<RaidDocument>(RAIDS_COLLECTION);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.raids.createIndexes([
-      // The identity. Raider.io's raid id is unique across every expansion.
-      { key: { id: 1 }, name: 'raid_identity', unique: true },
-      // What the raiding endpoints are asked by. Not unique: the id is the
-      // identity, and a slug Raider.io ever reused must not fail a whole walk.
-      { key: { slug: 1 }, name: 'raid_slug' },
-      { key: { expansionId: 1 }, name: 'raid_expansion' },
-    ]);
-
-    this.logger.log(`Indexes ensured on "${RAIDS_COLLECTION}"`);
   }
 
   /**
@@ -89,6 +71,20 @@ export class RaidCatalogueRepository implements OnModuleInit {
       .next();
 
     return oldest?.catalogueUpdatedAt ?? null;
+  }
+
+  /**
+   * The highest expansion any listed raid belongs to, or null with none stored.
+   * What tells a walk the end of the list from a hole in the middle of it.
+   */
+  async highestListedExpansion(): Promise<number | null> {
+    const newest = await this.raids
+      .find({ unlistedAt: { $exists: false } }, { projection: { expansionId: 1 } })
+      .sort({ expansionId: -1 })
+      .limit(1)
+      .next();
+
+    return newest?.expansionId ?? null;
   }
 
   allRaids(): Promise<RaidCatalogueDocument[]> {

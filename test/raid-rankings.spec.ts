@@ -4,22 +4,21 @@ import type { Db } from 'mongodb';
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
-import { GUILDS_COLLECTION } from '../src/raid/entities/guild.entity.js';
-import { RAIDS_COLLECTION } from '../src/raid/entities/raid.entity.js';
 import { RaidCatalogueRepository } from '../src/raid/raid-catalogue.repository.js';
 import { RaidCatalogueService } from '../src/raid/raid-catalogue.service.js';
 import { RaidRankingsService } from '../src/raid/raid-rankings.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
-import { postJson } from './support/http.js';
+import { getJson, postJson } from './support/http.js';
 import { expectInvariants } from './support/invariants.js';
 import { CapturingLogger } from './support/logger.js';
 import { MplusWorld, type WorldGuild } from './support/mplus-world.js';
 import { World } from './support/world.js';
+import { GUILDS_COLLECTION, RAIDS_COLLECTION } from '../src/database/collections.js';
 
 const REGIONS = ['world', 'us', 'eu', 'kr', 'tw'];
 const DIFFICULTIES = ['mythic', 'heroic', 'normal'];
 
-/** A raid's fifteen boards, in the order a run reads them, as `asked()` names them. */
+/** A raid's fifteen boards, in the order a run starts them, as `started()` names them. */
 const boardsOf = (raid: string) =>
   DIFFICULTIES.flatMap((difficulty) =>
     REGIONS.map((region) => `${raid}/${difficulty}/${region}/0`),
@@ -112,6 +111,12 @@ describe('Raid rankings', () => {
       (request) =>
         `${request.params.raid}/${request.params.difficulty}/${request.region}/${request.page}`,
     );
+  /**
+   * The first page of each board, which is the order boards were started in. A
+   * board with guilds on it is asked for a second page too: only an empty page
+   * ends a board.
+   */
+  const started = () => asked().filter((entry) => entry.endsWith('/0'));
   const raid = async (slug: string) => (await db.collection(RAIDS_COLLECTION).findOne({ slug }))!;
   const board = async (slug: string, region: string, difficulty = 'mythic') =>
     ((await raid(slug)).guilds?.[region]?.[difficulty] ?? null) as StoredEntry[] | null;
@@ -149,7 +154,7 @@ describe('Raid rankings', () => {
   it('reads nothing at boot, then every board of every raid once live ingestion has warmed up', async () => {
     expect(bootRequests, 'boot is for the jobs that matter more').toBe(0);
     // The open raid first, and Mythic first within a raid.
-    expect(asked()).toEqual([
+    expect(started()).toEqual([
       ...boardsOf('the-venomous-abyss'),
       ...boardsOf('tier-mn-1'),
       ...boardsOf('manaforge-omega'),
@@ -343,7 +348,7 @@ describe('Raid rankings', () => {
 
     const result = await rankings.refreshDue();
 
-    expect(asked()).toEqual(boardsOf('the-venomous-abyss'));
+    expect(started()).toEqual(boardsOf('the-venomous-abyss'));
     expect(result).toMatchObject({ boards: 15, settled: 30, raids: 1, failed: 0, stopped: null });
     expect((await raid('manaforge-omega')).guildsUpdatedAt.eu.mythic).toEqual(before);
   });
@@ -358,7 +363,7 @@ describe('Raid rankings', () => {
       );
 
     await rankings.refreshDue();
-    expect(asked().filter((entry) => entry.startsWith('manaforge-omega'))).toEqual([
+    expect(started().filter((entry) => entry.startsWith('manaforge-omega'))).toEqual([
       'manaforge-omega/heroic/eu/0',
     ]);
 
@@ -394,17 +399,19 @@ describe('Raid rankings', () => {
     expect(await db.collection(GUILDS_COLLECTION).countDocuments(), 'updated, not added').toBe(6);
   });
 
-  it('reads a long board in pages, stops at the short one, and keeps the top hundred', async () => {
+  it('reads a long board in pages, stops at the empty one, and keeps the top hundred', async () => {
     world.guilds.push(...guildsOn('tier-mn-1', 'first-boss', 'us', 45, 50_000));
 
     const first = await rankings.refreshRaid('tier-mn-1');
 
     expect(first).toMatchObject({ boards: 15, failed: 0 });
-    // 45 guilds: two full pages and a short third; an empty board is one page.
+    // 45 guilds: two full pages, a short third, and the empty fourth that ends
+    // the board; an empty board is one page.
     expect(asked().filter((entry) => entry.startsWith('tier-mn-1/mythic/us/'))).toEqual([
       'tier-mn-1/mythic/us/0',
       'tier-mn-1/mythic/us/1',
       'tier-mn-1/mythic/us/2',
+      'tier-mn-1/mythic/us/3',
     ]);
     expect(asked().filter((entry) => entry.startsWith('tier-mn-1/mythic/eu/'))).toEqual([
       'tier-mn-1/mythic/eu/0',
@@ -476,10 +483,29 @@ describe('Raid rankings', () => {
 
     const result = await rankings.refreshDue();
 
-    expect(result).toMatchObject({ boards: 0, failed: 15, stopped: null });
+    expect(result).toMatchObject({ boards: 0, failed: 15, refused: 15, stopped: null });
     expect(
       logger.of('warn', /Raider\.io refused the \w+ \w+ ranking of the-venomous-abyss/),
     ).toHaveLength(15);
+
+    // A refusal is an answer: the boards it had are kept, and it is not asked
+    // for again an hour later, open raid or not.
+    const refused = await raid('the-venomous-abyss');
+    expect(Object.keys(refused.guildsRefusedAt.eu).sort()).toEqual(['heroic', 'mythic', 'normal']);
+    expect(refused.guilds.eu.mythic).toHaveLength(2);
+    app.raiderIo.reset();
+    expect(await rankings.refreshDue()).toMatchObject({ boards: 0, failed: 0, settled: 45 });
+    expect(requests()).toEqual([]);
+
+    // Read by hand, it is asked for again, and a board read is no longer refused.
+    expect(await rankings.refreshRaid('the-venomous-abyss')).toMatchObject({ boards: 15 });
+    expect((await raid('the-venomous-abyss')).guildsRefusedAt).toEqual({
+      world: {},
+      us: {},
+      eu: {},
+      kr: {},
+      tw: {},
+    });
   });
 
   it('keeps the old board when the payload does not parse', async () => {
@@ -563,7 +589,12 @@ describe('Raid rankings', () => {
 
   it('POST /admin/raid-rankings runs what is due; ?raid= re-reads one raid whole', async () => {
     const budget = app.app.get(RaiderIoBudget);
-    const before = { other: budget.spent('other'), mplus: budget.spent('mplus') };
+    const before = {
+      rankings: budget.spent('raidRankings'),
+      other: budget.spent('other'),
+      mplus: budget.spent('mplus'),
+      total: budget.spent(),
+    };
 
     const due = await postJson<{ boards: number; settled: number }>(
       app.url(),
@@ -578,10 +609,22 @@ describe('Raid rankings', () => {
     );
     expect(one.status).toBe(201);
     expect(one.body).toMatchObject({ boards: 15, raids: 1 });
-    expect(asked().slice(15)).toEqual(boardsOf('manaforge-omega'));
+    expect(started().slice(15)).toEqual(boardsOf('manaforge-omega'));
 
-    expect(budget.spent('other') - before.other, 'charged to the general allowance').toBe(30);
+    // Thirty boards, and a second page for each of the ten with guilds on it.
+    expect(budget.spent('raidRankings') - before.rankings, 'charged to the rankings').toBe(
+      requests().length,
+    );
+    expect(requests().length).toBeGreaterThan(30);
+    expect(budget.spent('other'), 'named, not lost in the catch-all').toBe(before.other);
     expect(budget.spent('mplus')).toBe(before.mplus);
+    // And spent from the same minute the Mythic+ jobs draw on.
+    expect(budget.spent() - before.total).toBe(requests().length);
+    const ready = await getJson<{
+      raiderIoQuota: { spent: Record<string, number>; allowance: { mplus: number } };
+    }>(app.url(), '/health/ready');
+    expect(ready.body.raiderIoQuota.spent.raidRankings).toBe(budget.spent('raidRankings'));
+    expect(ready.body.raiderIoQuota.allowance.mplus).toBe(budget.usable - budget.spent());
 
     const unknown = await postJson(app.url(), '/admin/raid-rankings?raid=no-such-raid');
     expect(unknown.status).toBe(404);

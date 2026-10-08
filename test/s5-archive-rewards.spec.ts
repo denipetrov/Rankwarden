@@ -3,7 +3,6 @@ import type { Db } from 'mongodb';
 
 import { ArchiveService } from '../src/archive/archive.service.js';
 import {
-  ARCHIVE_SEASONS_COLLECTION,
   type ArchiveSeasonDocument,
   type ArchiveSeasonReward,
 } from '../src/archive/entities/archive.entity.js';
@@ -13,6 +12,7 @@ import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { postJson } from './support/http.js';
 import { SPECS, World } from './support/world.js';
+import { ARCHIVE_SEASONS_COLLECTION } from '../src/database/collections.js';
 
 /** The live season, ended, so the archive takes it too. Archived in full. */
 const COMPLETE = 42;

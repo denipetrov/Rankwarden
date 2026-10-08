@@ -25,6 +25,31 @@ describe('raiderIoConsumerFor', () => {
     expect(raiderIoConsumerFor('mplus')).toBe('mplus');
   });
 
+  it('charges each raid job to a consumer of its own', () => {
+    expect(raiderIoConsumerFor('mplus-archive')).toBe('mplusArchive');
+    expect(raiderIoConsumerFor('raid-catalogue')).toBe('raidCatalogue');
+    expect(raiderIoConsumerFor('raid-rankings')).toBe('raidRankings');
+  });
+
+  it('counts what the raid jobs spend against the allowance of the Mythic+ jobs', () => {
+    const { budget } = budgetAt();
+
+    budget.record('raidRankings', 600);
+    budget.record('raidCatalogue', 7);
+
+    expect(budget.spent()).toBe(607);
+    expect(budget.allowanceFor('mplus')).toBe(900 - 607);
+    expect(budget.allowanceFor('mplusArchive')).toBe(900 - 607);
+    expect(budget.snapshot().spent).toEqual({
+      mplus: 0,
+      mplusArchive: 0,
+      raidCatalogue: 7,
+      raidRankings: 600,
+      other: 0,
+      total: 607,
+    });
+  });
+
   it('charges everything else to the catch-all', () => {
     for (const kind of [
       'sweep',

@@ -77,6 +77,55 @@ describe('validateEnv', () => {
     expect(env.BLIZZARD_API_HOST_TEMPLATE).toBe('http://localhost:8080/{region}');
   });
 
+  it('defaults every endpoint path to the one the upstream serves today', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.BLIZZARD_PATH_PVP_SEASON_INDEX).toBe('data/wow/pvp-season/index');
+    expect(env.BLIZZARD_PATH_PVP_LEADERBOARD).toBe(
+      'data/wow/pvp-season/{seasonId}/pvp-leaderboard/{bracket}',
+    );
+    expect(env.BLIZZARD_PATH_CHARACTER_SPECIALIZATIONS).toBe(
+      'profile/wow/character/{realmSlug}/{characterName}/specializations',
+    );
+    expect(env.RAIDERIO_PATH_MPLUS_RUNS).toBe('mythic-plus/runs');
+    expect(env.RAIDERIO_PATH_RAID_RANKINGS).toBe('raiding/raid-rankings');
+  });
+
+  it('accepts a changed endpoint path and trims the slashes around it', () => {
+    const env = validateEnv({
+      ...base,
+      BLIZZARD_PATH_PVP_SEASON: '/data/wow/v2/pvp-season/{seasonId}/',
+      RAIDERIO_PATH_MPLUS_RUNS: '/mythic-plus/v2/runs/',
+    });
+
+    expect(env.BLIZZARD_PATH_PVP_SEASON).toBe('data/wow/v2/pvp-season/{seasonId}');
+    expect(env.RAIDERIO_PATH_MPLUS_RUNS).toBe('mythic-plus/v2/runs');
+  });
+
+  it('rejects an endpoint path that drops a placeholder', () => {
+    // Every season would be read from the same address, and stored as different ones.
+    expect(() =>
+      validateEnv({ ...base, BLIZZARD_PATH_PVP_LEADERBOARD: 'data/wow/pvp-season/{seasonId}/x' }),
+    ).toThrow(/BLIZZARD_PATH_PVP_LEADERBOARD.*missing \{bracket\}/s);
+  });
+
+  it('rejects an endpoint path with a placeholder the service does not fill', () => {
+    expect(() =>
+      validateEnv({ ...base, BLIZZARD_PATH_PVP_SEASON: 'data/wow/pvp-season/{season}' }),
+    ).toThrow(/BLIZZARD_PATH_PVP_SEASON.*missing \{seasonId\}.*unknown \{season\}/s);
+    expect(() =>
+      validateEnv({ ...base, RAIDERIO_PATH_MPLUS_RUNS: 'mythic-plus/{region}/runs' }),
+    ).toThrow(/RAIDERIO_PATH_MPLUS_RUNS.*unknown \{region\}/s);
+  });
+
+  it('rejects an endpoint path that is empty or more than a path', () => {
+    for (const value of ['', '/', 'https://example.com/runs', 'mythic-plus/runs?page=1']) {
+      expect(() => validateEnv({ ...base, RAIDERIO_PATH_MPLUS_RUNS: value })).toThrow(
+        /RAIDERIO_PATH_MPLUS_RUNS/,
+      );
+    }
+  });
+
   it('reads the season transition booleans as booleans, not as truthy strings', () => {
     // z.coerce.boolean() would read the string "false" as true, which on this
     // flag means arming an irreversible delete by accident.

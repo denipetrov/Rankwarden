@@ -113,5 +113,3 @@ export interface SpecLoadout {
  * shape change on Blizzard's side behind a routine-looking count.
  */
 export type ProfileStatus = 'ok' | 'missing' | 'unparseable';
-
-export const CHARACTERS_COLLECTION = 'characters';

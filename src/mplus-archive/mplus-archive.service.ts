@@ -2,8 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunLogger, withRunId } from '../common/logging/run-context.js';
-import { RaiderIoBudget } from '../common/quota/raiderio-budget.service.js';
+import { RunKind, RunLogger, withRunId } from '../common/logging/run-context.js';
+import { RaiderIoBudget, RaiderIoConsumer } from '../common/quota/raiderio-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
@@ -155,7 +155,7 @@ export class MplusArchiveService {
     this.running = true;
 
     try {
-      return await withRunId('mplus-archive', () =>
+      return await withRunId(RunKind.MplusArchive, () =>
         this.coordinator.duringMplusArchive(() => this.runBacklog()),
       );
     } finally {
@@ -417,7 +417,7 @@ export class MplusArchiveService {
       // up, but abandons the wait the moment anything above it starts — that
       // is when the minute is most needed elsewhere.
       const room = await this.budget.waitForAllowance(
-        'mplusArchive',
+        RaiderIoConsumer.MplusArchive,
         pages.length,
         this.budgetWaitMs,
         () => this.coordinator.isAboveMplusArchiveActive,
