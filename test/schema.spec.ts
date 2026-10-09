@@ -73,7 +73,6 @@ describe('database schema', () => {
 
     expect(report.collectionsCreated).toEqual([]);
     expect(report.retiredIndexesDropped).toEqual([]);
-    expect(report.dataFixes).toEqual([]);
     expect(await schema.verify()).toEqual([]);
   });
 
@@ -172,23 +171,5 @@ describe('database schema', () => {
     expect(await schema.verify()).toEqual([]);
     await schema.apply();
     expect(await indexNames(ARCHIVE_ENTRIES_COLLECTION)).toContain('operator_added');
-  });
-
-  it('applies the data repairs as part of the same step', async () => {
-    await db.collection(CHARACTERS_COLLECTION).insertOne({
-      seasonId: 1,
-      region: 'us',
-      characterId: 42,
-      characterName: 'Untyped',
-      brackets: { '3v3': { rating: 2000 } },
-      ratings: { '3v3': 2000 },
-    });
-
-    const report = await schema.apply();
-
-    expect(report.dataFixes).toEqual(['Backfilled characterType "PvP" on 1 characters']);
-    expect(
-      (await db.collection(CHARACTERS_COLLECTION).findOne({ characterId: 42 }))!.characterType,
-    ).toBe('PvP');
   });
 });

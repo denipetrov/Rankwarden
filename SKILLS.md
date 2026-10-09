@@ -793,8 +793,8 @@ file, so it shows what was removed as well as what exists.
 collection with its indexes (`DATABASE_SCHEMA`), and `SchemaService` does two things with
 that list, kept apart because in production two different actors perform them:
 
-- `apply()` creates missing collections, builds indexes, drops retired ones (always after
-  their replacements exist), and runs the one-off data repairs in `data-fixes.ts`.
+- `apply()` creates missing collections, builds indexes and drops retired ones (always after
+  their replacements exist). Structure only: it never reads or changes a document.
   Idempotent. This is `npm run db:schema`, the deploy step.
 - `verify()` reads only, and returns every difference between the database and the
   declaration: a missing collection or index, an index of the right name over the wrong
@@ -846,9 +846,8 @@ Indexes: `character_identity` (unique `seasonId+region+characterId`), `character
 **`characterType`** says where a character came from: `PvP` from the ladder sweep, `M+`
 from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
 (§4.2). The sweep sets it with `$setOnInsert`, so a document another source created is never
-reclassified into the enrichment queue. Documents from before the field existed are
-backfilled to `PvP` by the schema step (`data-fixes.ts`), before any scheduler starts. The sweep
-was the only writer then. The sync endpoint never touches the type.
+reclassified into the enrichment queue. That upsert is the only insert into `characters`,
+so no document can be without a type (invariant I11). The sync endpoint never touches it.
 
 > **In practice `characters` holds only `PvP` today.** M+ characters live in their own
 > collection (§5.5) — three findings ruled out sharing this one, and they are worth knowing

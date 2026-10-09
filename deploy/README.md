@@ -21,8 +21,7 @@ Dockerfile            the image; also runs the schema and config commands
 
 1. **MongoDB** comes up, then a Job creates or updates its users.
 2. **The schema Job** runs `node dist/schema.main.js` as `rankwarden_schema`: it creates
-   every collection and index, drops retired indexes, applies one-off data repairs, and
-   verifies the result. If it fails, the release stops and the running version stays up.
+   every collection and index, drops retired indexes, and verifies the result. If it fails, the release stops and the running version stays up.
 3. **The service** starts as `rankwarden_app` with `DB_SCHEMA_MODE=verify`. It checks the
    structure, changes nothing, and refuses to start if step 2 was skipped.
 

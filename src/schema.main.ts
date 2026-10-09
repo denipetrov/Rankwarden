@@ -17,8 +17,8 @@ class SchemaCommandModule {}
 /**
  * The deploy step: `npm run db:schema`.
  *
- * Creates every collection and index the service needs, drops the retired
- * ones, and applies the one-off data repairs — then verifies the result, so a
+ * Creates every collection and index the service needs and drops the retired
+ * ones — then verifies the result, so a
  * zero exit code means the service will start. Run it before every release,
  * with a database user allowed to change structure; the service itself then
  * runs with `DB_SCHEMA_MODE=verify` and a user that cannot.

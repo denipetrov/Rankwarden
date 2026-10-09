@@ -4,7 +4,7 @@
 # structure ahead of the code that needs it:
 #
 #   1. MongoDB        StatefulSet up, then its users Job (roles and passwords)
-#   2. schema Job     collections, indexes, one-off data repairs — as the
+#   2. schema Job     collections and indexes — as the
 #                     schema user, the only one allowed to change structure
 #   3. Rankwarden     one replica, started with DB_SCHEMA_MODE=verify: it checks
 #                     the structure and refuses to start if step 2 was skipped
