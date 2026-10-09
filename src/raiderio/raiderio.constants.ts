@@ -29,6 +29,14 @@ export const RAID_RANKING_REGIONS = [AGGREGATE_REGION, ...RAIDERIO_REGIONS] as c
 export type RaidRankingRegion = (typeof RAID_RANKING_REGIONS)[number];
 
 /**
+ * The boards read unless configured otherwise: every one but China's, whose
+ * guilds still reach `guilds` through the world board.
+ */
+export const DEFAULT_RAID_RANKING_REGIONS = RAID_RANKING_REGIONS.filter(
+  (region) => region !== 'cn',
+);
+
+/**
  * The difficulties `/raiding/raid-rankings` ranks, hardest first: each is a
  * board of its own, with its own top hundred. `difficulty` is required by the
  * endpoint: without it, or with one it does not know (`lfr`), it answers 400

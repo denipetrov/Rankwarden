@@ -10,6 +10,15 @@ export type Region = (typeof REGIONS)[number];
 export type Bracket = string;
 
 /** The headline brackets, called out for reporting and for the API's defaults. */
+/**
+ * Regions Blizzard issues OAuth tokens in: the Game Data regions and China,
+ * which has a token host of its own though this service reads no data from it.
+ */
+export const OAUTH_REGIONS = [...REGIONS, 'cn'] as const;
+
+/** The region a token is asked for in, and the one a fresh install starts from. */
+export const DEFAULT_OAUTH_REGION: Region = 'us';
+
 export const CORE_BRACKETS = ['2v2', '3v3', 'rbg'] as const;
 
 /**

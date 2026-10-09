@@ -1,9 +1,15 @@
 import { z } from 'zod';
 
-import { REGIONS, type Region } from '../blizzard/blizzard.constants.js';
+import {
+  DEFAULT_OAUTH_REGION,
+  OAUTH_REGIONS,
+  REGIONS,
+  type Region,
+} from '../blizzard/blizzard.constants.js';
 import { placeholdersIn } from '../common/utils/path-template.js';
 import {
   AGGREGATE_REGION,
+  DEFAULT_RAID_RANKING_REGIONS,
   MAX_RUNS_PAGE,
   RAID_DIFFICULTIES,
   RAID_RANKING_REGIONS,
@@ -263,10 +269,10 @@ export const envSchema = z.object({
   // Blizzard OAuth — consumed by @denipetrov/blizz-auth.
   BLIZZARD_CLIENT_ID: z.string().min(1),
   BLIZZARD_CLIENT_SECRET: z.string().min(1),
-  BLIZZARD_REGION: z.enum(['us', 'eu', 'kr', 'tw', 'cn']).default('us'),
+  BLIZZARD_REGION: z.enum(OAUTH_REGIONS).default(DEFAULT_OAUTH_REGION),
 
   // Blizzard Game Data API.
-  BLIZZARD_REGIONS: regionCsv('us,eu,kr,tw'),
+  BLIZZARD_REGIONS: regionCsv(REGIONS.join(',')),
   /**
    * Host template for the Game Data API; `{region}` is substituted per call.
    * Also what lets a runtime rehearsal point a running binary at a fake server.
@@ -484,7 +490,7 @@ export const envSchema = z.object({
   RAIDERIO_PATH_RAID_STATIC_DATA: pathTemplate('raiding/static-data'),
   RAIDERIO_PATH_RAID_RANKINGS: pathTemplate('raiding/raid-rankings'),
   /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
-  RAIDERIO_REGIONS: raiderIoRegionCsv('us,eu,kr,tw,cn'),
+  RAIDERIO_REGIONS: raiderIoRegionCsv(RAIDERIO_REGIONS.join(',')),
   RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   RAIDERIO_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(2),
   /** Pages fetched in parallel. At ~0.65s a page, 12 is ~18 pages a second. */
@@ -651,9 +657,9 @@ export const envSchema = z.object({
    * The boards read for each raid: `world` and any real region. `cn` is served
    * too and left out by default; its guilds still appear on the world board.
    */
-  RAID_RANKINGS_REGIONS: raidRankingRegionCsv('world,us,eu,kr,tw'),
+  RAID_RANKINGS_REGIONS: raidRankingRegionCsv(DEFAULT_RAID_RANKING_REGIONS.join(',')),
   /** The difficulties read on each board, in the order they are read. */
-  RAID_RANKINGS_DIFFICULTIES: raidDifficultyCsv('mythic,heroic,normal'),
+  RAID_RANKINGS_DIFFICULTIES: raidDifficultyCsv(RAID_DIFFICULTIES.join(',')),
   /**
    * Boards read at once. A board's own pages stay in order, so this is also the
    * most ranking requests in flight; upstream is slow at this endpoint, and the
