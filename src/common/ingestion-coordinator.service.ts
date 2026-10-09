@@ -40,6 +40,7 @@ export class IngestionCoordinator {
   private sweepDone = false;
   private enrichmentDone = false;
   private mplusDone = false;
+  private warmedUpSignalled = false;
   private mplusIdleWaiters: Array<() => void> = [];
   /** Woken whenever any job ends, so a bounded wait re-checks its condition. */
   private changeWaiters: Array<() => void> = [];
@@ -267,12 +268,12 @@ export class IngestionCoordinator {
   }
 
   private markMplusWarmedUp(): void {
+    // Once only: the flag this sets is the one that says it has been said.
+    if (this.mplusDone) return;
     this.mplusDone = true;
 
-    if (!this.mplusWarmedUpSubject.isStopped) {
-      this.mplusWarmedUpSubject.next();
-      this.mplusWarmedUpSubject.complete();
-    }
+    this.mplusWarmedUpSubject.next();
+    this.mplusWarmedUpSubject.complete();
   }
 
   /** Marks profile enrichment as active for the duration of `work`. */
@@ -304,12 +305,14 @@ export class IngestionCoordinator {
   private signalWarmedUp(): void {
     if (!this.isWarmedUp) return;
 
-    // Once only. `isStopped`, not `closed`: a Subject stays open (`closed` false)
-    // after `complete()`, so a `closed` guard let every later pass log this again.
-    if (!this.warmedUpSubject.isStopped) {
-      this.logger.log('Live ingestion warmed up; lower-priority work may start');
-      this.warmedUpSubject.next();
-      this.warmedUpSubject.complete();
-    }
+    // Once only, by a flag of our own rather than the subject's state: `closed`
+    // stays false after `complete()`, which let every later pass log this again,
+    // and `isStopped`, which does not, is deprecated and internal from RxJS 8.
+    if (this.warmedUpSignalled) return;
+    this.warmedUpSignalled = true;
+
+    this.logger.log('Live ingestion warmed up; lower-priority work may start');
+    this.warmedUpSubject.next();
+    this.warmedUpSubject.complete();
   }
 }
