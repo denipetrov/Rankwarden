@@ -329,6 +329,7 @@ describe('S4 — falling out of scope', () => {
     record(characters_, 'removeRetiredBrackets', 'characters.removeRetiredBrackets');
     record(characters_, 'removeUnranked', 'characters.removeUnranked');
     record(ratings_, 'removeOrphans', 'ratings.removeOrphans');
+    record(ratings_, 'removeForCharacters', 'ratings.removeForCharacters');
     record(ratings_, 'removeRetiredBrackets', 'ratings.removeRetiredBrackets');
 
     try {
@@ -337,16 +338,86 @@ describe('S4 — falling out of scope', () => {
       for (const undo of restore) undo();
     }
 
+    // Not the first sweep of this process, so rows are removed from the list
+    // of who was just unranked and the full reconciliation is not run.
     const perRegion = [
       'characters.removeRetiredBrackets',
       'characters.removeUnranked',
-      'ratings.removeOrphans',
+      'ratings.removeForCharacters',
       'ratings.removeRetiredBrackets',
     ];
     expect(calls, 'two regions, each cleaned in full before the next').toEqual([
       ...perRegion,
       ...perRegion,
     ]);
+  });
+
+  it('S4.3b — an unranked character takes its rows with it, without a full reconciliation', async () => {
+    const ratingRepo = harness.app.get(RatingRepository);
+    const original = ratingRepo.removeOrphans.bind(ratingRepo);
+    let fullPasses = 0;
+    ratingRepo.removeOrphans = (...args) => {
+      fullPasses += 1;
+
+      return original(...args);
+    };
+
+    const player = pickPlayer(2);
+    harness.world.dropFromAllBrackets(player.id);
+
+    try {
+      await sweep();
+    } finally {
+      ratingRepo.removeOrphans = original;
+    }
+
+    expect(await characters().findOne({ characterId: player.id, region: 'us' })).toBeNull();
+    for (const family of RATING_FAMILIES) {
+      expect(
+        await rows(family).countDocuments({ characterId: player.id }),
+        RATING_COLLECTIONS[family],
+      ).toBe(0);
+    }
+    expect(fullPasses, 'every id in the region is not read again on each sweep').toBe(0);
+    await expectInvariants(db, harness.world);
+  });
+
+  it('S4.3c — a cleanup that fails is followed by a full reconciliation', async () => {
+    const leaderboards = harness.app.get(LeaderboardService);
+    const ratingRepo = harness.app.get(RatingRepository);
+    const seasonId = (await characters().findOne({ region: 'us' }))!.seasonId;
+    const ghost = {
+      seasonId,
+      region: 'us',
+      bracket: '3v3',
+      characterId: 910_000_001,
+      rating: 1500,
+      // Far in the future, so the per-bracket prune leaves it for the
+      // reconciliation, which is what this is about.
+      fetchedAt: new Date('2100-01-01T00:00:00.000Z'),
+    };
+    const ghosts = () => rows('3v3').countDocuments({ characterId: ghost.characterId });
+    await rows('3v3').insertOne(ghost);
+
+    // An ordinary sweep was not told about this character, so it does not look.
+    await sweep();
+    expect(await ghosts(), 'the everyday path only removes what it unranked').toBe(1);
+
+    // The cleanup breaks partway: the sweep can no longer vouch for the rows.
+    const original = ratingRepo.removeForCharacters.bind(ratingRepo);
+    ratingRepo.removeForCharacters = async () => {
+      throw new Error('injected: connection lost mid-cleanup');
+    };
+    try {
+      await expect(leaderboards.sweep()).rejects.toThrow(/injected/);
+    } finally {
+      ratingRepo.removeForCharacters = original;
+    }
+
+    await sweep();
+
+    expect(await ghosts(), 'the next sweep compares against characters again').toBe(0);
+    await expectInvariants(db, harness.world);
   });
 
   it('S4.12 — orphan removal chunks past the bulk limit', async () => {

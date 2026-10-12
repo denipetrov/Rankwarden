@@ -490,12 +490,49 @@ export class CharacterRepository {
   }
 
   /**
-   * Deletes characters left ranking in nothing. Runs once per region at the end
-   * of a sweep rather than per bracket — with 85 brackets that is 85 collection
-   * scans saved.
+   * Deletes characters left ranking in nothing, and returns their ids. Runs
+   * once per region at the end of a sweep rather than per bracket — with 85
+   * brackets that is 85 collection scans saved.
+   *
+   * The ids are what lets the caller delete exactly those characters' rating
+   * rows, instead of comparing every row in the region against every character
+   * to find out which ones went.
    */
-  async removeUnranked(seasonId: number, region: Region): Promise<number> {
-    const removed = await this.collection.deleteMany({ seasonId, region, brackets: {} });
-    return removed.deletedCount;
+  async removeUnranked(seasonId: number, region: Region): Promise<number[]> {
+    const unranked = await this.collection
+      .find({ seasonId, region, brackets: {} }, { projection: { _id: 0, characterId: 1 } })
+      .map((character) => character.characterId)
+      .toArray();
+    const removed: number[] = [];
+
+    for (let offset = 0; offset < unranked.length; offset += BULK_CHUNK_SIZE) {
+      const chunk = unranked.slice(offset, offset + BULK_CHUNK_SIZE);
+      // Still filtered on the empty map: a character re-ranked since the read
+      // above, by a single-character sync, must be kept.
+      const result = await this.collection.deleteMany({
+        seasonId,
+        region,
+        characterId: { $in: chunk },
+        brackets: {},
+      });
+
+      if (result.deletedCount === chunk.length) {
+        removed.push(...chunk);
+        continue;
+      }
+
+      // Some survived. Only the ones really gone may be reported, because the
+      // caller deletes rating rows on the strength of this list.
+      const survivors = new Set(
+        await this.collection.distinct('characterId', {
+          seasonId,
+          region,
+          characterId: { $in: chunk },
+        }),
+      );
+      removed.push(...chunk.filter((characterId) => !survivors.has(characterId)));
+    }
+
+    return removed;
   }
 }

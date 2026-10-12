@@ -558,7 +558,8 @@ instead and run the moment the pass finishes.
 3. Run them through `mapWithConcurrency` at `BLIZZARD_CONCURRENCY` (8).
 4. Each job: fetch → zod-validate → map → upsert into `characters` → mirror into the
    family's ratings collection → prune that bracket in both.
-5. Once per region afterwards: `removeUnranked`, `removeOrphans`, `removeRetiredBrackets`.
+5. Once per region afterwards: `removeUnranked`, then the rating rows of the characters it
+   removed (`removeForCharacters`, or the full `removeOrphans`: see §9), `removeRetiredBrackets`.
 6. Emit `SweepEvents.completed$` **after** the coordinator releases.
 
 Observed: 332/332 brackets in ~35s.
@@ -2043,7 +2044,8 @@ Run **in this order**, once per region, at the end of every sweep:
 | 1   | `CharacterRepository.pruneBracket` (per bracket, `fetchedAt`) | a bracket not refreshed          | character left that ladder |
 | 2   | `CharacterRepository.removeRetiredBrackets`                   | bracket keys no longer published | a spec ladder disappears   |
 | 3   | `CharacterRepository.removeUnranked`                          | characters ranking in nothing    | left every ladder          |
-| 4   | `RatingRepository.removeOrphans` (vs `characters`)            | rows whose character is gone     | character deleted          |
+| 4   | `RatingRepository.removeForCharacters` (ids from step 3)      | rows of the characters just removed | character deleted       |
+| 4b  | `RatingRepository.removeOrphans` (vs `characters`)            | rows whose character is gone     | in place of 4, see below   |
 | 5   | `RatingRepository.removeRetiredBrackets`                      | rows for unpublished brackets    | a spec ladder disappears   |
 
 **The order matters twice.** Step 2 must precede step 3: a character ranked _only_ in
@@ -2051,6 +2053,16 @@ retired brackets never reaches an empty `brackets` map otherwise, so `removeUnra
 never see them and they persist for the rest of the season, still queryable through the
 `bracket_ratings` wildcard index. And steps 4–5 must follow step 3, so the rows are
 genuinely orphans by the time they are reconciled.
+
+**Step 4 has a cheap form and a full form.** `removeUnranked` returns the ids it deleted, and
+`removeForCharacters` deletes exactly those characters' rows: it reads nothing, and its cost
+follows the handful who left. `removeOrphans` does the same job the expensive way, reading
+every character id and every rated character id in the region to compare them, which is
+hundreds of thousands of ids on a large region. `LeaderboardService` runs the full form only
+when it cannot vouch for the rows (`reconciledAt`): on the first cleanup of a season and
+region after a start, which covers a process killed between the two deletes; on the one
+after a cleanup that threw; and once every 24 hours, for anything deleted by hand. A row
+orphaned by some other route therefore survives until the next full pass, at most a day.
 
 Both `removeRetiredBrackets` implementations **refuse to act on an empty bracket list** —
 that means the sweep failed for the region, not that every ladder retired. Without the
