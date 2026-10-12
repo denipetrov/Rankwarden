@@ -313,6 +313,16 @@ export const envSchema = z.object({
     'profile/wow/character/{realmSlug}/{characterName}/specializations',
     ['realmSlug', 'characterName'],
   ),
+  /**
+   * How long reference data read from Blizzard is reused before it is asked
+   * for again: a season's bracket list, and the record of a season that has
+   * finished. Held in memory, so a restart empties it. 0 switches it off.
+   *
+   * Half a day by default. A bracket list changes when a specialisation is
+   * added, which happens with a patch, not within a day; the cost of a stale
+   * one is a new ladder picked up at most this much late.
+   */
+  BLIZZARD_REFERENCE_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(43_200_000),
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),

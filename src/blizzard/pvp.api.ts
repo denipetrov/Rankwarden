@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { fillPath } from '../common/utils/path-template.js';
+import { TtlCache } from '../common/utils/ttl-cache.js';
 import type { Env } from '../config/env.schema.js';
 import type { Bracket, Region } from './blizzard.constants.js';
 import { BlizzardHttpService } from './http/blizzard-http.service.js';
@@ -18,10 +19,23 @@ import {
   type PvpReward,
 } from './schemas/pvp-reward.schema.js';
 
+export interface PvpSeasonRecord {
+  id: number;
+  name?: string;
+  startsAt: Date;
+  /** Null while the season is still running. */
+  endsAt: Date | null;
+}
+
 /**
  * Typed access to the PvP slice of the Game Data API.
  *
  * Endpoint paths come from configuration (`BLIZZARD_PATH_*`), not from here.
+ *
+ * Two answers are reused for `BLIZZARD_REFERENCE_CACHE_TTL_MS` instead of
+ * being asked for on every run: a season's bracket list, and the record of a
+ * season that has finished. Everything else is read fresh every time, and
+ * deliberately so — see `getSeasonIndex` and `getSeason`.
  */
 @Injectable()
 export class PvpApi {
@@ -35,6 +49,8 @@ export class PvpApi {
     rewardIndex: string;
     specialization: string;
   };
+  private readonly brackets: TtlCache<string, readonly string[]>;
+  private readonly finishedSeasons: TtlCache<string, PvpSeasonRecord>;
 
   constructor(
     private readonly http: BlizzardHttpService,
@@ -48,8 +64,16 @@ export class PvpApi {
       rewardIndex: config.get('BLIZZARD_PATH_PVP_REWARD_INDEX', { infer: true }),
       specialization: config.get('BLIZZARD_PATH_PLAYABLE_SPECIALIZATION', { infer: true }),
     };
+
+    const ttlMs = config.get('BLIZZARD_REFERENCE_CACHE_TTL_MS', { infer: true });
+    this.brackets = new TtlCache(ttlMs);
+    this.finishedSeasons = new TtlCache(ttlMs);
   }
 
+  /**
+   * Which season is current. Never cached: this is how a rollover is noticed,
+   * and a stale answer would keep every sweep on the season that just ended.
+   */
   async getSeasonIndex(region: Region): Promise<PvpSeasonIndex> {
     const payload = await this.http.get(region, fillPath(this.paths.seasonIndex));
     return pvpSeasonIndexSchema.parse(payload);
@@ -58,24 +82,45 @@ export class PvpApi {
   /**
    * A season's own record. `endsAt` is null while it is running and appears the
    * moment it ends, so this is worth re-reading for as long as it is null.
+   *
+   * Reused only once the season is over, when nothing about it can change. A
+   * running season is read fresh every time: caching it would hide the end
+   * date for as long as the entry lived.
    */
-  async getSeason(
-    region: Region,
-    seasonId: number,
-  ): Promise<{ id: number; name?: string; startsAt: Date; endsAt: Date | null }> {
+  async getSeason(region: Region, seasonId: number): Promise<PvpSeasonRecord> {
+    const key = `${region}:${seasonId}`;
+    const cached = this.finishedSeasons.get(key);
+    if (cached) return { ...cached };
+
     const payload = await this.http.get(region, fillPath(this.paths.season, { seasonId }));
     const season = pvpSeasonSchema.parse(payload);
-
-    return {
+    const record: PvpSeasonRecord = {
       id: season.id,
       name: season.season_name ?? undefined,
       startsAt: new Date(season.season_start_timestamp),
       endsAt: season.season_end_timestamp ? new Date(season.season_end_timestamp) : null,
     };
+
+    if (record.endsAt !== null && record.endsAt.getTime() <= Date.now()) {
+      this.finishedSeasons.set(key, record);
+    }
+
+    return { ...record };
   }
 
-  /** Every bracket Blizzard publishes for a season, in the order it lists them. */
+  /**
+   * Every bracket Blizzard publishes for a season, in the order it lists them.
+   *
+   * Reused between calls: the list only grows when a specialisation is added,
+   * and every sweep and every archive pass asks for it. An empty list is not
+   * kept, so a season whose ladders are not published yet is asked about again
+   * on the next run rather than staying empty for the life of the entry.
+   */
   async getBrackets(region: Region, seasonId: number): Promise<string[]> {
+    const key = `${region}:${seasonId}`;
+    const cached = this.brackets.get(key);
+    if (cached) return [...cached];
+
     const payload = await this.http.get(
       region,
       fillPath(this.paths.leaderboardIndex, { seasonId }),
@@ -83,7 +128,10 @@ export class PvpApi {
     const { leaderboards } = pvpLeaderboardIndexSchema.parse(payload);
 
     this.logger.debug(`${region} season ${seasonId}: ${leaderboards.length} brackets`);
-    return leaderboards.map((leaderboard) => leaderboard.name);
+    const names = leaderboards.map((leaderboard) => leaderboard.name);
+    if (names.length > 0) this.brackets.set(key, names);
+
+    return [...names];
   }
 
   async getLeaderboard(

@@ -1568,6 +1568,14 @@ endpoint gets a variable declared with `pathTemplate(default, placeholders)` in
 drops a placeholder, names one the service does not fill, or is more than a path. Only the
 address is configurable: a change in what an endpoint returns still needs its schema changed.
 
+**Two answers are cached in memory**, in `PvpApi`, for `BLIZZARD_REFERENCE_CACHE_TTL_MS`
+(half a day): a season's bracket list, and the record of a season whose end date has
+passed. Both are asked for by every sweep and archive pass and change with a patch, not
+within a day. A hit makes no request, so it costs nothing against the quota. An empty
+bracket list is never kept. Two things are deliberately **not** cached, and must stay so:
+the season index, which is how a rollover is noticed, and the record of a running season,
+which is where its end date appears. The cache is per process and empty after a restart.
+
 **Quota: 100 requests/second, 36,000/hour.** Everything else follows from that. The hour is
 governed by the shared budget (§4.0); the second by each job's own `RateLimiter`.
 
@@ -1851,6 +1859,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)                  |
 | `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above                |
 | `BLIZZARD_LOCALE`                     | `en_US`                             |                                                            |
+| `BLIZZARD_REFERENCE_CACHE_TTL_MS` | `43200000` | In-memory reuse of bracket lists and finished season records (§6); 0 = off |
 | `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; also the L3 test seam             |
 | `BLIZZARD_PATH_PVP_SEASON_INDEX` | `data/wow/pvp-season/index` | Endpoint paths under the host: see §6 |
 | `BLIZZARD_PATH_PVP_SEASON` | `data/wow/pvp-season/{seasonId}` |  |
