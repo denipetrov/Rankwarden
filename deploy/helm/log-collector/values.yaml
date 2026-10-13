@@ -1,0 +1,43 @@
+# Ships pod logs to Grafana Cloud Logs.
+#
+# The pods write to standard output, and by itself Kubernetes keeps only the
+# last few megabytes of that per container, on the node, until the pod is
+# replaced. This release reads the same output through the Kubernetes API and
+# forwards it, so logs survive restarts and can be searched in Grafana.
+#
+# It reads through the API rather than from the nodes' disks, so it is one
+# ordinary pod: no DaemonSet, no host mounts, no root.
+
+image:
+  repository: grafana/alloy
+  # Empty means the chart's appVersion.
+  tag: ''
+  pullPolicy: IfNotPresent
+
+loki:
+  # The stack's Loki address, from the Grafana Cloud portal: My Account → the
+  # stack → Loki → Details. Not a secret. The push path is appended to it.
+  url: https://logs-prod-012.grafana.net
+  # The Secret holding the two credentials, created by
+  # deploy/scripts/create-secrets.sh from GRAFANA_LOKI_USER and
+  # GRAFANA_LOKI_TOKEN:
+  #   LOKI_USER    the numeric "User" shown beside the URL in the portal
+  #   LOKI_TOKEN   an access-policy token with the logs:write scope
+  secretName: grafana-cloud
+
+# Attached to every line, so logs from a second cluster could be told apart.
+cluster: rankwarden
+
+# Namespaces whose pods are not collected. The system pods are noisy and are
+# DigitalOcean's to run; the free allowance is better spent on our own.
+excludeNamespaces:
+  - kube-system
+  - kube-node-lease
+  - kube-public
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 96Mi
+  limits:
+    memory: 256Mi

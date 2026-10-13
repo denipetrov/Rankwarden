@@ -1,0 +1,9 @@
+apiVersion: v2
+name: log-collector
+description: >-
+  Ships every pod's log output to Grafana Cloud Logs (Loki). One Grafana Alloy
+  instance that reads logs through the Kubernetes API; the applications are
+  not changed and do not know it exists.
+type: application
+version: 0.1.0
+appVersion: '1.20.1'

@@ -13,14 +13,18 @@
 # pre-upgrade hook, so a failed schema step stops the release before the
 # running version is touched.
 #
+# Before those, when the Grafana Cloud credentials are in the cluster, the log
+# collector: first, so that the output of everything after it is kept.
+#
 # Usage:
 #   deploy/scripts/deploy.sh <image-tag>
 #
 # Environment:
 #   NAMESPACE (rankwarden)
-#   MONGODB_HELM_ARGS, RANKWARDEN_HELM_ARGS   extra arguments for each release,
-#                                             e.g. "--values local.yaml"
+#   MONGODB_HELM_ARGS, RANKWARDEN_HELM_ARGS,  extra arguments for each release,
+#   LOG_COLLECTOR_HELM_ARGS                   e.g. "--values local.yaml"
 #   SKIP_MONGODB=1                            leave the database release alone
+#   SKIP_LOG_COLLECTOR=1                      leave the log collector release alone
 
 set -euo pipefail
 
@@ -54,6 +58,23 @@ for secret in mongodb-auth rankwarden-app rankwarden-schema; do
     exit 1
   fi
 done
+
+if [ "${SKIP_LOG_COLLECTOR:-}" = "1" ]; then
+  :
+elif kubectl get secret grafana-cloud --namespace "$NAMESPACE" >/dev/null 2>&1; then
+  echo "==> Log collector"
+  # shellcheck disable=SC2086
+  helm upgrade --install log-collector "$ROOT/helm/log-collector" \
+    --namespace "$NAMESPACE" \
+    --wait --timeout 5m \
+    ${LOG_COLLECTOR_HELM_ARGS:-}
+  echo
+else
+  # Optional on purpose: the service must be deployable without a log account.
+  echo "note: secret/grafana-cloud does not exist, so logs are not shipped anywhere."
+  echo "      Set GRAFANA_LOKI_USER and GRAFANA_LOKI_TOKEN and run create-secrets.sh to enable it."
+  echo
+fi
 
 if [ "${SKIP_MONGODB:-}" != "1" ]; then
   echo "==> MongoDB"

@@ -92,11 +92,13 @@ jobs:
       - name: Lint
         run: |
           helm lint deploy/helm/mongodb
+          helm lint deploy/helm/log-collector
           helm lint deploy/helm/rankwarden --set image.tag=ci
 
       - name: Render
         run: |
           helm template mongodb deploy/helm/mongodb --namespace rankwarden > /dev/null
+          helm template log-collector deploy/helm/log-collector --namespace rankwarden > /dev/null
           helm template rankwarden deploy/helm/rankwarden --namespace rankwarden --set image.tag=ci > /dev/null
 
       - name: Deploy scripts parse

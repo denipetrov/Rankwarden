@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "log-collector.labels" . | nindent 4 }}
+data:
+  config.alloy: |
+    {{- include "log-collector.config" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "log-collector.labels" . | nindent 4 }}
+spec:
+  # One: two would each follow every pod and send every line twice.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "log-collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "log-collector.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "log-collector.config" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alloy
+          image: {{ printf "%s:%s" .Values.image.repository (.Values.image.tag | default (printf "v%s" .Chart.AppVersion)) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy
+            - --server.http.listen-addr=0.0.0.0:12345
+            # No usage reports to Grafana Labs.
+            - --disable-reporting
+          env:
+            - name: LOKI_URL
+              value: {{ required "loki.url is required" .Values.loki.url | trimSuffix "/" | quote }}
+            - name: LOKI_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.loki.secretName }}
+                  key: LOKI_USER
+            - name: LOKI_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.loki.secretName }}
+                  key: LOKI_TOKEN
+          ports:
+            - name: http
+              containerPort: 12345
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+              readOnly: true
+            # Where it remembers how far it has read each pod. Lost with the
+            # pod, after which the lines still on the nodes are sent again.
+            - name: data
+              mountPath: /var/lib/alloy
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

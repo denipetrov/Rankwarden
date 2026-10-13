@@ -2461,6 +2461,10 @@ true:
   it is. The four credentials never go in that file.
 - **No public entry.** The service is `ClusterIP` only, and a NetworkPolicy admits just the
   `backend` namespace, because its endpoints have no authentication.
+- **Logs leave the cluster through a separate release.** The service only writes to
+  standard output. `deploy/helm/log-collector` (Grafana Alloy) reads every pod's output
+  through the Kubernetes API and forwards it to Grafana Cloud Logs; it is installed only
+  when `secret/grafana-cloud` exists. Nothing in `src/` knows about it, and nothing should.
 - **CI runs with no `.env`.** A test that passes only because a developer's `.env` supplied a
   value fails there; set what a test needs in the test.
 
