@@ -5,12 +5,7 @@ import { RunLogger } from '../common/logging/run-context.js';
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
-import {
-  RAID_RANKING_PAGE_SIZE,
-  RAID_RANKING_TOP,
-  type RaidDifficulty,
-  type RaidRankingRegion,
-} from '../raiderio/raiderio.constants.js';
+import { type RaidDifficulty, type RaidRankingRegion } from '../raiderio/raiderio.constants.js';
 import { RaidingApi } from '../raiderio/raiding.api.js';
 import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
 import type { GuildDocument } from './entities/guild.entity.js';
@@ -116,6 +111,8 @@ export class RaidRankingsService {
   private readonly difficulties: RaidDifficulty[];
   private readonly concurrency: number;
   private readonly timeoutMs: number;
+  private readonly top: number;
+  private readonly pageSize: number;
   /**
    * The scheduled run in flight and the one asked for by hand, kept apart: a
    * scheduled run yields to other jobs and one asked for by hand does not, so
@@ -137,6 +134,8 @@ export class RaidRankingsService {
     this.difficulties = config.get('RAID_RANKINGS_DIFFICULTIES', { infer: true });
     this.concurrency = config.get('RAID_RANKINGS_CONCURRENCY', { infer: true });
     this.timeoutMs = config.get('RAID_RANKINGS_REQUEST_TIMEOUT_MS', { infer: true });
+    this.top = config.get('RAID_RANKINGS_TOP', { infer: true });
+    this.pageSize = config.get('RAID_RANKINGS_PAGE_SIZE', { infer: true });
   }
 
   get isRunning(): boolean {
@@ -428,7 +427,7 @@ export class RaidRankingsService {
     const entries: RaidRanking[] = [];
     const seen = new Set<number>();
 
-    for (let page = 0; page * RAID_RANKING_PAGE_SIZE < RAID_RANKING_TOP; page += 1) {
+    for (let page = 0; page * this.pageSize < this.top; page += 1) {
       const served = await this.api.getRaidRankingsPage(
         slug,
         region,

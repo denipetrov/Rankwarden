@@ -12,8 +12,12 @@ import {
   DEFAULT_RAID_RANKING_REGIONS,
   MAX_RUNS_PAGE,
   RAID_DIFFICULTIES,
+  RAID_RANKING_MAX_PAGE_SIZE,
+  RAID_RANKING_PAGE_SIZE,
+  RAID_RANKING_TOP,
   RAID_RANKING_REGIONS,
   RAIDERIO_REGIONS,
+  RUNS_PER_PAGE,
   type RaidDifficulty,
   type RaiderIoRegion,
   type RaidRankingRegion,
@@ -523,8 +527,20 @@ export const envSchema = z.object({
     .number()
     .int()
     .positive()
-    .max(MAX_RUNS_PAGE + 1)
-    .default(1_001),
+    .default(MAX_RUNS_PAGE + 1),
+  /**
+   * Runs Raider.io serves per page of `/mythic-plus/runs`. Not a choice: the
+   * endpoint takes no page size, so this states what upstream does and must be
+   * changed only when upstream changes. It is how a complete archive is told
+   * from a short one.
+   */
+  RAIDERIO_RUNS_PER_PAGE: z.coerce.number().int().positive().default(RUNS_PER_PAGE),
+  /**
+   * The highest `page` the runs endpoint accepts, counted from zero. Likewise a
+   * statement about upstream: `RAIDERIO_MAX_PAGES` and `MPLUS_ARCHIVE_PAGES`
+   * may not ask for more pages than this allows.
+   */
+  RAIDERIO_MAX_RUNS_PAGE: z.coerce.number().int().nonnegative().default(MAX_RUNS_PAGE),
   /**
    * Raider.io's cap, in requests a minute, across the whole client.
    *
@@ -613,12 +629,7 @@ export const envSchema = z.object({
    * 2,000 runs a region, ~500 requests a season at five regions. Kept shallow:
    * the archive is a record of the top of each region's season, not a copy.
    */
-  MPLUS_ARCHIVE_PAGES: z.coerce
-    .number()
-    .int()
-    .positive()
-    .max(MAX_RUNS_PAGE + 1)
-    .default(100),
+  MPLUS_ARCHIVE_PAGES: z.coerce.number().int().positive().default(100),
   /**
    * First expansion the catalogue walks from. The walk continues upward until an
    * expansion answers with no seasons, so a new expansion needs no change here.
@@ -688,6 +699,21 @@ export const envSchema = z.object({
    * that were about to answer.
    */
   RAID_RANKINGS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(75_000),
+  /** Guilds kept per board: the top this many. */
+  RAID_RANKINGS_TOP: z.coerce.number().int().positive().default(RAID_RANKING_TOP),
+  /**
+   * Guilds asked for per ranking request, so a board is
+   * `RAID_RANKINGS_TOP / RAID_RANKINGS_PAGE_SIZE` requests. Small on purpose:
+   * the endpoint's cost is per guild and far from flat, and a hundred in one
+   * request times out at upstream's gateway on older raids. The endpoint
+   * serves 200 at most.
+   */
+  RAID_RANKINGS_PAGE_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(RAID_RANKING_MAX_PAGE_SIZE)
+    .default(RAID_RANKING_PAGE_SIZE),
 
   // Mythic+ seasons: which one is current, and retiring the one it replaced.
   /**
@@ -808,6 +834,19 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
         'needs the raid catalogue it reads rankings for; set RAID_CATALOGUE_ENABLED=true ' +
         'or set RAID_RANKINGS_ENABLED=false',
     });
+  }
+
+  // Bounds that used to be compiled in, now that the bound is itself a setting.
+  for (const setting of ['RAIDERIO_MAX_PAGES', 'MPLUS_ARCHIVE_PAGES'] as const) {
+    if (env[setting] > env.RAIDERIO_MAX_RUNS_PAGE + 1) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [setting],
+        message:
+          `${env[setting]} pages is more than the ${env.RAIDERIO_MAX_RUNS_PAGE + 1} that ` +
+          `RAIDERIO_MAX_RUNS_PAGE (${env.RAIDERIO_MAX_RUNS_PAGE}, counted from zero) allows`,
+      });
+    }
   }
 
   if (env.MPLUS_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {

@@ -16,7 +16,7 @@ import {
 import { MplusRepository } from '../mplus/mplus.repository.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
-import { RUNS_PER_PAGE, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
+import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type {
   MplusRegionArchive,
   MplusSeasonArchiveMarker,
@@ -110,6 +110,7 @@ export class MplusArchiveService {
   private readonly logger = new RunLogger(MplusArchiveService.name);
   private readonly regions: RaiderIoRegion[];
   private readonly pages: number;
+  private readonly runsPerPage: number;
   private readonly concurrency: number;
   private readonly pageBatch: number;
   private readonly budgetWaitMs: number;
@@ -130,6 +131,7 @@ export class MplusArchiveService {
   ) {
     this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
     this.pages = config.get('MPLUS_ARCHIVE_PAGES', { infer: true });
+    this.runsPerPage = config.get('RAIDERIO_RUNS_PER_PAGE', { infer: true });
     this.concurrency = config.get('RAIDERIO_CONCURRENCY', { infer: true });
     this.pageBatch = config.get('RAIDERIO_PAGE_BATCH', { infer: true });
     this.budgetWaitMs = config.get('RAIDERIO_BUDGET_WAIT_MS', { infer: true });
@@ -371,7 +373,7 @@ export class MplusArchiveService {
     region: RaiderIoRegion,
   ): Promise<MplusRegionArchive | null> {
     const stored = await this.repository.summariseStored(season.slug, region);
-    if (stored.runs !== this.pages * RUNS_PER_PAGE || stored.characters === 0) return null;
+    if (stored.runs !== this.pages * this.runsPerPage || stored.characters === 0) return null;
 
     this.logger.log(
       `Adopted the stored Mythic+ archive of ${season.slug} in ${region} (${stored.runs} runs) ` +

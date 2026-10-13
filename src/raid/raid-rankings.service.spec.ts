@@ -51,7 +51,12 @@ function serviceOver(
     difficulty: string,
   ) => RaidRanking[] = () => [],
   regions = ['world', 'us'],
-  settings: { difficulties?: string[]; concurrency?: number } = {},
+  settings: {
+    difficulties?: string[];
+    concurrency?: number;
+    top?: number;
+    pageSize?: number;
+  } = {},
 ) {
   const getRaidRankingsPage = vi.fn<
     (
@@ -88,6 +93,8 @@ function serviceOver(
     RAID_RANKINGS_DIFFICULTIES: settings.difficulties ?? ['mythic'],
     RAID_RANKINGS_CONCURRENCY: settings.concurrency ?? 1,
     RAID_RANKINGS_REQUEST_TIMEOUT_MS: 60_000,
+    RAID_RANKINGS_TOP: settings.top ?? 100,
+    RAID_RANKINGS_PAGE_SIZE: settings.pageSize ?? 20,
   };
 
   return {
@@ -241,6 +248,22 @@ describe('RaidRankingsService', () => {
 
       expect(asked()).toEqual(['open/eu/0', 'open/eu/1']);
       expect(setBoard.mock.calls[0][3]).toHaveLength(20);
+    });
+
+    it('keeps the configured top, in pages of the configured size', async () => {
+      quiet();
+      const { service, asked, setBoard } = serviceOver(
+        [target('open', OPEN_END)],
+        (_raid, _region, n) => page(n * 10 + 1, 10),
+        ['eu'],
+        { top: 30, pageSize: 10 },
+      );
+
+      await service.refreshDue(NOW);
+
+      // Thirty guilds, ten at a time: three pages and no fourth.
+      expect(asked()).toEqual(['open/eu/0', 'open/eu/1', 'open/eu/2']);
+      expect(setBoard.mock.calls[0][3]).toHaveLength(30);
     });
 
     it('stops at the top hundred, without asking for a sixth page', async () => {

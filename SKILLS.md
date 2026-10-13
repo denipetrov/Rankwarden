@@ -1923,6 +1923,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAIDERIO_CONCURRENCY`                | `12`                                | Pages in flight; ~0.65s a page measured                    |
 | `RAIDERIO_PAGE_BATCH`                 | `50`                                | Memory bound, and how often budget/priority are re-checked |
 | `RAIDERIO_MAX_PAGES`                  | `1001`                              | The whole leaderboard; the `mythicScore` lever             |
+| `RAIDERIO_RUNS_PER_PAGE`              | `20`                                | What the runs endpoint serves a page; change only with it  |
+| `RAIDERIO_MAX_RUNS_PAGE`              | `1000`                              | Highest page it accepts; bounds the two page counts        |
 | `RAIDERIO_MINUTE_LIMIT`               | `1000`                              | Raider.io's cap on the whole client                        |
 | `RAIDERIO_UTILISATION`                | `0.9`                               | Fraction ever planned against                              |
 | `RAIDERIO_REQUESTS_PER_SECOND`        | `14`                                | Token bucket; must fit inside the minute                   |
@@ -1946,6 +1948,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAID_RANKINGS_CONCURRENCY`           | `5`                                 | Boards read at once (1-20); a board's pages stay in order  |
 | `RAID_RANKINGS_INTERVAL_MS`           | `3600000`                           | How often open raids' boards are re-read                   |
 | `RAID_RANKINGS_REQUEST_TIMEOUT_MS`    | `75000`                             | Per ranking request; upstream's gateway gives up at 60s    |
+| `RAID_RANKINGS_TOP`                   | `100`                               | Guilds kept per board                                      |
+| `RAID_RANKINGS_PAGE_SIZE`             | `20`                                | Guilds per ranking request (max 200); keep small (§9.17)   |
 | `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
 | `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
 | `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
@@ -2170,7 +2174,7 @@ answered 504 from upstream's gateway at 60s on every attempt, and asking again a
 later was just as slow. The same boards twenty at a time took 1-2s a page when probed one
 by one — and 2.6 to 25s for a page nothing had asked for lately, during a real backfill
 (2026-10-05), which the 75s timeout covers. So a board is
-five requests of twenty (`RAID_RANKING_PAGE_SIZE`), several boards at a time rather than
+five requests of twenty (`RAID_RANKINGS_PAGE_SIZE`, kept `RAID_RANKINGS_TOP`), several boards at a time rather than
 several pages of one, with a timeout of its own
 (`RAID_RANKINGS_REQUEST_TIMEOUT_MS`) through `RaiderIoGetOptions.timeoutMs`. Raising the page
 size to save requests brings the 504s back.
