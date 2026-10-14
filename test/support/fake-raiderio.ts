@@ -1,5 +1,7 @@
-import type { DependencyHealth } from '../../src/common/health/dependency-health.service.js';
-import { currentRunKind } from '../../src/common/logging/run-context.js';
+import type { DependencyHealth } from '@denipetrov/spirit-link/health';
+import { currentRunKind } from '@denipetrov/spirit-link/logging';
+
+import type { RunKind } from '../../src/common/logging/run-kind.js';
 import {
   raiderIoConsumerFor,
   type RaiderIoBudget,
@@ -174,7 +176,7 @@ export class FakeRaiderIo {
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
     // Charged to the run in progress, as the real client's beforeRequest hook
     // does. The fake never retries, so one call is one charge.
-    this.budget?.record(raiderIoConsumerFor(currentRunKind()));
+    this.budget?.record(raiderIoConsumerFor(currentRunKind<RunKind>()));
 
     const startedAt = Date.now();
     const url = `https://raider.io/api/v1/${path}`;

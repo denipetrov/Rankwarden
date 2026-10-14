@@ -28,11 +28,21 @@ reading the API docs.
 | Database    | MongoDB 8 via the official `mongodb` driver 7 (no ODM)                                 |
 | Tests       | Vitest 4, transformed through SWC so `emitDecoratorMetadata` works                     |
 | Auth        | `@denipetrov/blizz-auth` (private, GitHub Packages); Raider.io uses a query-string key |
+| Shared      | `@denipetrov/spirit-link` (private, GitHub Packages): run-scoped logging and dependency health |
+
+**Logging and health come from `@denipetrov/spirit-link`**, shared with the other services:
+`withRunId`, `RunLogger`, `currentRunKind` and `logLevelsFor` from `/logging`;
+`DependencyHealth`, `redactSecrets`, `hostOf`, `probeObservation` and `worstOf` from `/health`.
+What stays here is Rankwarden's own vocabulary: the job names (`RunKind`,
+`src/common/logging/run-kind.ts`), the upstream names and the secrets the tracker redacts
+(`src/common/health/upstream-provider.ts`). `CommonModule` registers the one shared
+`DependencyHealth` through `DependencyHealthModule.forRootAsync`. A change to the logic itself
+belongs in spirit-link, released as a new version, never in a local copy.
 
 **Relative imports must carry the `.js` extension.** `module: nodenext` requires it. A
 missing extension fails at runtime, not at compile time.
 
-`@denipetrov/blizz-auth` resolves through `.npmrc` (`@denipetrov:registry=https://npm.pkg.github.com`)
+Both private packages resolve through `.npmrc` (`@denipetrov:registry=https://npm.pkg.github.com`)
 and needs a token with `read:packages`:
 
 ```bash
@@ -2423,8 +2433,8 @@ adding per-key indexes.
 **Adding a third upstream.** The pattern is now established rather than improvised, and
 Raider.io is the worked example: a module under `src/<upstream>/` with `http/`, `schemas/`
 and a typed `*.api.ts`; its **own** budget built on `RollingWindow` (never a share of
-another upstream's); a `RunKind` in `run-context.ts` plus a `consumerFor` mapping; a
-provider key in `DependencyHealth` so it reports **soft**; a readiness block read from
+another upstream's); a `RunKind` in `src/common/logging/run-kind.ts` plus a `consumerFor` mapping; a
+provider key in `src/common/health/upstream-provider.ts` so `DependencyHealth` reports it **soft**; a readiness block read from
 memory; a fake at the HTTP seam wired into `bootTestApp` with both the health instance and
 the budget; the scheduler added to `test/support/seams.ts`; and a slot in
 `IngestionCoordinator` decided deliberately rather than by omission. Check

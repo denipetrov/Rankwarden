@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RunLogger } from '@denipetrov/spirit-link/logging';
 
-import { RunLogger } from '../common/logging/run-context.js';
 import type { Env } from '../config/env.schema.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type {

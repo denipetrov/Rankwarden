@@ -1,11 +1,12 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
+import { withRunId } from '@denipetrov/spirit-link/logging';
 
 import type { Region } from '../blizzard/blizzard.constants.js';
 import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunKind, withRunId } from '../common/logging/run-context.js';
+import { RunKind } from '../common/logging/run-kind.js';
 import { QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';

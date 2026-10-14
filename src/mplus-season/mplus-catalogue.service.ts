@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RunLogger } from '@denipetrov/spirit-link/logging';
 
-import { RunLogger } from '../common/logging/run-context.js';
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';

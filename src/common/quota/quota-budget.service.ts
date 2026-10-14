@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../../config/env.schema.js';
-import { RunKind } from '../logging/run-context.js';
+import { RunKind } from '../logging/run-kind.js';
 import { RollingWindow } from './rolling-window.js';
 
 /** Who spent a request. Anything outside a known job is `other`. */

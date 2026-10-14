@@ -1,13 +1,13 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-
 import {
   DependencyHealth,
-  UpstreamProvider,
-  type DependencyObservation,
-  type DependencyStatus,
-} from '../common/health/dependency-health.service.js';
-import { hostOf } from '../common/health/redact.js';
+  hostOf,
+  probeObservation,
+  worstOf,
+} from '@denipetrov/spirit-link/health';
+
+import { UpstreamProvider } from '../common/health/upstream-provider.js';
 import { SweepEvents } from '../common/events/sweep-events.service.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget, type EnrichmentOutlook } from '../common/quota/quota-budget.service.js';
@@ -47,7 +47,7 @@ export class HealthController {
     private readonly coordinator: IngestionCoordinator,
     private readonly sweeps: SweepEvents,
     private readonly mongo: MongoService,
-    private readonly dependencies: DependencyHealth,
+    private readonly dependencies: DependencyHealth<UpstreamProvider>,
     private readonly transitions: SeasonTransitionService,
     private readonly budget: QuotaBudget,
     private readonly raiderIo: RaiderIoBudget,
@@ -84,8 +84,8 @@ export class HealthController {
   @Get('ready')
   async ready() {
     const ping = await this.mongo.ping();
-    const blizzardRegions = this.dependencies.blizzardByRegion();
-    const blizzard = this.dependencies.blizzardStatus();
+    const blizzardRegions = this.dependencies.byRegion(UpstreamProvider.Blizzard);
+    const blizzard = this.dependencies.statusFor(UpstreamProvider.Blizzard);
     const staleSweep = this.staleSweep();
     // From memory: the budget's own counters and the outlook enrichment
     // published on its last run. Readiness adds no database work for either.
@@ -97,16 +97,10 @@ export class HealthController {
     const mplus = mplusVerdict(mplusOutlook);
     const raiderIoStatus = this.dependencies.statusFor(UpstreamProvider.RaiderIo);
 
-    const mongo: DependencyObservation & { host: string } = {
+    // Redacted: driver errors routinely echo the connection string they failed on.
+    const mongo = {
       host: this.mongoHost,
-      status: ping.ok ? 'ok' : 'down',
-      latencyMs: ping.latencyMs,
-      lastSuccessAt: null,
-      lastError: ping.error ? this.dependencies.redact(ping.error) : null,
-      lastErrorAt: ping.error ? new Date().toISOString() : null,
-      lastStatusCode: null,
-      consecutiveFailures: ping.ok ? 0 : 1,
-      checkedAt: new Date().toISOString(),
+      ...probeObservation(ping, (value) => this.dependencies.redact(value)),
     };
 
     const overall = worstOf([
@@ -130,7 +124,7 @@ export class HealthController {
         mongo,
         blizzard: {
           status: blizzard,
-          failingRegions: this.dependencies.failingRegions(),
+          failingRegions: this.dependencies.failingRegionsFor(UpstreamProvider.Blizzard),
           regions: blizzardRegions,
         },
         raiderio: {
@@ -221,14 +215,6 @@ export class HealthController {
 
     return { since: last.finishedAt.toISOString(), toleranceMs };
   }
-}
-
-/** Worst of a set of statuses; `unknown` never counts against readiness. */
-function worstOf(statuses: readonly DependencyStatus[]): DependencyStatus {
-  if (statuses.includes('down')) return 'down';
-  if (statuses.includes('degraded')) return 'degraded';
-
-  return 'ok';
 }
 
 /**

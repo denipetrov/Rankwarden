@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
+import { withRunId } from '@denipetrov/spirit-link/logging';
 
 import { ArchiveService } from '../src/archive/archive.service.js';
 import {
   type ArchiveSeasonDocument,
   type ArchiveSeasonReward,
 } from '../src/archive/entities/archive.entity.js';
-import { withRunId } from '../src/common/logging/run-context.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';

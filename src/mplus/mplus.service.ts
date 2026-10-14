@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RunLogger, withRunId } from '@denipetrov/spirit-link/logging';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunKind, RunLogger, withRunId } from '../common/logging/run-context.js';
+import { RunKind } from '../common/logging/run-kind.js';
 import {
   RaiderIoBudget,
   RaiderIoConsumer,

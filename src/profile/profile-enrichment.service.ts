@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ZodError } from 'zod';
+import { RunLogger, withRunId } from '@denipetrov/spirit-link/logging';
 
 import { ProfileApi } from '../blizzard/profile.api.js';
 import {
@@ -8,7 +9,7 @@ import {
   type CharacterSpecializationsPayload,
 } from '../blizzard/schemas/character-profile.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunKind, RunLogger, withRunId } from '../common/logging/run-context.js';
+import { RunKind } from '../common/logging/run-kind.js';
 import { HOUR_MS, QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';

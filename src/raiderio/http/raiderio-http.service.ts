@@ -1,12 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import got, { HTTPError, RequestError, type Got } from 'got';
+import { DependencyHealth } from '@denipetrov/spirit-link/health';
+import { currentRunKind } from '@denipetrov/spirit-link/logging';
 
-import {
-  DependencyHealth,
-  UpstreamProvider,
-} from '../../common/health/dependency-health.service.js';
-import { currentRunKind } from '../../common/logging/run-context.js';
+import { UpstreamProvider } from '../../common/health/upstream-provider.js';
+import type { RunKind } from '../../common/logging/run-kind.js';
 import {
   RaiderIoBudget,
   raiderIoConsumerFor,
@@ -80,7 +79,7 @@ export class RaiderIoHttpService {
 
   constructor(
     config: ConfigService<Env, true>,
-    private readonly health: DependencyHealth,
+    private readonly health: DependencyHealth<UpstreamProvider>,
     private readonly budget: RaiderIoBudget,
   ) {
     this.baseUrl = config.get('RAIDERIO_API_BASE_URL', { infer: true });
@@ -153,7 +152,7 @@ export class RaiderIoHttpService {
           // Captured here, in the caller's async context, and carried to the
           // hook explicitly rather than trusting async local storage to survive
           // the trip through got's internals.
-          context: { consumer: raiderIoConsumerFor(currentRunKind()) },
+          context: { consumer: raiderIoConsumerFor(currentRunKind<RunKind>()) },
           ...(options.timeoutMs === undefined ? {} : { timeout: { request: options.timeoutMs } }),
           searchParams: { ...options.searchParams },
         })
