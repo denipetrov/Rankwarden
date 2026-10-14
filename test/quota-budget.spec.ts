@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
+import { withRunId } from '@denipetrov/spirit-link/logging';
 
 import { ArchiveService } from '../src/archive/archive.service.js';
-import { withRunId } from '../src/common/logging/run-context.js';
 import { QuotaBudget } from '../src/common/quota/quota-budget.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { CharacterRepository } from '../src/leaderboard/character.repository.js';

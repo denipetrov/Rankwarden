@@ -192,7 +192,7 @@ export async function bootTestApp(
 
   // The fake stands in for the service that feeds DependencyHealth, so hand it
   // the real instance or readiness reports `unknown` for Blizzard forever.
-  const { DependencyHealth } = await import('../../src/common/health/dependency-health.service.js');
+  const { DependencyHealth } = await import('@denipetrov/spirit-link/health');
   blizzard.health = moduleRef.get(DependencyHealth);
 
   // And the shared quota, which the real client charges on every attempt.

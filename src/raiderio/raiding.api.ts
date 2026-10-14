@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
-import { UpstreamProvider } from '../common/health/dependency-health.service.js';
+import { UpstreamProvider } from '../common/health/upstream-provider.js';
 import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../config/env.schema.js';

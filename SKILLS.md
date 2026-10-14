@@ -11,9 +11,103 @@ Raider.io costs is ever charged against Blizzard's quota, and vice versa.
 
 This document is written for agents that need to test or extend the service. It covers
 what exists, why it is shaped that way, and the domain traps that are easy to
-reintroduce. Read [Domain rules](#domain-rules-and-traps) before changing ingestion or
+reintroduce. Read [Domain rules](#9-domain-rules-and-traps) before changing ingestion or
 aggregation logic — several of those rules were found by observing wrong data, not by
-reading the API docs.
+reading the API docs. [README.md](README.md) is the human introduction; this file is the
+reference, and it wins where the two differ in detail.
+
+---
+
+## Scope
+
+**In scope — what this service owns:**
+
+- Ingesting, normalising and storing PvP ladders, character profiles, PvP season archives
+  and title cutoffs (Blizzard); Mythic+ runs, characters, seasons, dungeons, affixes, cutoffs
+  and archives, and raid catalogues and guild rankings (Raider.io).
+- The MongoDB structure all of that lives in: 25 collections and their indexes, created by
+  the deploy's schema step.
+- Retiring finished seasons from the live collections once they are archived.
+- Two write endpoints for a trusted caller (`POST /characters/sync`,
+  `POST /mplus/characters/sync`), the health endpoints, and dev-only job triggers.
+- Its own deployment: Dockerfile, Helm charts, scripts, CI.
+
+**Out of scope — belongs elsewhere:**
+
+- **Serving data to users.** A separate backend application reads MongoDB directly (as the
+  read-only `rankwarden_backend` user) and serves the front end. Rankwarden has no read
+  API and must not grow one.
+- **Authentication and public exposure.** The service is cluster-internal; nothing here
+  faces the internet.
+- **Shared logging and health logic.** That lives in `@denipetrov/spirit-link` (§1).
+- **Blizzard OAuth.** That lives in `@denipetrov/blizz-auth`.
+
+---
+
+## Agent directives
+
+Rules that hold for every change. Each is explained further in the section named.
+
+**Working with the owner**
+
+- **Do not commit, push or merge** unless asked. The owner commits and merges `develop` →
+  `main` themselves. Leave the working tree ready and say what changed.
+- **Never write a credential anywhere it persists**: not in `.npmrc` (it holds only the
+  registry line), not in a committed file, not in `production.env`, not in a log or a
+  health payload. Tokens are passed through environment variables or BuildKit secrets.
+- **Never touch the development database from tests.** Test databases are named
+  `rankwarden_test_*` and the harness refuses anything else (§10.3). Destructive operations
+  on the developer's own database need the owner's explicit go-ahead.
+- **Report what was verified and what was not**, with the failing output when something
+  fails. Do not describe unrun steps as done.
+
+**Before calling a change finished** — all of these, and all must pass:
+
+```bash
+npm run typecheck && npx eslint "{src,test}/**/*.ts" && npx prettier --check "src/**/*.ts" "test/**/*.ts"
+npm run build && npm test && npm run test:int      # test:int needs `npm run db:up`
+```
+
+A change to configuration also needs `production.env` updated (`production-env.spec.ts`
+fails until it is). A change to a chart needs `helm lint` on it. A change in behaviour needs
+this file updated in the same change.
+
+**Architecture that must not be broken**
+
+- **Exactly one instance** (§4, §12). Schedulers, the job coordinator and the Blizzard budget
+  are in-process. Never add replicas, a rolling update or an autoscaler.
+- **The deploy owns the database structure** (§5). Declare collections in
+  `src/database/collections.ts`, indexes in the folder's `*.indexes.ts`, and pair them in
+  `DATABASE_SCHEMA`. No repository creates an index; production starts with
+  `DB_SCHEMA_MODE=verify` and refuses to start if the structure is missing.
+- **Every setting is validated** by the zod schema in `src/config/env.schema.ts`. No
+  `process.env` reads elsewhere, no hardcoded upstream host or path: paths are
+  `pathTemplate` settings (§6).
+- **Shared logic goes to spirit-link**, released as a new version; never a local copy (§1).
+- **Each upstream has its own budget and health**; nothing Raider.io costs is charged to
+  Blizzard (§4.0, §4.0.1). Every request is charged at the HTTP client, retries included.
+- **Jobs keep their priority order** and wait for higher jobs rather than skip (§4). A new
+  job takes a deliberate slot in `IngestionCoordinator`.
+- **Admin routes 404 when `NODE_ENV=production`**; health payloads never carry a credential
+  or a full connection string.
+
+**Data rules that produce wrong results when forgotten** (§9)
+
+- Never hardcode the bracket list; never store `shuffle-overall` / `blitz-overall`.
+- Rating queries on `characters.ratings` need `$gt: 0`; paginate with a rating cursor.
+- Hero talents per ladder come from `profile.talentLoadouts`, not `profile.heroTalentTree`.
+- Raider.io and Blizzard character ids are different id spaces; M+ characters live in
+  `mplus_characters`, keyed by `region/realm/lowercased-name`.
+- `mythicScore` never decreases; nothing may lower it.
+- A season is retired only after the next one has started in that region, and only once
+  archived. A running season is never archived.
+
+**Code conventions**
+
+- ESM: relative imports end in `.js`. Native `mongodb` driver, no ODM. `got` for HTTP.
+- Comments explain *why*, in full sentences, at the density of the surrounding code.
+- Tests: unit specs beside the code; integration specs in `test/` through `bootTestApp`
+  with the fakes at the HTTP seam (§10). One configuration per integration file.
 
 ---
 
@@ -21,19 +115,30 @@ reading the API docs.
 
 |             |                                                                                        |
 | ----------- | -------------------------------------------------------------------------------------- |
-| Runtime     | Node ≥ 22 (developed on 26), **ESM** (`"type": "module"`)                              |
+| Runtime     | Node ≥ 22; the production image runs Node 24. **ESM** (`"type": "module"`)             |
 | Framework   | NestJS 12                                                                              |
 | HTTP client | got 16 (ESM-only — this is why the project is ESM)                                     |
 | Validation  | zod 4                                                                                  |
 | Database    | MongoDB 8 via the official `mongodb` driver 7 (no ODM)                                 |
 | Tests       | Vitest 4, transformed through SWC so `emitDecoratorMetadata` works                     |
 | Auth        | `@denipetrov/blizz-auth` (private, GitHub Packages); Raider.io uses a query-string key |
+| Shared      | `@denipetrov/spirit-link` (private, GitHub Packages): run-scoped logging and dependency health |
+
+**Logging and health come from `@denipetrov/spirit-link`**, shared with the other services:
+`withRunId`, `RunLogger`, `currentRunKind` and `logLevelsFor` from `/logging`;
+`DependencyHealth`, `redactSecrets`, `hostOf`, `probeObservation` and `worstOf` from `/health`.
+What stays here is Rankwarden's own vocabulary: the job names (`RunKind`,
+`src/common/logging/run-kind.ts`), the upstream names and the secrets the tracker redacts
+(`src/common/health/upstream-provider.ts`). `CommonModule` registers the one shared
+`DependencyHealth` through `DependencyHealthModule.forRootAsync`. A change to the logic itself
+belongs in spirit-link, released as a new version, never in a local copy.
 
 **Relative imports must carry the `.js` extension.** `module: nodenext` requires it. A
 missing extension fails at runtime, not at compile time.
 
-`@denipetrov/blizz-auth` resolves through `.npmrc` (`@denipetrov:registry=https://npm.pkg.github.com`)
-and needs a token with `read:packages`:
+Both private packages resolve through `.npmrc` (`@denipetrov:registry=https://npm.pkg.github.com`)
+and need a token with `read:packages` in the developer's user-level npm config — never in the
+repository's `.npmrc`:
 
 ```bash
 npm config set //npm.pkg.github.com/:_authToken=$(gh auth token)
@@ -55,7 +160,8 @@ exits at boot with a zod error naming the missing variables — that is by desig
 
 | Command                                  | Purpose                                                  |
 | ---------------------------------------- | -------------------------------------------------------- |
-| `npm test` / `test:watch` / `test:cov`   | Vitest (86 tests, 13 files)                              |
+| `npm test` / `test:watch` / `test:cov`   | Unit project: 51 files, 561 tests, no database           |
+| `npm run test:int` / `test:all`          | Integration (78 files, 596 tests; needs `db:up`) / both  |
 | `npm run typecheck`                      | `tsc --noEmit`                                           |
 | `npm run lint` / `format`                | ESLint / Prettier                                        |
 | `npm run build` / `start:prod`           | Compile to `dist/`, run compiled output                  |
@@ -64,10 +170,18 @@ exits at boot with a zod error naming the missing variables — that is by desig
 | `npm run db:schema`                      | Build collections and indexes; `-- --verify` only checks |
 | `npm run config:check`                   | Validate the environment with the service's own schema   |
 | `npm run db:shell`                       | `mongosh` inside the container                           |
-| `npm run db:migrate`                     | One-off legacy `leaderboard_entries` → `characters` fold |
 
 `.vscode/launch.json` has seven debug configurations, including one that boots with
 `INGEST_RUN_ON_STARTUP=false` so a sweep can be stepped through deliberately.
+
+**Live verification tools** (`scripts/`, not part of any test project). They compare what a
+real run stored with what the upstreams publish separately, and only read the database:
+`live-crosscheck.mjs` (PvP against drustvar.com and Blizzard; writes a working file,
+`crosscheck-plan.json`, which is gitignored), `live-mplus-crosscheck.mjs` and
+`live-raid-crosscheck.mjs` (against Raider.io), and `live-invariants.live.ts` with
+`vitest.live.config.ts` (the integration invariants run over a `rankwarden_check_*`
+database). Each script's header gives its command line. Run them with the app stopped, so
+their requests do not share a quota window with it.
 
 ---
 
@@ -98,7 +212,8 @@ src/
     raiderio.constants.ts       regions (cn included), page cap, first M+ expansion
     http/                       shared got instance, key injection, typed errors
     schemas/                    zod schemas for every Raider.io payload consumed
-    mythic-plus.api.ts          runs pages + season static data
+    mythic-plus.api.ts          runs pages, season static data, season cutoffs
+    raiding.api.ts              raid static data, raid rankings
   mplus-season/
     mplus-catalogue.service.ts  every main season + dungeon, walked across expansions
     mplus-catalogue.mapper.ts   catalogue mapping; which season is current per region
@@ -137,17 +252,28 @@ src/
   profile/                      background profile enrichment
   representation/               daily spec-representation snapshots
   archive/                      finished seasons, fetched once
-  sync/                         POST /characters/sync
-  health/                       GET /health
+  sync/                         POST /characters/sync, POST /mplus/characters/sync
+  health/                       GET /health, /health/ready, /health/seasons
+  admin/                        POST /admin/* job triggers (404 in production)
+  database/
+    collections.ts              every collection name, in one place
+    mongo.service.ts            the MongoClient lifecycle and ping
+    schema/                     DATABASE_SCHEMA, SchemaService (apply / verify), bootstrap
+  common/logging/run-kind.ts    Rankwarden's job names (correlation itself: spirit-link)
+  common/health/upstream-provider.ts  upstream names and secrets to redact (tracker: spirit-link)
+  schema.main.ts                the schema step: `node dist/schema.main.js [--verify]`
+  config-check.main.ts          validates an environment without starting
 scripts/db-check.mjs            standalone ingestion report
-scripts/migrate-to-characters.mjs
+scripts/live-*                  live verification tools (§2)
+deploy/                         Helm charts (mongodb, rankwarden, log-collector) and scripts (§12)
+Dockerfile, .github/workflows/  the image; CI, release and deploy workflows
 ```
 
 ---
 
 ## 4. Background jobs and their priority
 
-Six jobs run on intervals. They compete for an upstream quota, for MongoDB, and in part
+The jobs below run on intervals. They compete for an upstream quota, for MongoDB, and in part
 for the same documents, so [`IngestionCoordinator`](src/common/ingestion-coordinator.service.ts)
 ranks them:
 
@@ -671,6 +797,13 @@ differ by up to 32 hours between regions).
 `ARCHIVE_MIN_SEASON` / `ARCHIVE_MAX_SEASON`) and returns the first that is neither complete
 nor known unfetchable.
 
+**A running season is never archived.** Older seasons qualify outright; the season the index
+calls current qualifies only when `SeasonService.hasEnded(region, current)` says so — the
+cached record must be **that** season and its end date must have **passed**. Both halves
+matter: right after a rollover the cache still holds the finished season with its end date,
+and an end date can be announced before it arrives. An archive is written once and never
+refreshed, so taking a season early would keep unfinished standings for good.
+
 For a season with **no marker at all** — a crash mid-season, or a dropped `archive_seasons`
 collection — it first tries to recover one: it compares the brackets already covered (§5.4)
 against the list the API publishes, and writes the marker back if they match, turning ~83
@@ -756,11 +889,17 @@ through the gap between seasons.
   configured region has never been observed (one region failing at boot must not look like
   a rollover), and again if `now` is before `transitionAt`.
 - `transitionAt` = the earliest `startsAt` among the regions already on the newest season.
-- The delete is scoped **per region** to `seasonId < current(R)`. Regions stagger by up to
-  32 hours; deleting every region at the earliest start would empty a trailing region's
-  live board, its next sweep would rewrite it, and the next tick would remove it again.
+- The delete is scoped **per region** to `seasonId < current(R)`, and a region is only
+  considered once **its own** current season has started (`now >= startsAt(R)`). Regions
+  stagger by up to 32 hours; deleting every region at the earliest start would empty a
+  trailing region's live board, its next sweep would rewrite it, and the next tick would
+  remove it again.
+- During the gap between seasons nothing is removed: Blizzard still names the ended season
+  as current, so there is no older season to retire, and its boards stay readable.
 - `SEASON_PURGE_REQUIRE_ARCHIVE` (default on) holds back any season the archive does not
-  hold in full — after a purge the archive is the only surviving copy.
+  hold in full — after a purge the archive is the only surviving copy. An archive whose
+  recorded `endsAt` is still in the future does not count either; one with no end date (the
+  season record could not be read) does.
 - `SEASON_PURGE_DRY_RUN` logs the full plan and deletes nothing. **Defaults to `true`**,
   unlike every other flag, so deleting is an explicit opt-in (see the hazard below).
 - Order within `purge()`: ratings rows → characters → spec_representation → marker. Rating
@@ -770,7 +909,9 @@ through the gap between seasons.
 > **Deployment hazard.** On a first deploy mid-season the gate is _already open_, because
 > `transitionAt` is the current season's start and that is in the past. Any archived season
 > below the current one is then purged on the first tick — at boot, not at the next
-> rollover. Ship with `SEASON_PURGE_DRY_RUN=true`, read the logged plan, then flip it.
+> rollover. Production runs with `SEASON_PURGE_DRY_RUN=false`, which is harmless on a database
+> that starts empty; a first deploy over **restored** data overrides it to `true` once and
+> reads the logged plan (`deploy/README.md`).
 
 ---
 
@@ -1735,8 +1876,8 @@ because both read the database. Liveness (`GET /health`) carries `mplusSeasons` 
 ### `POST /admin/*` — dev-only job triggers
 
 `sweep`, `enrich`, `snapshot`, `archive`, `archive-rewards`, `mplus`, `mplus-season`,
-`mplus-season-transition`, `mplus-archive`, `mplus-catalogue`, `season-refresh`,
-`season-transition`. Each drives
+`mplus-season-transition`, `mplus-archive`, `mplus-catalogue`, `raid-catalogue`,
+`raid-rankings`, `season-refresh`, `season-transition`. Each drives
 exactly **one** cycle and returns that cycle's own result object. Every route **404s when
 `NODE_ENV=production`**.
 
@@ -2237,9 +2378,10 @@ the harness side, and invariant I28 compares stored boards with what the world s
 > `MplusWorld` as the third argument, straight after the boards were read — because
 > self-consistency cannot see a board cut short.
 
-> **Mythic+ specifically:** [`MPLUS-TESTING.md`](MPLUS-TESTING.md) maps every Mythic+ part to
-> the rule it promises, the spec that pins it, and what is still unpinned. It is the file to
-> hand to anyone writing a Mythic+ test plan; this section stays the general reference.
+> **Mythic+ specifically:** the files are named by part — `mplus-ingestion`, `mplus-failures`,
+> `mplus-coordination`, `mplus-sync`, `mplus-archive*`, `mplus-cutoffs`,
+> `mplus-season-transition`, `mplus-spec-representation`, `mplus-lifecycle` — and
+> `MplusWorld` / `FakeRaiderIo` in `test/support/` are how each drives Raider.io (below).
 
 Two Vitest projects, because the layers have different prerequisites.
 
@@ -2423,8 +2565,8 @@ adding per-key indexes.
 **Adding a third upstream.** The pattern is now established rather than improvised, and
 Raider.io is the worked example: a module under `src/<upstream>/` with `http/`, `schemas/`
 and a typed `*.api.ts`; its **own** budget built on `RollingWindow` (never a share of
-another upstream's); a `RunKind` in `run-context.ts` plus a `consumerFor` mapping; a
-provider key in `DependencyHealth` so it reports **soft**; a readiness block read from
+another upstream's); a `RunKind` in `src/common/logging/run-kind.ts` plus a `consumerFor` mapping; a
+provider key in `src/common/health/upstream-provider.ts` so `DependencyHealth` reports it **soft**; a readiness block read from
 memory; a fake at the HTTP seam wired into `bootTestApp` with both the health instance and
 the budget; the scheduler added to `test/support/seams.ts`; and a slot in
 `IngestionCoordinator` decided deliberately rather than by omission. Check
@@ -2446,14 +2588,26 @@ afterwards.
 
 ## 12. Deployment
 
-The decisions and their reasons are in [DEPLOYMENT-PLAN.md](DEPLOYMENT-PLAN.md); the procedure
-is in [deploy/README.md](deploy/README.md). What an agent changing this service has to keep
-true:
+The procedure is in [deploy/README.md](deploy/README.md). The decisions behind it:
+
+| Decision    | Choice                                                                                  |
+| ----------- | --------------------------------------------------------------------------------------- |
+| Hosting     | DigitalOcean Kubernetes (DOKS), Frankfurt (FRA1), 2 × s-2vcpu-4gb nodes, ~$55 a month    |
+| Database    | MongoDB 8.3.8 self-hosted in the cluster: one StatefulSet, standalone, 20 GiB volume     |
+| Backups     | Daily `mongodump` (03:17 UTC) to a DigitalOcean Spaces bucket, kept 14 days             |
+| Images      | GitHub Container Registry, one tag per release, never `latest`                          |
+| Logs        | Grafana Cloud Logs (free plan) through an in-cluster Grafana Alloy collector             |
+| Public entry| None for this service. The future front end gets one through a Gateway API controller  |
+|             | (ingress-nginx was retired in March 2026)                                                |
+| Future apps | A backend in namespace `backend` reads MongoDB as `rankwarden_backend` and may call the |
+|             | sync endpoints; a front end calls the backend                                            |
+
+What an agent changing this service has to keep true:
 
 - **One image, three commands.** `Dockerfile` builds it on Node 24, non-root. It runs the
   service (`dist/main.js`), the schema step (`dist/schema.main.js`) and the configuration
-  check (`dist/config-check.main.js`). The private `@denipetrov/blizz-auth` token is a
-  build secret and reaches no layer.
+  check (`dist/config-check.main.js`). The token for the private `@denipetrov` packages is a
+  build secret and reaches no layer; CI needs read access to both packages.
 - **Exactly one instance.** The Deployment is hard-coded to one replica with the `Recreate`
   strategy, because the schedulers, the coordinator and the Blizzard budget are in-process.
   Anything that would let two run together — a rolling update, an autoscaler — is a bug.
@@ -2478,8 +2632,8 @@ true:
 
 - **No authentication** on `POST /characters/sync` or on the health endpoints. The
   `/admin/*` triggers are unauthenticated too, which is why they 404 outside development.
-- **Repositories and aggregation pipelines have no automated coverage.** An integration
-  suite against a throwaway Mongo would be the highest-value addition.
+- **Repositories and aggregation pipelines have no unit coverage.** They are exercised only
+  through the integration project (§10.5).
 - **Completeness for pre-`archive_brackets` seasons is still inferred from rows**, so one of
   those with an empty ladder stays unadoptable if its marker is lost. Re-archiving the season
   once populates the record and closes it.
@@ -2487,9 +2641,10 @@ true:
   right for seasons below 22, but a prolonged 404 on a season that _should_ exist would be
   recorded the same way; clear the marker by hand to retry it.
 - **The sync endpoint's 409 is a check, not a lock** (§7).
-- **Full archive backfill is ~19.7M rows / ~5.2GB.** Driven by breadth (83 brackets × 20
-  seasons × 4 regions), not depth — `ARCHIVE_MAX_ENTRIES_PER_BRACKET` saves only ~1%;
-  `ARCHIVE_MIN_SEASON` is the real lever. Seasons below 22 return 404.
+- **The archive covers seasons 27 onwards in production** (`ARCHIVE_MIN_SEASON=27`). Blizzard
+  answers 403 for 22–26 and 404 below that. Size is driven by breadth (83 brackets × seasons ×
+  4 regions), not depth — `ARCHIVE_MAX_ENTRIES_PER_BRACKET` saves only ~1%;
+  `ARCHIVE_MIN_SEASON` is the real lever.
 - **Enrichment backlog.** At default batch size a full pass over ~138k characters takes
   roughly two days, and the archive yields to enrichment, so a backfill running alongside it
   progresses only in the gaps.
@@ -2497,6 +2652,13 @@ true:
   runs with `SEASON_PURGE_DRY_RUN=false` (`production.env`). That is harmless on a database
   that starts empty, which has no finished season to retire. A first deploy over **restored**
   data should override it to `true` once and read the logged plan (`deploy/README.md`).
+- **The Blizzard budget lives in memory**, so a restart forgets the hour already spent
+  (§4.0). Avoid repeated deploys within an hour during an archive backfill.
+- **MongoDB is a single standalone instance**: a node failure means minutes of downtime until
+  the pod and volume move, with the nightly backup as the safety net. A replica set is the
+  upgrade path when that matters.
+- **MongoDB's own log lines are ~99% of shipped logs**, mostly connection messages from the
+  health probes. Harmless within the free allowance; quieting them is open.
 - **Cross-region boards need four queries merged**, or a `seasonId + rating` index; the
   current index is prefixed by region.
 - **`mplus_characters.mythicScore` is not Raider.io's mythic+ score** (§5.5). It sums only

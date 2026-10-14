@@ -2,9 +2,10 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import type { Subscription } from 'rxjs';
+import { withRunId } from '@denipetrov/spirit-link/logging';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
-import { RunKind, withRunId } from '../common/logging/run-context.js';
+import { RunKind } from '../common/logging/run-kind.js';
 import { PendingWork } from '../common/pending-work.js';
 import { errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';

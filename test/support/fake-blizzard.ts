@@ -1,3 +1,6 @@
+import type { DependencyHealth } from '@denipetrov/spirit-link/health';
+import { currentRunKind } from '@denipetrov/spirit-link/logging';
+
 import {
   BlizzardApiError,
   BlizzardEmptyResponseError,
@@ -5,8 +8,8 @@ import {
 import type { BlizzardGetOptions } from '../../src/blizzard/http/blizzard-http.service.js';
 import type { Region } from '../../src/blizzard/blizzard.constants.js';
 import type { BlizzardTokenProvider } from '../../src/blizzard/auth/token-provider.js';
-import type { DependencyHealth } from '../../src/common/health/dependency-health.service.js';
-import { currentRunKind } from '../../src/common/logging/run-context.js';
+import { UpstreamProvider } from '../../src/common/health/upstream-provider.js';
+import type { RunKind } from '../../src/common/logging/run-kind.js';
 import { quotaConsumerFor, type QuotaBudget } from '../../src/common/quota/quota-budget.service.js';
 import type { World, WorldPlayer, WorldRegion } from './world.js';
 
@@ -83,7 +86,7 @@ export class FakeBlizzard {
     this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
     // Charged to the job in progress, as the real client's beforeRequest hook
     // does. The fake never retries, so one call is one charge.
-    this.budget?.record(quotaConsumerFor(currentRunKind()));
+    this.budget?.record(quotaConsumerFor(currentRunKind<RunKind>()));
 
     const startedAt = Date.now();
 
@@ -105,13 +108,13 @@ export class FakeBlizzard {
         throw new BlizzardEmptyResponseError(path);
       }
 
-      this.health?.recordBlizzardSuccess(region, Date.now() - startedAt);
+      this.health?.recordSuccess(UpstreamProvider.Blizzard, region, Date.now() - startedAt);
 
       return payload;
     } catch (error) {
       const status = error instanceof BlizzardApiError ? error.statusCode : null;
       const reason = error instanceof Error ? error.message : String(error);
-      this.health?.recordBlizzardFailure(region, reason, status);
+      this.health?.recordFailure(UpstreamProvider.Blizzard, region, reason, status);
 
       throw error;
     } finally {

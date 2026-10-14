@@ -1,9 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import got, { HTTPError, RequestError, type Got } from 'got';
+import { DependencyHealth } from '@denipetrov/spirit-link/health';
+import { currentRunKind } from '@denipetrov/spirit-link/logging';
 
-import { DependencyHealth } from '../../common/health/dependency-health.service.js';
-import { currentRunKind } from '../../common/logging/run-context.js';
+import { UpstreamProvider } from '../../common/health/upstream-provider.js';
+import type { RunKind } from '../../common/logging/run-kind.js';
 import {
   QuotaBudget,
   quotaConsumerFor,
@@ -54,7 +56,7 @@ export class BlizzardHttpService {
   constructor(
     config: ConfigService<Env, true>,
     @Inject(BLIZZARD_TOKEN_PROVIDER) private readonly tokens: BlizzardTokenProvider,
-    private readonly health: DependencyHealth,
+    private readonly health: DependencyHealth<UpstreamProvider>,
     private readonly budget: QuotaBudget,
   ) {
     this.locale = config.get('BLIZZARD_LOCALE', { infer: true });
@@ -109,7 +111,7 @@ export class BlizzardHttpService {
           // Captured here, in the caller's async context, and carried to the
           // hook explicitly rather than trusting async local storage to survive
           // the trip through got's internals.
-          context: { consumer: quotaConsumerFor(currentRunKind()) },
+          context: { consumer: quotaConsumerFor(currentRunKind<RunKind>()) },
           // Per-character endpoints retry less than everything else. There are
           // ~332 ladder fetches in a sweep and one profile fetch per character
           // on the ladders, so the same retry budget means very different
@@ -128,7 +130,7 @@ export class BlizzardHttpService {
       // as the outage it is rather than as healthy traffic.
       if (isEmptyBody(payload)) throw new BlizzardEmptyResponseError(url);
 
-      this.health.recordBlizzardSuccess(region, Date.now() - startedAt);
+      this.health.recordSuccess(UpstreamProvider.Blizzard, region, Date.now() - startedAt);
 
       return payload;
     } catch (error) {
@@ -139,7 +141,12 @@ export class BlizzardHttpService {
 
       if (error instanceof HTTPError) {
         const status = error.response.statusCode;
-        this.health.recordBlizzardFailure(region, `HTTP ${status} for ${url}`, status);
+        this.health.recordFailure(
+          UpstreamProvider.Blizzard,
+          region,
+          `HTTP ${status} for ${url}`,
+          status,
+        );
 
         throw new BlizzardApiError(
           status,
@@ -151,7 +158,7 @@ export class BlizzardHttpService {
       }
 
       const reason = error instanceof Error ? error.message : String(error);
-      this.health.recordBlizzardFailure(region, `${reason} for ${url}`);
+      this.health.recordFailure(UpstreamProvider.Blizzard, region, `${reason} for ${url}`);
 
       if (error instanceof Error) {
         error.message = `${error.message} (${attempts} ${attempts === 1 ? 'attempt' : 'attempts'} for ${url})`;

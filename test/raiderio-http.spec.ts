@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Logger, type LoggerService } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import { DependencyHealth } from '@denipetrov/spirit-link/health';
+import { withRunId } from '@denipetrov/spirit-link/logging';
 
-import { DependencyHealth } from '../src/common/health/dependency-health.service.js';
-import { withRunId } from '../src/common/logging/run-context.js';
+import { healthSecrets } from '../src/common/health/upstream-provider.js';
 import { RaiderIoBudget } from '../src/common/quota/raiderio-budget.service.js';
 import type { Env } from '../src/config/env.schema.js';
 import {
@@ -63,13 +64,15 @@ describe('RaiderIoHttpService — against a real listener', () => {
       ...settings,
     };
     const config = { get: (key: string) => values[key] } as unknown as ConfigService<Env, true>;
-    const health = new DependencyHealth(
-      healthKnowsKey
-        ? config
-        : ({
-            get: (key: string) => (key === 'RAIDER_IO_API_KEY' ? '' : values[key]),
-          } as unknown as ConfigService<Env, true>),
-    );
+    const health = new DependencyHealth({
+      secrets: healthSecrets(
+        healthKnowsKey
+          ? config
+          : ({
+              get: (key: string) => (key === 'RAIDER_IO_API_KEY' ? '' : values[key]),
+            } as unknown as ConfigService<Env, true>),
+      ),
+    });
     const budget = new RaiderIoBudget(config);
 
     return { http: new RaiderIoHttpService(config, health, budget), health, budget };

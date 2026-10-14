@@ -2,14 +2,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Logger, type LoggerService } from '@nestjs/common';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { DependencyHealth } from '@denipetrov/spirit-link/health';
+import { withRunId } from '@denipetrov/spirit-link/logging';
 
 import {
   BlizzardApiError,
   BlizzardEmptyResponseError,
 } from '../src/blizzard/http/blizzard-api.error.js';
 import { BlizzardHttpService } from '../src/blizzard/http/blizzard-http.service.js';
-import { DependencyHealth } from '../src/common/health/dependency-health.service.js';
-import { withRunId } from '../src/common/logging/run-context.js';
+import { healthSecrets } from '../src/common/health/upstream-provider.js';
 import { QuotaBudget } from '../src/common/quota/quota-budget.service.js';
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../src/config/env.schema.js';
@@ -92,7 +93,7 @@ describe('BlizzardHttpService — failure handling', () => {
     // The region placeholder is required, so it is satisfied and ignored: one
     // listener stands in for every region.
     const settings = config(`http://127.0.0.1:${port}/{region}`);
-    health = new DependencyHealth(settings);
+    health = new DependencyHealth({ secrets: healthSecrets(settings) });
     budget = new QuotaBudget(settings);
     http = new BlizzardHttpService(
       settings,
@@ -292,7 +293,7 @@ describe('BlizzardHttpService — failure handling', () => {
 
     // A gateway shedding load answers 200 with nothing. Recording that as a
     // success is how readiness reports green through an outage.
-    const observed = health.blizzardByRegion().us;
+    const observed = health.byRegion('blizzard').us;
     expect(observed.consecutiveFailures).toBeGreaterThan(0);
     expect(observed.lastError).toMatch(/empty response body/);
   });
@@ -357,11 +358,13 @@ describe('BlizzardHttpService — failure handling', () => {
     route('bad', json(500, { error: 'boom' }));
 
     await http.get('us', 'ok');
-    const healthy = health.blizzardByRegion().us;
+    const healthy = health.byRegion('blizzard').us;
     expect(healthy.status).toBe('ok');
     expect(healthy.lastSuccessAt).not.toBeNull();
 
     await http.get('us', 'bad').catch(() => undefined);
-    expect(health.blizzardByRegion().us.lastError, 'the failure is recorded too').toContain('500');
+    expect(health.byRegion('blizzard').us.lastError, 'the failure is recorded too').toContain(
+      '500',
+    );
   });
 });

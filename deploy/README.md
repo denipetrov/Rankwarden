@@ -1,8 +1,8 @@
 # Deploying Rankwarden
 
 How to put the service and its database on a Kubernetes cluster, and how to operate them
-afterwards. The reasoning behind the choices is in [DEPLOYMENT-PLAN.md](../DEPLOYMENT-PLAN.md);
-this file is the procedure.
+afterwards. The reasoning behind the choices is summarised in `SKILLS.md` §12; this file is
+the procedure.
 
 ```
 deploy/

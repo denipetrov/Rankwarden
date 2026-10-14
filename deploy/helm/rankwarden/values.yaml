@@ -34,7 +34,7 @@ secrets:
   schema: rankwarden-schema
 
 # Measured under a full sweep, an enrichment pass and a Mythic+ pass: about
-# 195 MB steady, 398 MB peak; 0.09 CPU average, 0.40 peak (DEPLOYMENT-PLAN §2.1).
+# 195 MB steady, 398 MB peak; 0.09 CPU average, 0.40 peak (measured in a production-like run).
 resources:
   requests:
     cpu: 150m

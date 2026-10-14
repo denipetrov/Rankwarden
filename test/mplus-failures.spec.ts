@@ -113,7 +113,7 @@ describe('Mythic+ failure modes', () => {
     // Raider.io that is up — health would be right to say so.
     app.raiderIo.failWith('mythic-plus/', { status: 503 });
 
-    const { DependencyHealth } = await import('../src/common/health/dependency-health.service.js');
+    const { DependencyHealth } = await import('@denipetrov/spirit-link/health');
     const health = app.app.get(DependencyHealth);
 
     // The pass reports the shortfall; it does not throw. A failing upstream
@@ -124,11 +124,11 @@ describe('Mythic+ failure modes', () => {
     expect(health.failingRegionsFor('raiderio')).toContain('us');
     // Blizzard's own health is untouched: one upstream failing must never be
     // reported as the other failing.
-    expect(health.blizzardStatus()).not.toBe('down');
+    expect(health.statusFor('blizzard')).not.toBe('down');
   });
 
   it('forgets a Raider.io outage the moment real traffic succeeds again', async () => {
-    const { DependencyHealth } = await import('../src/common/health/dependency-health.service.js');
+    const { DependencyHealth } = await import('@denipetrov/spirit-link/health');
     const health = app.app.get(DependencyHealth);
 
     app.raiderIo.failWith('mythic-plus/runs', { status: 503, times: 2 });

@@ -3,9 +3,9 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { logLevelsFor } from '@denipetrov/spirit-link/logging';
 
 import { AppModule } from './app.module.js';
-import { logLevelsFor } from './common/logging/log-levels.js';
 import type { Env } from './config/env.schema.js';
 
 async function bootstrap(): Promise<void> {
