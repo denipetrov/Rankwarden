@@ -8,6 +8,7 @@ this file is the procedure.
 deploy/
   helm/mongodb/       the database: StatefulSet, users, network policy, daily backup
   helm/rankwarden/    the service: one replica, schema Job, network policy
+  helm/log-collector/ ships every pod's log output to Grafana Cloud Logs
     env/production.env   every non-secret production setting
   scripts/
     provision-digitalocean.sh   one-time: create the cluster
@@ -21,8 +22,7 @@ Dockerfile            the image; also runs the schema and config commands
 
 1. **MongoDB** comes up, then a Job creates or updates its users.
 2. **The schema Job** runs `node dist/schema.main.js` as `rankwarden_schema`: it creates
-   every collection and index, drops retired indexes, applies one-off data repairs, and
-   verifies the result. If it fails, the release stops and the running version stays up.
+   every collection and index, drops retired indexes, and verifies the result. If it fails, the release stops and the running version stays up.
 3. **The service** starts as `rankwarden_app` with `DB_SCHEMA_MODE=verify`. It checks the
    structure, changes nothing, and refuses to start if step 2 was skipped.
 
@@ -70,6 +70,7 @@ Spaces access key for it.
 export BLIZZARD_CLIENT_ID=...  BLIZZARD_CLIENT_SECRET=...  RAIDER_IO_API_KEY=...
 export GHCR_USERNAME=denipetrov  GHCR_TOKEN=...            # token with read:packages
 export BACKUP_ACCESS_KEY_ID=...  BACKUP_SECRET_ACCESS_KEY=...
+export GRAFANA_LOKI_USER=...  GRAFANA_LOKI_TOKEN=...       # optional: see "Logs" below
 bash deploy/scripts/create-secrets.sh
 ```
 
@@ -139,14 +140,58 @@ quota are all in-process. The chart enforces it and offers no setting to change 
 `replicas: 1`, strategy `Recreate`, no autoscaler. **Never run `kubectl scale` on this
 Deployment or attach a HorizontalPodAutoscaler to it.**
 
-## Operations
+## Logs
 
-**Logs**
+The pods write to standard output. Kubernetes keeps only the last few megabytes of
+that per container, on the node, until the pod is replaced:
 
 ```bash
 kubectl -n rankwarden logs deploy/rankwarden -f
 kubectl -n rankwarden logs deploy/rankwarden --previous      # the instance before a crash
 ```
+
+To keep and search them, the `log-collector` release forwards every pod's output to
+Grafana Cloud Logs (free plan: 50 GB a month, kept 14 days). It is one small pod that
+reads logs through the Kubernetes API; the service is not changed and does not know
+about it. It collects every namespace except the system ones, so the backend and the
+front end are covered when they arrive.
+
+It needs two credentials, from the Grafana Cloud portal (grafana.com → My Account →
+your stack):
+
+| Variable             | Where it comes from                                                         |
+| -------------------- | --------------------------------------------------------------------------- |
+| `GRAFANA_LOKI_USER`  | **Loki → Details**: the number labelled _User_, beside the URL              |
+| `GRAFANA_LOKI_TOKEN` | **Security → Access Policies**: a token on a policy with scope `logs:write` |
+
+The user is a number. It is not the token's name and not the access policy's id; the
+script refuses anything else. The Loki URL shown on the same page is not a secret and
+is set in `helm/log-collector/values.yaml` (`loki.url`).
+
+```bash
+export GRAFANA_LOKI_USER=...  GRAFANA_LOKI_TOKEN=...      # with the other variables of step 3
+bash deploy/scripts/create-secrets.sh                    # creates secret/grafana-cloud
+bash deploy/scripts/deploy.sh v1.0.0                     # installs the collector first
+```
+
+`deploy.sh` installs the collector only when `secret/grafana-cloud` exists, and says so
+when it does not: the service deploys without a log account. To read the logs, open the
+stack's Grafana, **Explore**, choose the Loki data source, and query:
+
+```
+{namespace="rankwarden", app="rankwarden"}
+{namespace="rankwarden", app="rankwarden"} |= "ERROR"
+{namespace="rankwarden", container="schema"}
+```
+
+If nothing arrives, the collector's own output says why (a 401 is a wrong user or
+token):
+
+```bash
+kubectl -n rankwarden logs deploy/log-collector | grep -iE "level=(warn|error)"
+```
+
+## Operations
 
 **The service refuses to start** with "The database is not in the structure this build
 needs": the schema step did not run for this version. The message lists every missing
@@ -241,11 +286,14 @@ Verified on a local Kubernetes cluster (kind), with these charts and scripts unc
 - never more than one running service container during a rollout;
 - a failing schema Job stopping the release with the running pod untouched;
 - an unchanged redeploy leaving the pod alone; `create-secrets.sh` keeping passwords;
-- backup to an S3-compatible store, and a restore of that archive.
+- backup to an S3-compatible store, and a restore of that archive;
+- the log collector, against a stand-in for Grafana: pod output arriving at
+  `/loki/api/v1/push` with the user and token from the Secret, running as non-root.
 
 Not verified, because each needs a real account:
 
 - `provision-digitalocean.sh` and anything DigitalOcean-specific (block storage class,
   Spaces as the backup target);
 - the three GitHub workflows, which have never run;
-- pulling the image from GHCR with the `ghcr` pull secret.
+- pulling the image from GHCR with the `ghcr` pull secret;
+- the log collector against the real Grafana Cloud account.

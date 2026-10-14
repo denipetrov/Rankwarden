@@ -98,6 +98,44 @@ export class RatingRepository {
   }
 
   /**
+   * Deletes every row of the characters named: the ones a sweep has just
+   * removed for ranking in nothing.
+   *
+   * The everyday form of orphan removal. It reads nothing and touches only the
+   * rows of those characters, through the `character` index, so its cost
+   * follows the handful of characters that left rather than the size of the
+   * region.
+   */
+  async removeForCharacters(
+    seasonId: number,
+    region: Region,
+    characterIds: readonly number[],
+  ): Promise<number> {
+    let removed = 0;
+
+    for (let offset = 0; offset < characterIds.length; offset += BULK_CHUNK_SIZE) {
+      const chunk = characterIds.slice(offset, offset + BULK_CHUNK_SIZE);
+
+      for (const family of RATING_FAMILIES) {
+        const result = await this.collection(family).deleteMany({
+          seasonId,
+          region,
+          characterId: { $in: chunk },
+        });
+        removed += result.deletedCount;
+      }
+    }
+
+    if (removed > 0) {
+      this.logger.log(
+        `Removed ${removed} rating rows of ${characterIds.length} unranked character(s) in ${region}`,
+      );
+    }
+
+    return removed;
+  }
+
+  /**
    * Deletes rows belonging to characters that no longer exist.
    *
    * Per-bracket pruning already removes a row when a character leaves that
@@ -105,6 +143,12 @@ export class RatingRepository {
    * character deleted outright, or one whose bracket Blizzard stopped
    * publishing, would leave rows behind that no board should ever show. This
    * reconciles against `characters`, which is the record of who exists.
+   *
+   * The full reconciliation, and expensive: it reads every character id and
+   * every rated character id in the region to compare them. A sweep runs it
+   * only when it cannot vouch for the previous cleanup (see
+   * `LeaderboardService`); otherwise `removeForCharacters` does the same job
+   * from the list of who was just removed.
    */
   async removeOrphans(seasonId: number, region: Region): Promise<number> {
     const known = new Set(

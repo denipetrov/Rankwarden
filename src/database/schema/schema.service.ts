@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { IndexDescription } from 'mongodb';
 
 import { MongoService } from '../mongo.service.js';
-import { DATA_FIXES } from './data-fixes.js';
 import { DATABASE_SCHEMA, type CollectionSchema } from './schema.definition.js';
 
 export interface SchemaReport {
@@ -10,7 +9,6 @@ export interface SchemaReport {
   collectionsCreated: string[];
   indexes: number;
   retiredIndexesDropped: string[];
-  dataFixes: string[];
 }
 
 /** MongoDB's "a collection with this name already exists". */
@@ -33,9 +31,9 @@ export class SchemaService {
   constructor(private readonly mongo: MongoService) {}
 
   /**
-   * Creates what is missing, drops what was retired, repairs what an earlier
-   * build left behind. Safe to run repeatedly: on a database already in shape
-   * every step is a no-op.
+   * Creates what is missing and drops what was retired. Structure only: it
+   * never reads or changes a document. Safe to run repeatedly: on a database
+   * already in shape every step is a no-op.
    */
   async apply(): Promise<SchemaReport> {
     const db = this.mongo.db;
@@ -45,7 +43,6 @@ export class SchemaService {
       collectionsCreated: [],
       indexes: 0,
       retiredIndexesDropped: [],
-      dataFixes: [],
     };
 
     for (const definition of DATABASE_SCHEMA) {
@@ -72,15 +69,6 @@ export class SchemaService {
         await db.collection(name).dropIndex(retired);
         report.retiredIndexesDropped.push(`${name}.${retired}`);
         this.logger.log(`Dropped retired index "${retired}" on "${name}"`);
-      }
-    }
-
-    for (const fix of DATA_FIXES) {
-      const outcome = await fix(db);
-
-      if (outcome) {
-        report.dataFixes.push(outcome);
-        this.logger.log(outcome);
       }
     }
 

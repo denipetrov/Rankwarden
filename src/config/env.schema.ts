@@ -1,13 +1,23 @@
 import { z } from 'zod';
 
-import { REGIONS, type Region } from '../blizzard/blizzard.constants.js';
+import {
+  DEFAULT_OAUTH_REGION,
+  OAUTH_REGIONS,
+  REGIONS,
+  type Region,
+} from '../blizzard/blizzard.constants.js';
 import { placeholdersIn } from '../common/utils/path-template.js';
 import {
   AGGREGATE_REGION,
+  DEFAULT_RAID_RANKING_REGIONS,
   MAX_RUNS_PAGE,
   RAID_DIFFICULTIES,
+  RAID_RANKING_MAX_PAGE_SIZE,
+  RAID_RANKING_PAGE_SIZE,
+  RAID_RANKING_TOP,
   RAID_RANKING_REGIONS,
   RAIDERIO_REGIONS,
+  RUNS_PER_PAGE,
   type RaidDifficulty,
   type RaiderIoRegion,
   type RaidRankingRegion,
@@ -263,10 +273,10 @@ export const envSchema = z.object({
   // Blizzard OAuth — consumed by @denipetrov/blizz-auth.
   BLIZZARD_CLIENT_ID: z.string().min(1),
   BLIZZARD_CLIENT_SECRET: z.string().min(1),
-  BLIZZARD_REGION: z.enum(['us', 'eu', 'kr', 'tw', 'cn']).default('us'),
+  BLIZZARD_REGION: z.enum(OAUTH_REGIONS).default(DEFAULT_OAUTH_REGION),
 
   // Blizzard Game Data API.
-  BLIZZARD_REGIONS: regionCsv('us,eu,kr,tw'),
+  BLIZZARD_REGIONS: regionCsv(REGIONS.join(',')),
   /**
    * Host template for the Game Data API; `{region}` is substituted per call.
    * Also what lets a runtime rehearsal point a running binary at a fake server.
@@ -307,6 +317,16 @@ export const envSchema = z.object({
     'profile/wow/character/{realmSlug}/{characterName}/specializations',
     ['realmSlug', 'characterName'],
   ),
+  /**
+   * How long reference data read from Blizzard is reused before it is asked
+   * for again: a season's bracket list, and the record of a season that has
+   * finished. Held in memory, so a restart empties it. 0 switches it off.
+   *
+   * Half a day by default. A bracket list changes when a specialisation is
+   * added, which happens with a patch, not within a day; the cost of a stale
+   * one is a new ladder picked up at most this much late.
+   */
+  BLIZZARD_REFERENCE_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(43_200_000),
   BLIZZARD_LOCALE: z.string().default('en_US'),
   BLIZZARD_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   BLIZZARD_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(3),
@@ -484,7 +504,7 @@ export const envSchema = z.object({
   RAIDERIO_PATH_RAID_STATIC_DATA: pathTemplate('raiding/static-data'),
   RAIDERIO_PATH_RAID_RANKINGS: pathTemplate('raiding/raid-rankings'),
   /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
-  RAIDERIO_REGIONS: raiderIoRegionCsv('us,eu,kr,tw,cn'),
+  RAIDERIO_REGIONS: raiderIoRegionCsv(RAIDERIO_REGIONS.join(',')),
   RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   RAIDERIO_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(2),
   /** Pages fetched in parallel. At ~0.65s a page, 12 is ~18 pages a second. */
@@ -507,8 +527,20 @@ export const envSchema = z.object({
     .number()
     .int()
     .positive()
-    .max(MAX_RUNS_PAGE + 1)
-    .default(1_001),
+    .default(MAX_RUNS_PAGE + 1),
+  /**
+   * Runs Raider.io serves per page of `/mythic-plus/runs`. Not a choice: the
+   * endpoint takes no page size, so this states what upstream does and must be
+   * changed only when upstream changes. It is how a complete archive is told
+   * from a short one.
+   */
+  RAIDERIO_RUNS_PER_PAGE: z.coerce.number().int().positive().default(RUNS_PER_PAGE),
+  /**
+   * The highest `page` the runs endpoint accepts, counted from zero. Likewise a
+   * statement about upstream: `RAIDERIO_MAX_PAGES` and `MPLUS_ARCHIVE_PAGES`
+   * may not ask for more pages than this allows.
+   */
+  RAIDERIO_MAX_RUNS_PAGE: z.coerce.number().int().nonnegative().default(MAX_RUNS_PAGE),
   /**
    * Raider.io's cap, in requests a minute, across the whole client.
    *
@@ -597,12 +629,7 @@ export const envSchema = z.object({
    * 2,000 runs a region, ~500 requests a season at five regions. Kept shallow:
    * the archive is a record of the top of each region's season, not a copy.
    */
-  MPLUS_ARCHIVE_PAGES: z.coerce
-    .number()
-    .int()
-    .positive()
-    .max(MAX_RUNS_PAGE + 1)
-    .default(100),
+  MPLUS_ARCHIVE_PAGES: z.coerce.number().int().positive().default(100),
   /**
    * First expansion the catalogue walks from. The walk continues upward until an
    * expansion answers with no seasons, so a new expansion needs no change here.
@@ -651,9 +678,9 @@ export const envSchema = z.object({
    * The boards read for each raid: `world` and any real region. `cn` is served
    * too and left out by default; its guilds still appear on the world board.
    */
-  RAID_RANKINGS_REGIONS: raidRankingRegionCsv('world,us,eu,kr,tw'),
+  RAID_RANKINGS_REGIONS: raidRankingRegionCsv(DEFAULT_RAID_RANKING_REGIONS.join(',')),
   /** The difficulties read on each board, in the order they are read. */
-  RAID_RANKINGS_DIFFICULTIES: raidDifficultyCsv('mythic,heroic,normal'),
+  RAID_RANKINGS_DIFFICULTIES: raidDifficultyCsv(RAID_DIFFICULTIES.join(',')),
   /**
    * Boards read at once. A board's own pages stay in order, so this is also the
    * most ranking requests in flight; upstream is slow at this endpoint, and the
@@ -672,6 +699,21 @@ export const envSchema = z.object({
    * that were about to answer.
    */
   RAID_RANKINGS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(75_000),
+  /** Guilds kept per board: the top this many. */
+  RAID_RANKINGS_TOP: z.coerce.number().int().positive().default(RAID_RANKING_TOP),
+  /**
+   * Guilds asked for per ranking request, so a board is
+   * `RAID_RANKINGS_TOP / RAID_RANKINGS_PAGE_SIZE` requests. Small on purpose:
+   * the endpoint's cost is per guild and far from flat, and a hundred in one
+   * request times out at upstream's gateway on older raids. The endpoint
+   * serves 200 at most.
+   */
+  RAID_RANKINGS_PAGE_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(RAID_RANKING_MAX_PAGE_SIZE)
+    .default(RAID_RANKING_PAGE_SIZE),
 
   // Mythic+ seasons: which one is current, and retiring the one it replaced.
   /**
@@ -792,6 +834,19 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
         'needs the raid catalogue it reads rankings for; set RAID_CATALOGUE_ENABLED=true ' +
         'or set RAID_RANKINGS_ENABLED=false',
     });
+  }
+
+  // Bounds that used to be compiled in, now that the bound is itself a setting.
+  for (const setting of ['RAIDERIO_MAX_PAGES', 'MPLUS_ARCHIVE_PAGES'] as const) {
+    if (env[setting] > env.RAIDERIO_MAX_RUNS_PAGE + 1) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [setting],
+        message:
+          `${env[setting]} pages is more than the ${env.RAIDERIO_MAX_RUNS_PAGE + 1} that ` +
+          `RAIDERIO_MAX_RUNS_PAGE (${env.RAIDERIO_MAX_RUNS_PAGE}, counted from zero) allows`,
+      });
+    }
   }
 
   if (env.MPLUS_ENABLED && env.RAIDER_IO_API_KEY.length === 0) {

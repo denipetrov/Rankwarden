@@ -12,7 +12,7 @@ import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
-import { MAX_RUNS_PAGE, type RaiderIoRegion } from '../raiderio/raiderio.constants.js';
+import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
 import { MplusCutoffsService } from '../mplus-season/mplus-cutoffs.service.js';
@@ -77,7 +77,7 @@ export interface MplusSweepResult {
 /**
  * Ingests the top Mythic+ runs for the current season, one region at a time.
  *
- * A pass is `MAX_RUNS_PAGE + 1` pages per region — 1,001 requests, up to 20,020
+ * A pass is `RAIDERIO_MAX_RUNS_PAGE + 1` pages per region — 1,001 requests, up to 20,020
  * runs — fetched with bounded concurrency and written as it goes rather than
  * accumulated whole: a region is ~100,000 roster rows, and holding all of them
  * before the first write would make memory scale with the ladder rather than
@@ -96,6 +96,7 @@ export class MplusService {
   private readonly concurrency: number;
   private readonly pageBatch: number;
   private readonly maxPages: number;
+  private readonly maxRunsPage: number;
   private readonly intervalMs: number;
   private readonly budgetWaitMs: number;
   private readonly yieldWaitMs: number;
@@ -117,6 +118,7 @@ export class MplusService {
     this.concurrency = config.get('RAIDERIO_CONCURRENCY', { infer: true });
     this.pageBatch = config.get('RAIDERIO_PAGE_BATCH', { infer: true });
     this.maxPages = config.get('RAIDERIO_MAX_PAGES', { infer: true });
+    this.maxRunsPage = config.get('RAIDERIO_MAX_RUNS_PAGE', { infer: true });
     this.intervalMs = config.get('MPLUS_INTERVAL_MS', { infer: true });
     this.budgetWaitMs = config.get('RAIDERIO_BUDGET_WAIT_MS', { infer: true });
     this.yieldWaitMs = config.get('MPLUS_YIELD_WAIT_MS', { infer: true });
@@ -265,7 +267,7 @@ export class MplusService {
   ): Promise<MplusRegionResult> {
     const fetchedAt = new Date();
     const accumulator = new MplusCharacterAccumulator(season, seasonId, region);
-    const lastPage = Math.min(this.maxPages - 1, MAX_RUNS_PAGE);
+    const lastPage = Math.min(this.maxPages - 1, this.maxRunsPage);
     const result: MplusRegionResult = {
       region,
       season,

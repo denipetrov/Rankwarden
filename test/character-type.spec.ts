@@ -149,55 +149,18 @@ describe('characterType', () => {
     });
   });
 
-  describe('on boot over a database from before the field existed', () => {
-    const legacyId = 8_000_001;
-
+  describe('on boot over a database with the staleness indexes of an earlier build', () => {
     beforeAll(async () => {
-      await characters().insertOne({
-        seasonId: harness.world.season('us').id,
-        region: 'us',
-        characterId: legacyId,
-        characterName: 'Untyped',
-        realmId: 60,
-        realmSlug: 'tarren-mill',
-        faction: 'HORDE',
-        brackets: {
-          '3v3': { rank: 1, rating: 2000, played: 1, won: 1, lost: 0, fetchedAt: new Date() },
-        },
-        ratings: { '3v3': 2000 },
-        updatedAt: new Date(),
-        profileFetchedAt: new Date(Date.now() - 30 * DAY),
-        specsFetchedAt: new Date(Date.now() - 30 * DAY),
-      });
       // The staleness indexes as the previous build created them.
       await characters().createIndex({ specsFetchedAt: 1 }, { name: 'specs_staleness' });
       await characters().createIndex({ profileFetchedAt: 1 }, { name: 'profile_staleness' });
 
-      // Both migrations run in onModuleInit, so a fresh boot is what exercises them.
+      // The schema step runs at boot here, so a fresh boot is what exercises it.
       const second = await bootTestApp(harness.world, {
         PROFILE_REQUESTS_PER_SECOND: '2000',
         MONGODB_DB: harness.dbName,
       });
       await second.close();
-    });
-
-    it('backfills the missing type as PvP, which every such character is', async () => {
-      const legacy = await characters().findOne({ characterId: legacyId });
-
-      expect(legacy!.characterType).toBe('PvP');
-      expect(await characters().countDocuments({ characterType: { $exists: false } })).toBe(0);
-    });
-
-    it('puts the backfilled character back in the enrichment queue', async () => {
-      // Untyped, it would have matched no enrichment filter and quietly never
-      // been refreshed again.
-      const due = await repository().findProfilesToEnrich(
-        new Date(Date.now() - 7 * DAY),
-        new Date(Date.now() - DAY),
-        10,
-      );
-
-      expect(due.map((character) => character.characterId)).toContain(legacyId);
     });
 
     it('replaces the old staleness indexes with the type-led ones', async () => {

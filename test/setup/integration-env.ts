@@ -24,6 +24,13 @@ process.env.BLIZZARD_CLIENT_SECRET = 'test-client-secret';
 // of quietly consuming real quota.
 process.env.BLIZZARD_API_HOST_TEMPLATE = 'http://127.0.0.1:9/{region}';
 
+// Off, because these suites change what the fake upstream publishes between
+// one sweep and the next — a ladder retired, a bracket index failing — to stand
+// for changes that are really days apart. With the half-day cache on, the
+// second sweep would be answered from the first. The cache has its own tests
+// (`pvp.api.spec.ts`).
+process.env.BLIZZARD_REFERENCE_CACHE_TTL_MS = '0';
+
 // The same guard for the second upstream: a missed Raider.io seam must fail
 // locally rather than spend the owner's real Raider.io allowance. The key is a
 // placeholder for the same reason the Blizzard credentials are.

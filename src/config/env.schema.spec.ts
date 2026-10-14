@@ -402,3 +402,54 @@ describe('validateEnv — raid rankings', () => {
     );
   });
 });
+
+describe('validateEnv — paging that used to be compiled in', () => {
+  it('defaults to what Raider.io does today', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.RAIDERIO_RUNS_PER_PAGE).toBe(20);
+    expect(env.RAIDERIO_MAX_RUNS_PAGE).toBe(1_000);
+    expect(env.RAIDERIO_MAX_PAGES).toBe(1_001);
+    expect(env.RAID_RANKINGS_TOP).toBe(100);
+    expect(env.RAID_RANKINGS_PAGE_SIZE).toBe(20);
+  });
+
+  it('bounds the page counts by the highest page configured, not by a constant', () => {
+    expect(() => validateEnv({ ...base, RAIDERIO_MAX_PAGES: '1002' })).toThrow(
+      /RAIDERIO_MAX_PAGES: 1002 pages is more than the 1001 that RAIDERIO_MAX_RUNS_PAGE \(1000/,
+    );
+    expect(() => validateEnv({ ...base, MPLUS_ARCHIVE_PAGES: '1002' })).toThrow(
+      /MPLUS_ARCHIVE_PAGES: 1002 pages is more than the 1001/,
+    );
+
+    // Raise what upstream accepts, and more pages may be asked for.
+    const raised = validateEnv({
+      ...base,
+      RAIDERIO_MAX_RUNS_PAGE: '1500',
+      RAIDERIO_MAX_PAGES: '1501',
+      MPLUS_ARCHIVE_PAGES: '1200',
+    });
+    expect(raised.RAIDERIO_MAX_PAGES).toBe(1_501);
+
+    // Lower it, and the default page count no longer fits.
+    expect(() => validateEnv({ ...base, RAIDERIO_MAX_RUNS_PAGE: '500' })).toThrow(
+      /RAIDERIO_MAX_PAGES: 1001 pages is more than the 501/,
+    );
+  });
+
+  it('refuses a ranking page larger than the endpoint serves, and sizes of none', () => {
+    expect(() => validateEnv({ ...base, RAID_RANKINGS_PAGE_SIZE: '201' })).toThrow(
+      /RAID_RANKINGS_PAGE_SIZE/,
+    );
+    expect(validateEnv({ ...base, RAID_RANKINGS_PAGE_SIZE: '200' }).RAID_RANKINGS_PAGE_SIZE).toBe(
+      200,
+    );
+    for (const setting of [
+      'RAID_RANKINGS_PAGE_SIZE',
+      'RAID_RANKINGS_TOP',
+      'RAIDERIO_RUNS_PER_PAGE',
+    ]) {
+      expect(() => validateEnv({ ...base, [setting]: '0' })).toThrow(new RegExp(setting));
+    }
+  });
+});

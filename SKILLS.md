@@ -558,7 +558,8 @@ instead and run the moment the pass finishes.
 3. Run them through `mapWithConcurrency` at `BLIZZARD_CONCURRENCY` (8).
 4. Each job: fetch → zod-validate → map → upsert into `characters` → mirror into the
    family's ratings collection → prune that bracket in both.
-5. Once per region afterwards: `removeUnranked`, `removeOrphans`, `removeRetiredBrackets`.
+5. Once per region afterwards: `removeUnranked`, then the rating rows of the characters it
+   removed (`removeForCharacters`, or the full `removeOrphans`: see §9), `removeRetiredBrackets`.
 6. Emit `SweepEvents.completed$` **after** the coordinator releases.
 
 Observed: 332/332 brackets in ~35s.
@@ -793,8 +794,8 @@ file, so it shows what was removed as well as what exists.
 collection with its indexes (`DATABASE_SCHEMA`), and `SchemaService` does two things with
 that list, kept apart because in production two different actors perform them:
 
-- `apply()` creates missing collections, builds indexes, drops retired ones (always after
-  their replacements exist), and runs the one-off data repairs in `data-fixes.ts`.
+- `apply()` creates missing collections, builds indexes and drops retired ones (always after
+  their replacements exist). Structure only: it never reads or changes a document.
   Idempotent. This is `npm run db:schema`, the deploy step.
 - `verify()` reads only, and returns every difference between the database and the
   declaration: a missing collection or index, an index of the right name over the wrong
@@ -846,9 +847,8 @@ Indexes: `character_identity` (unique `seasonId+region+characterId`), `character
 **`characterType`** says where a character came from: `PvP` from the ladder sweep, `M+`
 from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
 (§4.2). The sweep sets it with `$setOnInsert`, so a document another source created is never
-reclassified into the enrichment queue. Documents from before the field existed are
-backfilled to `PvP` by the schema step (`data-fixes.ts`), before any scheduler starts. The sweep
-was the only writer then. The sync endpoint never touches the type.
+reclassified into the enrichment queue. That upsert is the only insert into `characters`,
+so no document can be without a type (invariant I11). The sync endpoint never touches it.
 
 > **In practice `characters` holds only `PvP` today.** M+ characters live in their own
 > collection (§5.5) — three findings ruled out sharing this one, and they are worth knowing
@@ -1569,6 +1569,14 @@ endpoint gets a variable declared with `pathTemplate(default, placeholders)` in
 drops a placeholder, names one the service does not fill, or is more than a path. Only the
 address is configurable: a change in what an endpoint returns still needs its schema changed.
 
+**Two answers are cached in memory**, in `PvpApi`, for `BLIZZARD_REFERENCE_CACHE_TTL_MS`
+(half a day): a season's bracket list, and the record of a season whose end date has
+passed. Both are asked for by every sweep and archive pass and change with a patch, not
+within a day. A hit makes no request, so it costs nothing against the quota. An empty
+bracket list is never kept. Two things are deliberately **not** cached, and must stay so:
+the season index, which is how a rollover is noticed, and the record of a running season,
+which is where its end date appears. The cache is per process and empty after a restart.
+
 **Quota: 100 requests/second, 36,000/hour.** Everything else follows from that. The hour is
 governed by the shared budget (§4.0); the second by each job's own `RateLimiter`.
 
@@ -1852,6 +1860,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `BLIZZARD_REGION`                     | `us`                                | OAuth host region only (`us,eu,kr,tw,cn`)                  |
 | `BLIZZARD_REGIONS`                    | `us,eu,kr,tw`                       | Ladders to ingest — distinct from the above                |
 | `BLIZZARD_LOCALE`                     | `en_US`                             |                                                            |
+| `BLIZZARD_REFERENCE_CACHE_TTL_MS` | `43200000` | In-memory reuse of bracket lists and finished season records (§6); 0 = off |
 | `BLIZZARD_API_HOST_TEMPLATE`          | `https://{region}.api.blizzard.com` | Must contain `{region}`; also the L3 test seam             |
 | `BLIZZARD_PATH_PVP_SEASON_INDEX` | `data/wow/pvp-season/index` | Endpoint paths under the host: see §6 |
 | `BLIZZARD_PATH_PVP_SEASON` | `data/wow/pvp-season/{seasonId}` |  |
@@ -1914,6 +1923,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAIDERIO_CONCURRENCY`                | `12`                                | Pages in flight; ~0.65s a page measured                    |
 | `RAIDERIO_PAGE_BATCH`                 | `50`                                | Memory bound, and how often budget/priority are re-checked |
 | `RAIDERIO_MAX_PAGES`                  | `1001`                              | The whole leaderboard; the `mythicScore` lever             |
+| `RAIDERIO_RUNS_PER_PAGE`              | `20`                                | What the runs endpoint serves a page; change only with it  |
+| `RAIDERIO_MAX_RUNS_PAGE`              | `1000`                              | Highest page it accepts; bounds the two page counts        |
 | `RAIDERIO_MINUTE_LIMIT`               | `1000`                              | Raider.io's cap on the whole client                        |
 | `RAIDERIO_UTILISATION`                | `0.9`                               | Fraction ever planned against                              |
 | `RAIDERIO_REQUESTS_PER_SECOND`        | `14`                                | Token bucket; must fit inside the minute                   |
@@ -1937,6 +1948,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAID_RANKINGS_CONCURRENCY`           | `5`                                 | Boards read at once (1-20); a board's pages stay in order  |
 | `RAID_RANKINGS_INTERVAL_MS`           | `3600000`                           | How often open raids' boards are re-read                   |
 | `RAID_RANKINGS_REQUEST_TIMEOUT_MS`    | `75000`                             | Per ranking request; upstream's gateway gives up at 60s    |
+| `RAID_RANKINGS_TOP`                   | `100`                               | Guilds kept per board                                      |
+| `RAID_RANKINGS_PAGE_SIZE`             | `20`                                | Guilds per ranking request (max 200); keep small (§9.17)   |
 | `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
 | `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
 | `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
@@ -2035,7 +2048,8 @@ Run **in this order**, once per region, at the end of every sweep:
 | 1   | `CharacterRepository.pruneBracket` (per bracket, `fetchedAt`) | a bracket not refreshed          | character left that ladder |
 | 2   | `CharacterRepository.removeRetiredBrackets`                   | bracket keys no longer published | a spec ladder disappears   |
 | 3   | `CharacterRepository.removeUnranked`                          | characters ranking in nothing    | left every ladder          |
-| 4   | `RatingRepository.removeOrphans` (vs `characters`)            | rows whose character is gone     | character deleted          |
+| 4   | `RatingRepository.removeForCharacters` (ids from step 3)      | rows of the characters just removed | character deleted       |
+| 4b  | `RatingRepository.removeOrphans` (vs `characters`)            | rows whose character is gone     | in place of 4, see below   |
 | 5   | `RatingRepository.removeRetiredBrackets`                      | rows for unpublished brackets    | a spec ladder disappears   |
 
 **The order matters twice.** Step 2 must precede step 3: a character ranked _only_ in
@@ -2043,6 +2057,16 @@ retired brackets never reaches an empty `brackets` map otherwise, so `removeUnra
 never see them and they persist for the rest of the season, still queryable through the
 `bracket_ratings` wildcard index. And steps 4–5 must follow step 3, so the rows are
 genuinely orphans by the time they are reconciled.
+
+**Step 4 has a cheap form and a full form.** `removeUnranked` returns the ids it deleted, and
+`removeForCharacters` deletes exactly those characters' rows: it reads nothing, and its cost
+follows the handful who left. `removeOrphans` does the same job the expensive way, reading
+every character id and every rated character id in the region to compare them, which is
+hundreds of thousands of ids on a large region. `LeaderboardService` runs the full form only
+when it cannot vouch for the rows (`reconciledAt`): on the first cleanup of a season and
+region after a start, which covers a process killed between the two deletes; on the one
+after a cleanup that threw; and once every 24 hours, for anything deleted by hand. A row
+orphaned by some other route therefore survives until the next full pass, at most a day.
 
 Both `removeRetiredBrackets` implementations **refuse to act on an empty bracket list** —
 that means the sweep failed for the region, not that every ladder retired. Without the
@@ -2150,7 +2174,7 @@ answered 504 from upstream's gateway at 60s on every attempt, and asking again a
 later was just as slow. The same boards twenty at a time took 1-2s a page when probed one
 by one — and 2.6 to 25s for a page nothing had asked for lately, during a real backfill
 (2026-10-05), which the 75s timeout covers. So a board is
-five requests of twenty (`RAID_RANKING_PAGE_SIZE`), several boards at a time rather than
+five requests of twenty (`RAID_RANKINGS_PAGE_SIZE`, kept `RAID_RANKINGS_TOP`), several boards at a time rather than
 several pages of one, with a timeout of its own
 (`RAID_RANKINGS_REQUEST_TIMEOUT_MS`) through `RaiderIoGetOptions.timeoutMs`. Raising the page
 size to save requests brings the 504s back.
@@ -2441,6 +2465,10 @@ true:
   it is. The four credentials never go in that file.
 - **No public entry.** The service is `ClusterIP` only, and a NetworkPolicy admits just the
   `backend` namespace, because its endpoints have no authentication.
+- **Logs leave the cluster through a separate release.** The service only writes to
+  standard output. `deploy/helm/log-collector` (Grafana Alloy) reads every pod's output
+  through the Kubernetes API and forwards it to Grafana Cloud Logs; it is installed only
+  when `secret/grafana-cloud` exists. Nothing in `src/` knows about it, and nothing should.
 - **CI runs with no `.env`.** A test that passes only because a developer's `.env` supplied a
   value fails there; set what a test needs in the test.
 

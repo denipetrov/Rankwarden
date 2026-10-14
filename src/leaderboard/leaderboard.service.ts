@@ -46,6 +46,13 @@ export interface SweepResult {
 }
 
 /**
+ * How long a sweep trusts its own bookkeeping before comparing every rating
+ * row against `characters` again. Between full passes it deletes only the rows
+ * of the characters it has just removed.
+ */
+const FULL_RECONCILE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Orchestrates one full ingestion sweep: resolve the active season per region,
  * pull every bracket, and persist the flattened entries.
  */
@@ -71,6 +78,13 @@ export class LeaderboardService {
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.concurrency = config.get('BLIZZARD_CONCURRENCY', { infer: true });
   }
+
+  /**
+   * When this process last fully reconciled each season/region's rating rows
+   * against `characters`, for the pairs it has kept reconciled since. Empty at
+   * start, so the first sweep always does the full pass.
+   */
+  private readonly reconciledAt = new Map<string, number>();
 
   get isRunning(): boolean {
     return this.running;
@@ -115,11 +129,32 @@ export class LeaderboardService {
             // Retired ladders first: a character ranked only in brackets that no
             // longer exist has to reach an empty `brackets` map before the
             // unranked pass below can see them at all.
+            // Whether the last cleanup of this season and region ran to the
+            // end in this process. Withdrawn until this one has, so a cleanup
+            // that throws partway is followed by a full reconciliation.
+            const scope = `${seasonId}:${region}`;
+            const lastFullPass = this.reconciledAt.get(scope);
+            const reconciled =
+              lastFullPass !== undefined && Date.now() - lastFullPass < FULL_RECONCILE_INTERVAL_MS;
+            this.reconciledAt.delete(scope);
+
             clearedBrackets += await this.repository.removeRetiredBrackets(seasonId, region, live);
-            removedCharacters += await this.repository.removeUnranked(seasonId, region);
+            const unranked = await this.repository.removeUnranked(seasonId, region);
+            removedCharacters += unranked.length;
             // Only after the characters are gone, so their rows are orphans by then.
-            removedRatingRows += await this.ratings.removeOrphans(seasonId, region);
+            //
+            // Normally just the rows of the characters removed a moment ago.
+            // The full comparison against `characters` is kept for when rows
+            // may have been orphaned out of this sweep's sight: the first
+            // cleanup after a start, which covers a process killed between the
+            // two deletes; the one after a cleanup that failed; and once a day
+            // regardless, for anything deleted by hand.
+            removedRatingRows += reconciled
+              ? await this.ratings.removeForCharacters(seasonId, region, unranked)
+              : await this.ratings.removeOrphans(seasonId, region);
             removedRatingRows += await this.ratings.removeRetiredBrackets(seasonId, region, live);
+
+            this.reconciledAt.set(scope, reconciled ? (lastFullPass ?? Date.now()) : Date.now());
           }
 
           const durationMs = Date.now() - startedAt.getTime();

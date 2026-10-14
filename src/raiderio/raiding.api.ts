@@ -5,11 +5,7 @@ import { ConfigService } from '@nestjs/config';
 
 import type { Env } from '../config/env.schema.js';
 import { RaiderIoHttpService } from './http/raiderio-http.service.js';
-import {
-  RAID_RANKING_PAGE_SIZE,
-  type RaidDifficulty,
-  type RaidRankingRegion,
-} from './raiderio.constants.js';
+import type { RaidDifficulty, RaidRankingRegion } from './raiderio.constants.js';
 import { raidRankingsSchema, type RaidRanking } from './schemas/raid-rankings.schema.js';
 import { raidStaticDataSchema, type RaidStaticData } from './schemas/raid-static-data.schema.js';
 
@@ -22,12 +18,14 @@ import { raidStaticDataSchema, type RaidStaticData } from './schemas/raid-static
 export class RaidingApi {
   private readonly staticDataPath: string;
   private readonly rankingsPath: string;
+  private readonly pageSize: number;
 
   constructor(
     private readonly http: RaiderIoHttpService,
     config: ConfigService<Env, true>,
   ) {
     this.staticDataPath = config.get('RAIDERIO_PATH_RAID_STATIC_DATA', { infer: true });
+    this.pageSize = config.get('RAID_RANKINGS_PAGE_SIZE', { infer: true });
     this.rankingsPath = config.get('RAIDERIO_PATH_RAID_RANKINGS', { infer: true });
   }
 
@@ -50,14 +48,14 @@ export class RaidingApi {
 
   /**
    * One page of the ranking of one raid on one board at one difficulty, best
-   * first, `RAID_RANKING_PAGE_SIZE` guilds at a time.
+   * first, `RAID_RANKINGS_PAGE_SIZE` guilds at a time.
    *
    * `region` is a real region or `world`, whose board mixes every region's
    * guilds. A page past the end of the board — and any page of a board nobody
    * is ranked on, as Blackrock Depths has no Mythic — is 200 with an empty list;
    * a raid slug, region or difficulty the endpoint does not know is 400.
    *
-   * Slow by the guild rather than by the request (see `RAID_RANKING_PAGE_SIZE`),
+   * Slow by the guild rather than by the request (see `RAID_RANKINGS_PAGE_SIZE`),
    * hence small pages and a timeout of its own.
    */
   async getRaidRankingsPage(
@@ -75,7 +73,7 @@ export class RaidingApi {
         raid,
         difficulty,
         region,
-        limit: RAID_RANKING_PAGE_SIZE,
+        limit: this.pageSize,
         page,
       },
     });

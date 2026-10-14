@@ -37,7 +37,7 @@ data:
       {
         name: 'rankwarden_schema',
         password: process.env.SCHEMA_PASSWORD,
-        // Creates collections and indexes, and applies the one-off data repairs.
+        // Creates collections and indexes, and drops the retired ones.
         roles: [{ role: 'readWrite', db: database }, { role: 'dbAdmin', db: database }],
       },
       {

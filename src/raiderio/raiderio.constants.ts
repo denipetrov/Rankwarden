@@ -29,6 +29,14 @@ export const RAID_RANKING_REGIONS = [AGGREGATE_REGION, ...RAIDERIO_REGIONS] as c
 export type RaidRankingRegion = (typeof RAID_RANKING_REGIONS)[number];
 
 /**
+ * The boards read unless configured otherwise: every one but China's, whose
+ * guilds still reach `guilds` through the world board.
+ */
+export const DEFAULT_RAID_RANKING_REGIONS = RAID_RANKING_REGIONS.filter(
+  (region) => region !== 'cn',
+);
+
+/**
  * The difficulties `/raiding/raid-rankings` ranks, hardest first: each is a
  * board of its own, with its own top hundred. `difficulty` is required by the
  * endpoint: without it, or with one it does not know (`lfr`), it answers 400
@@ -37,11 +45,22 @@ export type RaidRankingRegion = (typeof RAID_RANKING_REGIONS)[number];
 export const RAID_DIFFICULTIES = ['mythic', 'heroic', 'normal'] as const;
 export type RaidDifficulty = (typeof RAID_DIFFICULTIES)[number];
 
-/** Guilds kept per board: the top hundred. */
+/**
+ * Guilds kept per board unless `RAID_RANKINGS_TOP` says otherwise: the top
+ * hundred.
+ */
 export const RAID_RANKING_TOP = 100;
 
 /**
- * Guilds asked for per request, so a board is five pages.
+ * The most guilds `/raiding/raid-rankings` serves in one page: `limit` above
+ * this is refused. A fact about the endpoint, and the ceiling on
+ * `RAID_RANKINGS_PAGE_SIZE`.
+ */
+export const RAID_RANKING_MAX_PAGE_SIZE = 200;
+
+/**
+ * Guilds asked for per request unless `RAID_RANKINGS_PAGE_SIZE` says otherwise,
+ * so a board is five pages.
  *
  * The endpoint would serve the hundred in one — `limit` goes to 200 — but its
  * cost is per guild and far from flat: checked live (2026-10-02), one request
@@ -52,11 +71,16 @@ export const RAID_RANKING_TOP = 100;
  */
 export const RAID_RANKING_PAGE_SIZE = 20;
 
-/** Runs per page, fixed by the API — the endpoint takes no page-size parameter. */
+/**
+ * Runs per page of `/mythic-plus/runs`, fixed by the API — the endpoint takes
+ * no page-size parameter. The default of `RAIDERIO_RUNS_PER_PAGE`, which is
+ * configuration only so that a change upstream is a setting, not a release.
+ */
 export const RUNS_PER_PAGE = 20;
 
 /**
- * Highest `page` the runs endpoint accepts. Asking for 1001 answers
+ * Highest `page` the runs endpoint accepts; the default of
+ * `RAIDERIO_MAX_RUNS_PAGE`, for the same reason. Asking for 1001 answers
  * `400 {"message":"\"page\" must be less than or equal to 1000"}`, so a pass is
  * pages 0-1000 inclusive: 1001 requests and up to 20,020 runs per region.
  */

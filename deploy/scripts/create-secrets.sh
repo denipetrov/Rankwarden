@@ -11,6 +11,8 @@
 # Optional:
 #   GHCR_USERNAME  GHCR_TOKEN                        pull secret for the image registry
 #   BACKUP_ACCESS_KEY_ID  BACKUP_SECRET_ACCESS_KEY   bucket credentials for backups
+#   GRAFANA_LOKI_USER  GRAFANA_LOKI_TOKEN            Grafana Cloud Logs: the numeric
+#                                                    Loki user, and a logs:write token
 #   NAMESPACE (rankwarden)  MONGODB_RELEASE (mongodb)  MONGODB_DATABASE (rankwarden)
 #
 # Database passwords are generated here, once. On a later run the existing ones
@@ -129,6 +131,25 @@ if [ -n "${BACKUP_ACCESS_KEY_ID:-}" ] && [ -n "${BACKUP_SECRET_ACCESS_KEY:-}" ];
 else
   echo "skipped secret/mongodb-backup: BACKUP_ACCESS_KEY_ID and BACKUP_SECRET_ACCESS_KEY are not set"
   echo "  the backup CronJob cannot start without it; deploy with backup.enabled=false until it exists"
+fi
+
+if [ -n "${GRAFANA_LOKI_USER:-}" ] && [ -n "${GRAFANA_LOKI_TOKEN:-}" ]; then
+  # The user is the number shown beside the Loki URL in the Grafana Cloud
+  # portal. Anything else here — the token's name, the access policy's id —
+  # is refused by Grafana with a 401 that only shows up in the collector's log.
+  case "$GRAFANA_LOKI_USER" in
+    '' | *[!0-9]*)
+      echo "error: GRAFANA_LOKI_USER must be the numeric Loki user from the Grafana Cloud portal" >&2
+      exit 1
+      ;;
+  esac
+
+  apply_secret grafana-cloud Opaque \
+    LOKI_USER "$GRAFANA_LOKI_USER" \
+    LOKI_TOKEN "$GRAFANA_LOKI_TOKEN"
+else
+  echo "skipped secret/grafana-cloud: GRAFANA_LOKI_USER and GRAFANA_LOKI_TOKEN are not set"
+  echo "  logs stay on the nodes only; deploy.sh leaves the log collector out until it exists"
 fi
 
 if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then

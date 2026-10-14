@@ -258,8 +258,8 @@ four-region archive backfill and the raid jobs were not running during the measu
 The service no longer builds its own database structure in production.
 
 1. **`npm run db:schema`** creates every collection in `src/database/collections.ts`,
-   builds every index declared in the `*.indexes.ts` files, drops retired ones, applies the
-   one-off data repairs, and verifies the result. Safe to run repeatedly.
+   builds every index declared in the `*.indexes.ts` files, drops retired ones, and
+   verifies the result. Safe to run repeatedly.
 2. **A Kubernetes Job runs it before the service on every release**, as a Helm
    `pre-install` / `pre-upgrade` hook, with a database user allowed to change structure.
    If it fails, the release stops and the running version stays up.
