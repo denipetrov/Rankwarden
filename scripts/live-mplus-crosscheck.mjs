@@ -12,7 +12,7 @@
  * Commands: census, boards, characters, cutoffs, reread, newseason, all.
  * Options:  --seed N (default 20260928) --pages N --log <app log path, for census>
  *
- * Rules (MPLUS-TESTING.md §8): the database must be a `rankwarden_check_*` one
+ * Rules: the database must be a `rankwarden_check_*` one
  * and is only ever read here; the Raider.io key comes from the environment and
  * is never printed — every url in output is built without it. Run it with the
  * app stopped, so its requests and the app's do not share one minute.

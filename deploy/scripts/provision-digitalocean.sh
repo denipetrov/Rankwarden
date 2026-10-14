@@ -2,7 +2,7 @@
 #
 # One-time: creates the DigitalOcean Kubernetes cluster and points kubectl at
 # it. Costs money from the moment it succeeds — about $48 a month for the two
-# nodes (DEPLOYMENT-PLAN.md §3.4).
+# nodes.
 #
 # NOT YET RUN AGAINST A REAL ACCOUNT. The charts and the other scripts were
 # exercised end to end on a local cluster; this one can only be exercised by

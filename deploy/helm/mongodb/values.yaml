@@ -23,7 +23,7 @@ authSecret: mongodb-auth
 storage:
   # DigitalOcean block storage. Billed per GiB; can be grown later, never shrunk.
   className: do-block-storage
-  # The full archive is projected at 4–6 GiB with indexes (DEPLOYMENT-PLAN §2.2).
+  # The full archive is projected at 4–6 GiB with indexes.
   size: 20Gi
 
 resources:
