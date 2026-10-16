@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import {
@@ -89,6 +90,7 @@ export class MplusCharacterSyncService {
     const fields: Partial<MplusCharacterDocument> = {
       characterName,
       nameKey: mplusNameKey(characterName),
+      searchName: searchNameOf(characterName),
       updatedAt,
     };
 

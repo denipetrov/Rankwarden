@@ -1,5 +1,6 @@
 import { expect } from 'vitest';
 import { BSON, type Db } from 'mongodb';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import {
   EXCLUDED_BRACKETS,
@@ -30,11 +31,12 @@ import {
   SPEC_REPRESENTATION_COLLECTION,
 } from '../../src/database/collections.js';
 
-/** The six indexes `characters` must carry, whatever the bracket count. */
+/** The seven indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
   '_id_',
   'character_identity',
   'character_lookup',
+  'character_search',
   'bracket_ratings',
   'enrichment_specs_staleness',
   'enrichment_profile_staleness',
@@ -83,6 +85,7 @@ export async function expectInvariants(
   await expectRaidBoardsWellFormed(db);
   await expectGuildsWhole(db);
   await expectRaidDocumentsWhole(db);
+  await expectSearchNamesFolded(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
   // the world and I7 also checks it against what was actually served, which is
@@ -306,7 +309,7 @@ export async function expectIndexInventory(db: Db): Promise<void> {
     .map((index) => index.name)
     .sort();
 
-  expect(names, 'I8: characters must hold exactly six indexes').toEqual(
+  expect(names, 'I8: characters must hold exactly seven indexes').toEqual(
     [...CHARACTER_INDEXES].sort(),
   );
 }
@@ -1171,6 +1174,32 @@ export async function expectRaidBoardsMatchWorld(db: Db, world: MplusWorld): Pro
         `I28: ${raid.slug}/${name} holds every guild served for ranks 1-100`,
       ).toEqual(served);
     }
+  }
+}
+
+/**
+ * I31 - every searchable name carries its folded form, and it is the fold of
+ * the name it sits beside. A document written without one cannot be found by
+ * the search; one folded by a different rule is found by the wrong queries.
+ */
+export async function expectSearchNamesFolded(db: Db): Promise<void> {
+  const searchable: [string, string][] = [
+    [CHARACTERS_COLLECTION, 'characterName'],
+    [MPLUS_CHARACTERS_COLLECTION, 'characterName'],
+    [MPLUS_ARCHIVE_CHARACTERS_COLLECTION, 'characterName'],
+    [GUILDS_COLLECTION, 'name'],
+  ];
+
+  for (const [collection, field] of searchable) {
+    const documents = await db
+      .collection(collection)
+      .find({}, { projection: { [field]: 1, searchName: 1 } })
+      .toArray();
+    const wrong = documents
+      .filter((document) => document.searchName !== searchNameOf(String(document[field])))
+      .map((document) => `${String(document[field])} -> ${String(document.searchName)}`);
+
+    expect(wrong, `I31: ${collection}.searchName is the fold of ${field}`).toEqual([]);
   }
 }
 

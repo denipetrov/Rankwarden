@@ -39,7 +39,7 @@ reference, and it wins where the two differ in detail.
   API and must not grow one.
 - **Authentication and public exposure.** The service is cluster-internal; nothing here
   faces the internet.
-- **Shared logging and health logic.** That lives in `@denipetrov/spirit-link` (§1).
+- **Shared logging, health and name-search logic.** That lives in `@denipetrov/spirit-link` (§1).
 - **Blizzard OAuth.** That lives in `@denipetrov/blizz-auth`.
 
 ---
@@ -101,6 +101,8 @@ this file updated in the same change.
 - `mythicScore` never decreases; nothing may lower it.
 - A season is retired only after the next one has started in that region, and only once
   archived. A running season is never archived.
+- Every write of a character or guild name writes its `searchName` too, through
+  `searchNameOf` and nothing else (§5.13).
 
 **Code conventions**
 
@@ -122,11 +124,12 @@ this file updated in the same change.
 | Database    | MongoDB 8 via the official `mongodb` driver 7 (no ODM)                                 |
 | Tests       | Vitest 4, transformed through SWC so `emitDecoratorMetadata` works                     |
 | Auth        | `@denipetrov/blizz-auth` (private, GitHub Packages); Raider.io uses a query-string key |
-| Shared      | `@denipetrov/spirit-link` (private, GitHub Packages): run-scoped logging and dependency health |
+| Shared      | `@denipetrov/spirit-link` 0.2 (private, GitHub Packages): logging, dependency health, name search |
 
-**Logging and health come from `@denipetrov/spirit-link`**, shared with the other services:
-`withRunId`, `RunLogger`, `currentRunKind` and `logLevelsFor` from `/logging`;
-`DependencyHealth`, `redactSecrets`, `hostOf`, `probeObservation` and `worstOf` from `/health`.
+**Logging, health and name search come from `@denipetrov/spirit-link`**, shared with the other
+services: `withRunId`, `RunLogger`, `currentRunKind` and `logLevelsFor` from `/logging`;
+`DependencyHealth`, `redactSecrets`, `hostOf`, `probeObservation` and `worstOf` from `/health`;
+`searchNameOf` and `escapeRegex` from `/search`.
 What stays here is Rankwarden's own vocabulary: the job names (`RunKind`,
 `src/common/logging/run-kind.ts`), the upstream names and the secrets the tracker redacts
 (`src/common/health/upstream-provider.ts`). `CommonModule` registers the one shared
@@ -1682,6 +1685,47 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
 - **A configured difficulty or region that is later removed** leaves its boards where they
   are: stale, never refreshed, never deleted.
 
+### 5.13 Name search — `searchName`
+
+`characters`, `mplus_characters`, `mplus_archive_characters` and `guilds` carry
+`searchName`: the name (`characterName`, or a guild's `name`) folded by
+`searchNameOf` from `@denipetrov/spirit-link/search`. It exists for the backend's character and
+guild search, which matches by prefix and must find `Bìbà` from `biba`.
+
+The fold: lowercase; NFKD; drop every combining mark; spell out the letters NFKD cannot split
+(`ß`→`ss`, `æ`→`ae`, `œ`→`oe`, `ø`→`o`, `đ`/`ð`→`d`, `ł`→`l`, `þ`→`th`,
+`ı`→`i`); NFC; trim. Full-width letters become plain ones. Hangul and Chinese pass through
+unchanged; Cyrillic loses its own diacritics (`й`→`и`), which is what a prefix search wants.
+In the live data about one character in five (50,250 of 230,085) has a `searchName` that
+differs from the lowercased name — `Títø`→`tito`, `Tragül`→`tragul`.
+
+**How to query it**, from any reader:
+
+```js
+import { escapeRegex, searchNameOf } from '@denipetrov/spirit-link/search';
+
+const prefix = searchNameOf(userInput);                 // the same fold, or results are wrong
+db.characters.find({ searchName: { $regex: '^' + escapeRegex(prefix) } }).limit(100);
+```
+
+Anchored and case-sensitive (no `i` flag — the fold already lowercased), which MongoDB
+answers as an index range: indexes `character_search`, `mplus_character_search`,
+`guild_search`, all `{ searchName: 1 }`. Measured on the full live data: 0–1 ms, keys
+examined = matches + 1. A regex that is not anchored, or has the `i` flag, scans the index.
+
+Rules for writers:
+
+- **Written beside the name, every time.** The sweep's upsert, the Mythic+ fold, the guild
+  mapper and both sync endpoints set it in the same `$set` as the name, so a rename moves
+  it. The field is required on all three document types, so a new writer that forgets it
+  does not compile. Invariant **I31** checks every stored value is the fold of its name.
+- **One fold, shared.** Writer and reader import the same function from spirit-link, so they
+  cannot drift. Changing the fold means a spirit-link release that both applications take
+  together — and re-folding every stored `searchName`, since old values would no longer
+  match folded queries.
+- **No backfill runs at startup.** A database filled before the field existed needs a one-off
+  `$set` of `searchNameOf(name)` per document; production starts empty and never needs it.
+
 ---
 
 ## 6. Blizzard API surface
@@ -2548,6 +2592,10 @@ appropriate key list (`PROFILE_SUMMARY_KEYS` or `PROFILE_SPEC_KEYS` — they are
 `satisfies keyof CharacterProfile`, so a typo fails to compile), the repository's `$set`,
 and the sync DTO. Existing characters need `profileFetchedAt`/`specsFetchedAt` cleared to
 pick the field up before the TTL expires.
+
+**Adding a searchable name.** Add `searchName: string` to the document type, set it with
+`searchNameOf` beside every write of the name, declare a `{ searchName: 1 }` index, and add
+the collection to I31 (`expectSearchNamesFolded`).
 
 **Adding a collection.** Declare its name in `src/database/collections.ts` and add it to
 `ALL_COLLECTIONS`; put the document interface in the module's `entities/`; declare its indexes

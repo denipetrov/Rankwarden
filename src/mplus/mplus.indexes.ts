@@ -24,6 +24,9 @@ export const MPLUS_CHARACTERS_INDEXES: IndexDescription[] = [
   { key: { season: 1, region: 1, mythicScore: -1 }, name: 'mplus_score_board' },
   // Cross-region lookup by name, mirroring `character_lookup` on the PvP side.
   { key: { nameKey: 1, realmSlug: 1 }, name: 'mplus_character_lookup' },
+  // Name search: an anchored prefix on the folded name, answered as an index
+  // range — find({ searchName: { $regex: '^biba' } }).limit(100).
+  { key: { searchName: 1 }, name: 'mplus_character_search' },
 ];
 
 /** Indexes on `mplus_affixes`. */

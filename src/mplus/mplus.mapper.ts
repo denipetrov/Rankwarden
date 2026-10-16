@@ -1,3 +1,5 @@
+import { searchNameOf } from '@denipetrov/spirit-link/search';
+
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type {
   MythicPlusRanking,
@@ -245,6 +247,7 @@ export class MplusCharacterAccumulator {
             realmSlug: character.realm.slug,
             nameKey: mplusNameKey(character.name),
             characterName: character.name,
+            searchName: searchNameOf(character.name),
             characterType: 'M+',
             rioCharacterId: character.id || null,
             realmId: character.realm.wowRealmId ?? null,

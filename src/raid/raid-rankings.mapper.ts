@@ -1,3 +1,5 @@
+import { searchNameOf } from '@denipetrov/spirit-link/search';
+
 import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
 import type { GuildDocument } from './entities/guild.entity.js';
 import type {
@@ -21,6 +23,7 @@ export function toGuildDocument(entry: RaidRanking, updatedAt: Date): GuildDocum
   return {
     id: guild.id,
     name: guild.name,
+    searchName: searchNameOf(guild.name),
     faction: guild.faction ?? null,
     logo: guild.logo ?? null,
     region: guild.region?.slug ?? null,

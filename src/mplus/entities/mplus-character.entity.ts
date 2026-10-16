@@ -86,6 +86,13 @@ export interface MplusCharacterDocument {
   /** Lowercased character name, kept separate so a name lookup needs no parsing. */
   nameKey: string;
   characterName: string;
+  /**
+   * `characterName` folded by `searchNameOf`: lowercased, accents removed, so a
+   * search for `biba` finds `Bìbà`. Written wherever the name is, never on
+   * its own; readers fold their query the same way and match it as an anchored
+   * prefix.
+   */
+  searchName: string;
   /** Always `M+` here, so a reader of either collection can tell them apart. */
   characterType: CharacterType;
   /** Raider.io's own id. Stored for linking back to raider.io, never as a key. */

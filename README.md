@@ -122,6 +122,11 @@ A few things to know before reading it:
   Match the two on region, realm and lowercased name.
 - **A Mythic+ score never goes down.** It is the sum of each character's best run per
   dungeon among the runs collected.
+- **Search by name with `searchName`.** Characters, Mythic+ characters and guilds store
+  their name folded to lowercase without accents, indexed, so `biba` finds `Bìbà`. Fold the
+  search text the same way (`searchNameOf` from `@denipetrov/spirit-link/search`) and match it
+  as a prefix:
+  `{ searchName: { $regex: '^biba' } }`.
 
 The field-by-field description of every collection is in [`SKILLS.md`](SKILLS.md) §5.
 
@@ -149,7 +154,7 @@ documents is running. Request shapes and rules are in [`SKILLS.md`](SKILLS.md) �
 
 Logging and dependency health come from the shared package
 [`@denipetrov/spirit-link`](https://github.com/denipetrov/spirit-link), used by every service
-in this project family.
+in this project family. It also provides the name folding used for search.
 
 - **Logs** go to standard output in NestJS's format. Every line written during a job run is
   tagged with the run, for example `[sweep a1b2c3]`, so one run can be followed through a day

@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import {
   isIngestableBracket,
@@ -85,6 +86,7 @@ export class CharacterSyncService {
         region: input.region,
         characterId: input.characterId,
         characterName: input.characterName,
+        searchName: searchNameOf(input.characterName),
         realmId: input.realmId,
         realmSlug: input.realmSlug,
         faction: input.faction,

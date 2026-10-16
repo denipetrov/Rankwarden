@@ -7,6 +7,7 @@ import { GuildRepository } from './guild.repository.js';
 const guild = (id: number): GuildDocument => ({
   id,
   name: `Guild ${id}`,
+  searchName: `guild ${id}`,
   faction: 'horde',
   logo: null,
   region: 'eu',
@@ -50,7 +51,13 @@ describe('GuildRepository.upsertGuilds', () => {
       [{ updateOne: { update: { $set: object; $setOnInsert: object } } }[]],
     ];
     expect(operations[0].updateOne.update).toEqual({
-      $set: { id: 1, name: 'Guild 1', logo: 'https://cdn/logo.png', updatedAt: sparse.updatedAt },
+      $set: {
+        id: 1,
+        name: 'Guild 1',
+        searchName: 'guild 1',
+        logo: 'https://cdn/logo.png',
+        updatedAt: sparse.updatedAt,
+      },
       $setOnInsert: { faction: null, region: null, realm: null },
     });
   });

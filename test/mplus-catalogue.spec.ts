@@ -120,6 +120,7 @@ describe('Mythic+ catalogue walk and indexes', () => {
       mplus_character_identity: unique({ season: 1, key: 1 }),
       mplus_score_board: plain({ season: 1, region: 1, mythicScore: -1 }),
       mplus_character_lookup: plain({ nameKey: 1, realmSlug: 1 }),
+      mplus_character_search: plain({ searchName: 1 }),
     });
     expect(await indexes(MPLUS_AFFIXES_COLLECTION)).toEqual({
       affix_identity: unique({ id: 1 }),
