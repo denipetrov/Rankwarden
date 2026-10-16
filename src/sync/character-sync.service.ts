@@ -13,6 +13,7 @@ import {
   type Bracket,
   type RatingFamily,
 } from '../blizzard/blizzard.constants.js';
+import { searchNameOf } from '../common/utils/search-name.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
 import { RatingRepository } from '../leaderboard/rating.repository.js';
@@ -85,6 +86,7 @@ export class CharacterSyncService {
         region: input.region,
         characterId: input.characterId,
         characterName: input.characterName,
+        searchName: searchNameOf(input.characterName),
         realmId: input.realmId,
         realmSlug: input.realmSlug,
         faction: input.faction,

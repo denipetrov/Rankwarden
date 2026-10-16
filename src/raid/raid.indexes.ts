@@ -15,4 +15,7 @@ export const GUILDS_INDEXES: IndexDescription[] = [
   // The identity, and what a raid's board points at.
   { key: { id: 1 }, name: 'guild_identity', unique: true },
   { key: { region: 1, 'realm.slug': 1, name: 1 }, name: 'guild_region_realm_name' },
+  // Name search: an anchored prefix on the folded name, answered as an index
+  // range — find({ searchName: { $regex: '^biba' } }).limit(100).
+  { key: { searchName: 1 }, name: 'guild_search' },
 ];

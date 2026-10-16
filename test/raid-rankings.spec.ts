@@ -282,6 +282,7 @@ describe('Raid rankings', () => {
     expect(await guild(1047044)).toEqual({
       id: 1047044,
       name: 'Echo',
+      searchName: 'echo',
       faction: 'horde',
       logo: 'https://cdn.example/echo.png',
       region: 'eu',
@@ -303,6 +304,7 @@ describe('Raid rankings', () => {
     expect(indexes).toEqual({
       guild_identity: { key: { id: 1 }, unique: true },
       guild_region_realm_name: { key: { region: 1, 'realm.slug': 1, name: 1 }, unique: false },
+      guild_search: { key: { searchName: 1 }, unique: false },
     });
     await expect(
       db.collection(GUILDS_COLLECTION).insertOne({ id: 1047044, name: 'Echo again' }),

@@ -122,6 +122,10 @@ A few things to know before reading it:
   Match the two on region, realm and lowercased name.
 - **A Mythic+ score never goes down.** It is the sum of each character's best run per
   dungeon among the runs collected.
+- **Search by name with `searchName`.** Characters, Mythic+ characters and guilds store
+  their name folded to lowercase without accents, indexed, so `biba` finds `Bìbà`. Fold the
+  search text the same way (`searchNameOf`) and match it as a prefix:
+  `{ searchName: { $regex: '^biba' } }`.
 
 The field-by-field description of every collection is in [`SKILLS.md`](SKILLS.md) §5.
 

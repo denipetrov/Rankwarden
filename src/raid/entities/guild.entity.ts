@@ -11,6 +11,13 @@
 export interface GuildDocument {
   id: number;
   name: string;
+  /**
+   * `name` folded by `searchNameOf`: lowercased, accents removed, so a
+   * search for `biba` finds `Bìbà`. Written wherever the name is, never on
+   * its own; readers fold their query the same way and match it as an anchored
+   * prefix.
+   */
+  searchName: string;
   /** `alliance` or `horde`, as served. */
   faction: string | null;
   /** Always a url upstream: a guild with no logo of its own carries a default. */

@@ -53,7 +53,7 @@ describe('S1 — cold start and first fill', () => {
   });
 
   describe('S1.1 — indexes exist on an empty database', () => {
-    it('creates exactly the six indexes on characters', async () => {
+    it('creates exactly the seven indexes on characters', async () => {
       await expectIndexInventory(db);
     });
 

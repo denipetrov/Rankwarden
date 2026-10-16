@@ -17,6 +17,7 @@ import {
 import { MplusRepository } from '../mplus/mplus.repository.js';
 import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
 import type { MplusCharacterSyncInput } from './dto/mplus-character-sync.dto.js';
+import { searchNameOf } from '../common/utils/search-name.js';
 
 export interface MplusCharacterSyncResult {
   key: string;
@@ -89,6 +90,7 @@ export class MplusCharacterSyncService {
     const fields: Partial<MplusCharacterDocument> = {
       characterName,
       nameKey: mplusNameKey(characterName),
+      searchName: searchNameOf(characterName),
       updatedAt,
     };
 

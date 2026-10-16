@@ -127,6 +127,7 @@ describe('toGuildDocument', () => {
     expect(toGuildDocument(parse(ECHO)[0], at)).toEqual({
       id: 1047044,
       name: 'Echo',
+      searchName: 'echo',
       faction: 'horde',
       logo: 'https://u-wowretail.raiderio.net/12e5/image.png',
       region: 'eu',
@@ -139,6 +140,7 @@ describe('toGuildDocument', () => {
     expect(toGuildDocument(parse({ rank: 3, guild: { id: 9, name: 'Bare' } })[0], at)).toEqual({
       id: 9,
       name: 'Bare',
+      searchName: 'bare',
       faction: null,
       logo: null,
       region: null,

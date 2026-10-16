@@ -6,6 +6,7 @@ import type {
   RaidEncounterPull,
   RaidRankedGuild,
 } from './entities/raid.entity.js';
+import { searchNameOf } from '../common/utils/search-name.js';
 
 function toDate(value: string | null | undefined): Date | null {
   if (!value) return null;
@@ -21,6 +22,7 @@ export function toGuildDocument(entry: RaidRanking, updatedAt: Date): GuildDocum
   return {
     id: guild.id,
     name: guild.name,
+    searchName: searchNameOf(guild.name),
     faction: guild.faction ?? null,
     logo: guild.logo ?? null,
     region: guild.region?.slug ?? null,

@@ -15,6 +15,7 @@ import type {
   MplusRosterMember,
   MplusRunDocument,
 } from './entities/mplus-run.entity.js';
+import { searchNameOf } from '../common/utils/search-name.js';
 
 /**
  * Whether a roster entry belongs to a player who opted out of public profiles.
@@ -245,6 +246,7 @@ export class MplusCharacterAccumulator {
             realmSlug: character.realm.slug,
             nameKey: mplusNameKey(character.name),
             characterName: character.name,
+            searchName: searchNameOf(character.name),
             characterType: 'M+',
             rioCharacterId: character.id || null,
             realmId: character.realm.wowRealmId ?? null,

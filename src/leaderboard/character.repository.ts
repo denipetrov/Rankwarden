@@ -4,6 +4,7 @@ import { MongoBulkWriteError, type AnyBulkWriteOperation, type Filter } from 'mo
 import { type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import { type CharacterDocument, type CharacterProfile } from './entities/character.entity.js';
+import { searchNameOf } from '../common/utils/search-name.js';
 
 /** Profile fields owned by the character summary endpoint. */
 export const PROFILE_SUMMARY_KEYS = [
@@ -98,6 +99,7 @@ export class CharacterRepository {
           update: {
             $set: {
               characterName: update.characterName,
+              searchName: searchNameOf(update.characterName),
               realmId: update.realmId,
               realmSlug: update.realmSlug,
               faction: update.faction,

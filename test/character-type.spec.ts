@@ -70,6 +70,7 @@ describe('characterType', () => {
           characterId: 7_000_000 + index,
           characterType: 'M+',
           characterName: `Keystone${index}`,
+          searchName: `keystone${index}`,
           realmId: 9_999,
           realmSlug: MYTHIC_PLUS_REALM,
           faction: 'ALLIANCE',

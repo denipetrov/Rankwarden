@@ -32,6 +32,13 @@ export interface CharacterDocument {
   /** Set once, when the document is created; nothing reclassifies it later. */
   characterType: CharacterType;
   characterName: string;
+  /**
+   * `characterName` folded by `searchNameOf`: lowercased, accents removed, so a
+   * search for `biba` finds `Bìbà`. Written wherever the name is, never on
+   * its own; readers fold their query the same way and match it as an anchored
+   * prefix.
+   */
+  searchName: string;
   realmId: number;
   realmSlug: string;
   faction: string | null;
