@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import {
   isIngestableBracket,
@@ -13,7 +14,6 @@ import {
   type Bracket,
   type RatingFamily,
 } from '../blizzard/blizzard.constants.js';
-import { searchNameOf } from '../common/utils/search-name.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
 import { RatingRepository } from '../leaderboard/rating.repository.js';

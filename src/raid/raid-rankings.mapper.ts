@@ -1,3 +1,5 @@
+import { searchNameOf } from '@denipetrov/spirit-link/search';
+
 import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
 import type { GuildDocument } from './entities/guild.entity.js';
 import type {
@@ -6,7 +8,6 @@ import type {
   RaidEncounterPull,
   RaidRankedGuild,
 } from './entities/raid.entity.js';
-import { searchNameOf } from '../common/utils/search-name.js';
 
 function toDate(value: string | null | undefined): Date | null {
   if (!value) return null;

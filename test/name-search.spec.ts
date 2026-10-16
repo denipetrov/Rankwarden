@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Db } from 'mongodb';
+import { escapeRegex, searchNameOf } from '@denipetrov/spirit-link/search';
 
-import { searchNameOf } from '../src/common/utils/search-name.js';
 import { CHARACTERS_COLLECTION } from '../src/database/collections.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { LeaderboardService } from '../src/leaderboard/leaderboard.service.js';
@@ -21,7 +21,6 @@ describe('name search', () => {
   let harness: TestApp;
   let db: Db;
 
-  const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const search = (query: string) =>
     db
       .collection(CHARACTERS_COLLECTION)

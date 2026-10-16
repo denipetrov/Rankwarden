@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import {
@@ -17,7 +18,6 @@ import {
 import { MplusRepository } from '../mplus/mplus.repository.js';
 import { MplusCatalogueRepository } from '../mplus-season/mplus-catalogue.repository.js';
 import type { MplusCharacterSyncInput } from './dto/mplus-character-sync.dto.js';
-import { searchNameOf } from '../common/utils/search-name.js';
 
 export interface MplusCharacterSyncResult {
   key: string;

@@ -1,3 +1,5 @@
+import { searchNameOf } from '@denipetrov/spirit-link/search';
+
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import type {
   MythicPlusRanking,
@@ -15,7 +17,6 @@ import type {
   MplusRosterMember,
   MplusRunDocument,
 } from './entities/mplus-run.entity.js';
-import { searchNameOf } from '../common/utils/search-name.js';
 
 /**
  * Whether a roster entry belongs to a player who opted out of public profiles.

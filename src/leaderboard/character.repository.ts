@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MongoBulkWriteError, type AnyBulkWriteOperation, type Filter } from 'mongodb';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import { type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import { type CharacterDocument, type CharacterProfile } from './entities/character.entity.js';
-import { searchNameOf } from '../common/utils/search-name.js';
 
 /** Profile fields owned by the character summary endpoint. */
 export const PROFILE_SUMMARY_KEYS = [

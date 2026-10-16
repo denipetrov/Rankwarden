@@ -1,5 +1,6 @@
 import { expect } from 'vitest';
 import { BSON, type Db } from 'mongodb';
+import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import {
   EXCLUDED_BRACKETS,
@@ -9,7 +10,6 @@ import {
 } from '../../src/blizzard/blizzard.constants.js';
 import type { MplusWorld } from './mplus-world.js';
 import type { World } from './world.js';
-import { searchNameOf } from '../../src/common/utils/search-name.js';
 import {
   mplusCharacterKey,
   mplusNameKey,

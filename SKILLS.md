@@ -39,7 +39,7 @@ reference, and it wins where the two differ in detail.
   API and must not grow one.
 - **Authentication and public exposure.** The service is cluster-internal; nothing here
   faces the internet.
-- **Shared logging and health logic.** That lives in `@denipetrov/spirit-link` (§1).
+- **Shared logging, health and name-search logic.** That lives in `@denipetrov/spirit-link` (§1).
 - **Blizzard OAuth.** That lives in `@denipetrov/blizz-auth`.
 
 ---
@@ -124,11 +124,12 @@ this file updated in the same change.
 | Database    | MongoDB 8 via the official `mongodb` driver 7 (no ODM)                                 |
 | Tests       | Vitest 4, transformed through SWC so `emitDecoratorMetadata` works                     |
 | Auth        | `@denipetrov/blizz-auth` (private, GitHub Packages); Raider.io uses a query-string key |
-| Shared      | `@denipetrov/spirit-link` (private, GitHub Packages): run-scoped logging and dependency health |
+| Shared      | `@denipetrov/spirit-link` 0.2 (private, GitHub Packages): logging, dependency health, name search |
 
-**Logging and health come from `@denipetrov/spirit-link`**, shared with the other services:
-`withRunId`, `RunLogger`, `currentRunKind` and `logLevelsFor` from `/logging`;
-`DependencyHealth`, `redactSecrets`, `hostOf`, `probeObservation` and `worstOf` from `/health`.
+**Logging, health and name search come from `@denipetrov/spirit-link`**, shared with the other
+services: `withRunId`, `RunLogger`, `currentRunKind` and `logLevelsFor` from `/logging`;
+`DependencyHealth`, `redactSecrets`, `hostOf`, `probeObservation` and `worstOf` from `/health`;
+`searchNameOf` and `escapeRegex` from `/search`.
 What stays here is Rankwarden's own vocabulary: the job names (`RunKind`,
 `src/common/logging/run-kind.ts`), the upstream names and the secrets the tracker redacts
 (`src/common/health/upstream-provider.ts`). `CommonModule` registers the one shared
@@ -1688,7 +1689,7 @@ Indexes on `guilds`: `guild_identity` (unique `id`), `guild_region_realm_name`.
 
 `characters`, `mplus_characters`, `mplus_archive_characters` and `guilds` carry
 `searchName`: the name (`characterName`, or a guild's `name`) folded by
-`searchNameOf` (`src/common/utils/search-name.ts`). It exists for the backend's character and
+`searchNameOf` from `@denipetrov/spirit-link/search`. It exists for the backend's character and
 guild search, which matches by prefix and must find `Bìbà` from `biba`.
 
 The fold: lowercase; NFKD; drop every combining mark; spell out the letters NFKD cannot split
@@ -1701,6 +1702,8 @@ differs from the lowercased name — `Títø`→`tito`, `Tragül`→`tragul`.
 **How to query it**, from any reader:
 
 ```js
+import { escapeRegex, searchNameOf } from '@denipetrov/spirit-link/search';
+
 const prefix = searchNameOf(userInput);                 // the same fold, or results are wrong
 db.characters.find({ searchName: { $regex: '^' + escapeRegex(prefix) } }).limit(100);
 ```
@@ -1716,9 +1719,10 @@ Rules for writers:
   mapper and both sync endpoints set it in the same `$set` as the name, so a rename moves
   it. The field is required on all three document types, so a new writer that forgets it
   does not compile. Invariant **I31** checks every stored value is the fold of its name.
-- **One fold, shared.** The backend must fold queries with exactly this function. It is a
-  candidate for `@denipetrov/spirit-link`, so both sides import one copy; until then a
-  change here is a change the backend must make in the same release.
+- **One fold, shared.** Writer and reader import the same function from spirit-link, so they
+  cannot drift. Changing the fold means a spirit-link release that both applications take
+  together — and re-folding every stored `searchName`, since old values would no longer
+  match folded queries.
 - **No backfill runs at startup.** A database filled before the field existed needs a one-off
   `$set` of `searchNameOf(name)` per document; production starts empty and never needs it.
 
