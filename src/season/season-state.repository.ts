@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 
+import type { Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
+import type { SeasonReward } from '../rewards/season-reward.entity.js';
 import {
   type SeasonStateDocument,
   type SeasonTransitionDocument,
@@ -24,14 +26,43 @@ export class SeasonStateRepository {
     return this.state.find({}).toArray();
   }
 
-  async save(state: SeasonStateDocument): Promise<void> {
+  /**
+   * Records what was observed of a region's season. The rewards are not part of
+   * it and are left as they are — unless the season itself changed, when the
+   * old season's rewards are removed first: they describe a ladder that no
+   * longer exists, and showing them under the new season would be wrong.
+   */
+  async save(state: Omit<SeasonStateDocument, 'rewards' | 'rewardsFetchedAt'>): Promise<void> {
     const { region, ...rest } = state;
 
+    await this.state.updateOne(
+      { region, seasonId: { $ne: rest.seasonId } },
+      { $unset: { rewards: '', rewardsFetchedAt: '' } },
+    );
     await this.state.updateOne(
       { region },
       { $set: rest, $setOnInsert: { region } },
       { upsert: true },
     );
+  }
+
+  /**
+   * Stores the current season's rewards. Only onto the season they were read
+   * for: if the region has rolled over since, nothing is written and false is
+   * returned.
+   */
+  async recordRewards(
+    region: Region,
+    seasonId: number,
+    rewards: readonly SeasonReward[],
+    fetchedAt: Date,
+  ): Promise<boolean> {
+    const result = await this.state.updateOne(
+      { region, seasonId },
+      { $set: { rewards: [...rewards], rewardsFetchedAt: fetchedAt } },
+    );
+
+    return result.matchedCount > 0;
   }
 
   /** Season/region pairs already retired, so a purge never runs twice. */

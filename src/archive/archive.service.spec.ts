@@ -6,6 +6,7 @@ import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget } from '../common/quota/quota-budget.service.js';
+import { SeasonRewardsService } from '../rewards/season-rewards.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { ArchiveRepository } from './archive.repository.js';
 import { ArchiveService } from './archive.service.js';
@@ -116,6 +117,7 @@ describe('ArchiveService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArchiveService,
+        SeasonRewardsService,
         { provide: IngestionCoordinator, useValue: coordinator },
         { provide: QuotaBudget, useValue: budget },
         {
@@ -189,6 +191,7 @@ describe('ArchiveService', () => {
     const bounded = await Test.createTestingModule({
       providers: [
         ArchiveService,
+        SeasonRewardsService,
         { provide: IngestionCoordinator, useValue: coordinator },
         { provide: QuotaBudget, useValue: budget },
         {

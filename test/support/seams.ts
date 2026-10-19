@@ -10,6 +10,7 @@ import { ProfileScheduler } from '../../src/profile/profile.scheduler.js';
 import { RaidCatalogueScheduler } from '../../src/raid/raid-catalogue.scheduler.js';
 import { RaidRankingsScheduler } from '../../src/raid/raid-rankings.scheduler.js';
 import { SpecRepresentationScheduler } from '../../src/representation/spec-representation.scheduler.js';
+import { SeasonRewardsScheduler } from '../../src/season/season-rewards.scheduler.js';
 import { SeasonScheduler } from '../../src/season/season.scheduler.js';
 import { SeasonTransitionScheduler } from '../../src/season/season-transition.scheduler.js';
 
@@ -37,6 +38,7 @@ export function schedulerSeams(app: INestApplication): Settleable[] {
     RaidCatalogueScheduler,
     RaidRankingsScheduler,
     SeasonScheduler,
+    SeasonRewardsScheduler,
     SeasonTransitionScheduler,
   ].map((type) => app.get<Settleable>(type));
 }
