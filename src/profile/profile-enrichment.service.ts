@@ -15,6 +15,7 @@ import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import type { Env } from '../config/env.schema.js';
+import { RatingRepository } from '../leaderboard/rating.repository.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
 import type {
   CharacterDocument,
@@ -78,6 +79,7 @@ export class ProfileEnrichmentService {
     config: ConfigService<Env, true>,
     private readonly profileApi: ProfileApi,
     private readonly characters: CharacterRepository,
+    private readonly ratings: RatingRepository,
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: QuotaBudget,
   ) {
@@ -366,6 +368,11 @@ export class ProfileEnrichmentService {
           fetchedAt,
         );
       }
+
+      // The single-rating ladders name no class or spec; their rows take them
+      // from the profile just written, so a board filtered by class or spec
+      // shows this character from now on, and follows a respec.
+      await this.ratings.labelFromProfile(seasonId, region, characterId);
 
       return 'ok';
     } catch (error) {

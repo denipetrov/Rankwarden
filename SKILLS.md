@@ -1075,15 +1075,40 @@ prefix costs nothing.
 
 ```js
 {
-  (seasonId, region, bracket, characterId, rating, fetchedAt);
+  (seasonId, region, bracket, characterId, class, spec, rating, fetchedAt);
 }
 ```
 
 Core brackets give a character one row; shuffle and blitz give one row **per spec played**.
 That is the point: an "all classes, all specs" board must list a character once per spec.
 
+**`class` and `spec`** are slugs as Blizzard spells them in ladder names (`deathknight`,
+`beastmastery`), so a board can be narrowed to a class or to a class and spec — never filter by
+spec alone, since Holy, Frost, Protection and Restoration each exist on two classes.
+
+- **Shuffle and blitz:** read from the bracket name (`classSpecOfBracket`), always set.
+- **2v2, 3v3, rbg:** read from the character's enriched profile — `toSlug` of `profile.class`
+  and `profile.spec` — so they are the character's **active** spec, not necessarily the one
+  played on that ladder (the same limit `spec_representation` has, §9.6). `null` until the
+  character is enriched. Written two ways: `upsertBracket` looks the profiles up for each chunk
+  it writes (one query), and `labelFromProfile` relabels a character's three core rows after
+  every enrichment, so a first enrichment or a respec reaches the boards without waiting for a
+  sweep. A sweep never blanks a known label.
+- Invariant **I32** checks every row: the bracket's labels on per-spec rows, the profile's (or
+  null) on core rows.
+
 Indexes: `board_order` (`seasonId+region+rating desc`), `entry_identity` (unique
-`seasonId+region+bracket+characterId`), `character`.
+`seasonId+region+bracket+characterId`), `character`, `class_board`
+(`seasonId+region+class+rating desc`) and `spec_board` (`seasonId+region+class+spec+rating desc`).
+The class board needs its own index: one led by class then spec cannot return every spec of a
+class in rating order without an in-memory sort. On shuffle and blitz `spec_board` is also the
+only rating-ordered index for a single ladder.
+
+```js
+db.shuffle_ratings.find({ seasonId: 42, region: 'us', class: 'mage' }).sort({ rating: -1 }).limit(50);
+db['3v3_ratings'].find({ seasonId: 42, region: 'us', class: 'priest', spec: 'holy' }).sort({ rating: -1 });
+// both: keys examined = rows returned, no in-memory sort
+```
 
 ```js
 db.shuffle_ratings.find({ seasonId: 42, region: 'us' }).sort({ rating: -1 }).limit(50);

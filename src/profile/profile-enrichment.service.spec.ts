@@ -7,6 +7,7 @@ import { ZodError } from 'zod';
 import { ProfileApi } from '../blizzard/profile.api.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget } from '../common/quota/quota-budget.service.js';
+import { RatingRepository } from '../leaderboard/rating.repository.js';
 import { CharacterRepository } from '../leaderboard/character.repository.js';
 import type { CharacterDocument } from '../leaderboard/entities/character.entity.js';
 import { ProfileEnrichmentService } from './profile-enrichment.service.js';
@@ -65,6 +66,7 @@ describe('ProfileEnrichmentService', () => {
   const countEnrichmentDemand = vi.fn();
   const population = vi.fn();
   const oldestSpecsRefresh = vi.fn();
+  const labelFromProfile = vi.fn();
   let budget: QuotaBudget;
 
   /**
@@ -93,6 +95,7 @@ describe('ProfileEnrichmentService', () => {
             oldestSpecsRefresh,
           },
         },
+        { provide: RatingRepository, useValue: { labelFromProfile } },
         { provide: ConfigService, useValue: { get: (key: string) => settings[key] } },
       ],
     }).compile();
@@ -151,6 +154,19 @@ describe('ProfileEnrichmentService', () => {
     expect(getProfile).toHaveBeenCalledOnce();
     expect(getSpecializations).toHaveBeenCalledOnce();
     expect(result?.requests).toBe(2);
+  });
+
+  it('labels the single-rating ladder rows of the character from the profile just written', async () => {
+    findProfilesToEnrich.mockResolvedValue([character()]);
+
+    await service.run();
+
+    const { seasonId, region, characterId } = character();
+    expect(labelFromProfile).toHaveBeenCalledWith(seasonId, region, characterId);
+    // After both halves are written, so it reads the profile it is meant to.
+    expect(labelFromProfile.mock.invocationCallOrder[0]).toBeGreaterThan(
+      saveProfileSpecs.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('skips the summary endpoint while it is inside its longer TTL', async () => {

@@ -57,14 +57,21 @@ describe('S1 — cold start and first fill', () => {
       await expectIndexInventory(db);
     });
 
-    it('creates three indexes on every ratings collection', async () => {
+    it('creates five indexes on every ratings collection', async () => {
       for (const family of RATING_FAMILIES) {
         const names = (await db.collection(RATING_COLLECTIONS[family]).indexes())
           .map((index) => index.name)
           .sort();
 
         expect(names, RATING_COLLECTIONS[family]).toEqual(
-          ['_id_', 'board_order', 'character', 'entry_identity'].sort(),
+          [
+            '_id_',
+            'board_order',
+            'character',
+            'class_board',
+            'entry_identity',
+            'spec_board',
+          ].sort(),
         );
       }
     });

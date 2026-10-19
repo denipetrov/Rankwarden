@@ -45,6 +45,23 @@ export function specSplitFamilyOf(bracket: Bracket): SpecSplitFamily | null {
 }
 
 /**
+ * The class and spec a per-spec ladder is for, read from its name:
+ * `shuffle-deathknight-unholy` is `deathknight` / `unholy`. Null for the
+ * single-rating ladders, which name neither. Class names carry no hyphen in
+ * Blizzard's spelling, so the first one after the family splits the two.
+ */
+export function classSpecOfBracket(bracket: Bracket): { class: string; spec: string } | null {
+  const family = specSplitFamilyOf(bracket);
+  if (!family) return null;
+
+  const rest = bracket.slice(family.length + 1);
+  const split = rest.indexOf('-');
+  if (split <= 0 || split === rest.length - 1) return null;
+
+  return { class: rest.slice(0, split), spec: rest.slice(split + 1) };
+}
+
+/**
  * Every ladder family that gets its own flat ratings collection. The core
  * brackets are their own family (one rating per character); shuffle and blitz
  * gather all their per-spec brackets under one.
