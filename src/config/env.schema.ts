@@ -414,6 +414,14 @@ export const envSchema = z.object({
     .transform((value) => value === 'true'),
   /** How often to re-check which season is active, independently of sweeps. */
   SEASON_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
+  /**
+   * Re-reads the current season's title cutoffs onto `season_state` after every
+   * sweep: one request per region. Off, the current season shows no cutoffs.
+   */
+  SEASON_REWARDS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
 
   // Season transition: retiring a finished season from the live collections.
   SEASON_TRANSITION_ENABLED: z

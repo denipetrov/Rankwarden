@@ -53,6 +53,7 @@ const BASE_ENV: Record<string, string> = {
   REPRESENTATION_ENABLED: 'false',
   ARCHIVE_ENABLED: 'false',
   SEASON_REFRESH_ENABLED: 'false',
+  SEASON_REWARDS_ENABLED: 'false',
   SEASON_TRANSITION_ENABLED: 'false',
   MPLUS_ENABLED: 'false',
   MPLUS_INTERVAL_MS: '3600000',

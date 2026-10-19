@@ -1,6 +1,6 @@
 import type { Bracket, SpecSplitFamily } from '../blizzard/blizzard.constants.js';
 import type { PvpReward } from '../blizzard/schemas/pvp-reward.schema.js';
-import type { ArchiveSeasonReward } from './entities/archive.entity.js';
+import type { SeasonReward } from './season-reward.entity.js';
 
 /** Reward bracket types that map onto one ladder each. 2v2 awards no title. */
 const CORE_REWARD_BRACKETS = new Map<string, Bracket>([
@@ -56,8 +56,8 @@ export function mapSeasonRewards(
   rewards: readonly PvpReward[],
   specLadders: ReadonlyMap<number, string>,
   published: ReadonlySet<Bracket>,
-): { rewards: ArchiveSeasonReward[]; unmatched: string[] } {
-  const mapped: ArchiveSeasonReward[] = [];
+): { rewards: SeasonReward[]; unmatched: string[] } {
+  const mapped: SeasonReward[] = [];
   const unmatched: string[] = [];
 
   for (const reward of rewards) {

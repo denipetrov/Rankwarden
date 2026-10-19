@@ -255,6 +255,8 @@ src/
   profile/                      background profile enrichment
   representation/               daily spec-representation snapshots
   archive/                      finished seasons, fetched once
+  rewards/                      season titles + cutoffs: the mapper and SeasonRewardsService,
+                                shared by the archive and the current season
   sync/                         POST /characters/sync, POST /mplus/characters/sync
   health/                       GET /health, /health/ready, /health/seasons
   admin/                        POST /admin/* job triggers (404 in production)
@@ -290,6 +292,7 @@ ranks them:
 | 5        | **Mythic+ archive**     | `MPLUS_ARCHIVE_CHECK_INTERVAL_MS` (1h), after both warm-ups      | **every** job above          | Raider.io |
 | 6        | **Raid rankings**       | `RAID_RANKINGS_INTERVAL_MS` (1h), after both warm-ups            | **every** job above          | Raider.io |
 | —        | **Season refresh**      | `SEASON_REFRESH_INTERVAL_MS` (1d)                                | nothing (2 requests)         | Blizzard  |
+| —        | **Current-season rewards** | after every sweep                                            | nothing (1 request a region) | Blizzard  |
 | —        | **Season transition**   | `SEASON_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | nothing (no API calls)       | none      |
 | —        | **M+ season check**     | `MPLUS_SEASON_CHECK_INTERVAL_MS` (1h) + at boot                  | nothing (catalogue only)     | Raider.io |
 | —        | **M+ season transition** | `MPLUS_TRANSITION_CHECK_INTERVAL_MS` (1h) + on every rollover   | a running M+ pass (waits)    | none      |
@@ -833,6 +836,9 @@ season Blizzard will not serve (22–26 answer 403) never gets a marker, so it n
 rewards request. A season still missing brackets waits until they land. A season finished
 in a tick gets its rewards in the same tick.
 
+Fetching and placing are `SeasonRewardsService` (`src/rewards/`), shared with the
+current-season rewards (§4.7.1) so the spec lookups are made once for both.
+
 Each season costs one request, to `pvp-season/{id}/pvp-reward/index`. Rewards are placed
 against the ladders the archive itself recorded (`archive_brackets` ∪ stored rows), so no
 bracket list or season record is fetched for them. Add one `playable-specialization/{id}`
@@ -881,6 +887,32 @@ This is not a cache optimisation: without it `previous` is `undefined` on a fres
 so a rollover that happened while the service was down took the "first observation" branch
 and was never recognised as a rollover at all. The transition purge hangs off that
 comparison, so the persisted copy is what makes a rollover across a restart detectable.
+
+### 4.7.1 Current-season rewards
+
+`SeasonRewardsScheduler` keeps the running season's titles and rating cutoffs on
+`season_state` (`rewards`, `rewardsFetchedAt`), in exactly the shape `archive_seasons.rewards`
+has for a finished season. A reader compares a character's rating on a ladder with that
+ladder's `ratingCutoff` to show who would earn the title if the season ended now.
+
+- **When.** After every sweep (`SweepEvents.completed$`), when the standings the cutoffs are
+  compared with have just been refreshed. The cutoffs move with the ladder and are final only
+  once the season ends, so they are re-read every time rather than once. Switch:
+  `SEASON_REWARDS_ENABLED` (on).
+- **Cost.** One `pvp-reward/index` request per region an hour. The bracket list comes from
+  the sweep's cached read; spec lookups are shared with the archive through
+  `SeasonRewardsService`. Charged as `other` (`RunKind.SeasonRewards`), never throttled.
+- **Failure keeps the last answer.** A failed read — a 5xx, or the 404 a new season can give
+  in its first hours — leaves the last cutoffs read for the same season in place and is
+  retried after the next sweep. One region failing does not stop the others.
+- **A rollover clears them.** `SeasonStateRepository.save` unsets `rewards` whenever the
+  stored `seasonId` changes, and `recordRewards` writes only onto the season it read for,
+  so a new season never shows the old one's cutoffs, even for a moment.
+- **Never overwritten by a season refresh.** `save` takes the state without the reward
+  fields, so the daily refresh cannot blank them.
+
+Observed live (2026-10-19): 123 rewards per region (3v3 1, rbg 2, shuffle 40, blitz 80) for
+season 42; the us 3v3 Gladiator cutoff stood at 2858, with 50 characters at or above it.
 
 ### 4.8 Season transition (retiring a finished season)
 
@@ -2075,6 +2107,7 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `PROFILE_REQUESTS_PER_SECOND`         | `20`                                | Token bucket                                               |
 | `SEASON_REFRESH_ENABLED`              | `true`                              | Off switch for the daily season re-check                   |
 | `SEASON_REFRESH_INTERVAL_MS`          | `86400000`                          |                                                            |
+| `SEASON_REWARDS_ENABLED`              | `true`                              | Re-read the current season's cutoffs after every sweep (§4.7.1) |
 | `SEASON_TRANSITION_ENABLED`           | `true`                              | Retiring finished seasons                                  |
 | `SEASON_TRANSITION_CHECK_INTERVAL_MS` | `3600000`                           | A rollover also ticks immediately                          |
 | `SEASON_PURGE_REQUIRE_ARCHIVE`        | `true`                              | Only purge what the archive holds in full                  |

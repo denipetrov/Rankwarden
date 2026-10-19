@@ -4,17 +4,19 @@ import { ConfigService } from '@nestjs/config';
 import { isIngestableBracket, type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { PvpApi } from '../blizzard/pvp.api.js';
-import type { PvpReward } from '../blizzard/schemas/pvp-reward.schema.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { RateLimiter } from '../common/utils/rate-limiter.js';
 import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
+import {
+  SeasonRewardsService,
+  type FetchedSeasonRewards,
+} from '../rewards/season-rewards.service.js';
 import { SeasonService } from '../season/season.service.js';
 import { ArchiveRepository } from './archive.repository.js';
 import type { ArchiveEntryDocument } from './entities/archive.entity.js';
-import { mapSeasonRewards, specIdsIn, specLadderSuffix } from './season-rewards.js';
 
 export interface ArchiveSeasonResult {
   seasonId: number;
@@ -62,12 +64,6 @@ export class ArchiveService {
   private readonly maxSeason: number;
   private readonly maxEntriesPerBracket: number;
   private readonly limiter: RateLimiter;
-  /**
-   * Blizzard spec id to the `class-spec` tail of its ladders. A spec never
-   * changes class, so each id costs one request for the life of the process
-   * rather than one per season.
-   */
-  private readonly specLadders = new Map<number, string>();
 
   constructor(
     config: ConfigService<Env, true>,
@@ -76,6 +72,7 @@ export class ArchiveService {
     private readonly repository: ArchiveRepository,
     private readonly coordinator: IngestionCoordinator,
     private readonly budget: QuotaBudget,
+    private readonly seasonRewards: SeasonRewardsService,
   ) {
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
     this.concurrency = config.get('ARCHIVE_CONCURRENCY', { infer: true });
@@ -356,10 +353,15 @@ export class ArchiveService {
     seasonId: number,
     region: Region,
   ): Promise<'fetched' | 'failed' | 'pending'> {
-    let fetched: PvpReward[];
+    // The archive's own view of the season's ladders, so this costs no request.
+    const stored = await this.repository.summariseStored(seasonId, region);
+    const ladders = await this.coveredBrackets(seasonId, region, stored.brackets);
+
+    let fetched: FetchedSeasonRewards;
     try {
-      await this.limiter.acquire();
-      fetched = await this.pvpApi.getSeasonRewards(region, seasonId);
+      fetched = await this.seasonRewards.fetch(region, seasonId, ladders, () =>
+        this.limiter.acquire(),
+      );
     } catch (error) {
       if (error instanceof BlizzardApiError && REFUSED.has(error.statusCode)) {
         const reason = describeError(error);
@@ -376,6 +378,9 @@ export class ArchiveService {
         return 'failed';
       }
 
+      // Anything else — a timeout, a 5xx, an empty body, or a spec whose class
+      // could not be looked up (`SpecLookupError`) — could be a blip. Recorded
+      // without the class, a spec's reward would be dropped for good.
       this.logger.warn(
         `Could not fetch rewards for season ${seasonId} ${region}: ${describeError(error)}; ` +
           'will retry',
@@ -383,21 +388,7 @@ export class ArchiveService {
       return 'pending';
     }
 
-    try {
-      await this.resolveSpecs(region, specIdsIn(fetched));
-    } catch (error) {
-      // Recorded without the class, a spec's reward would be dropped for good.
-      this.logger.warn(
-        `Could not resolve the specs in season ${seasonId} ${region}'s rewards: ` +
-          `${describeError(error)}; will retry`,
-      );
-      return 'pending';
-    }
-
-    // The archive's own view of the season's ladders, so this costs no request.
-    const stored = await this.repository.summariseStored(seasonId, region);
-    const ladders = await this.coveredBrackets(seasonId, region, stored.brackets);
-    const { rewards, unmatched } = mapSeasonRewards(fetched, this.specLadders, new Set(ladders));
+    const { rewards, unmatched } = fetched;
 
     if (unmatched.length > 0) {
       this.logger.warn(
@@ -409,28 +400,6 @@ export class ArchiveService {
     await this.repository.recordRewards(seasonId, region, rewards, new Date());
 
     return 'fetched';
-  }
-
-  /**
-   * Looks up the class of every spec not already known.
-   *
-   * A spec Blizzard does not recognise is skipped rather than failing the lot:
-   * its reward is reported as unmatched and the rest are kept. Any other error
-   * propagates, because a reward recorded without its ladder would be recorded
-   * for good.
-   */
-  private async resolveSpecs(region: Region, specIds: readonly number[]): Promise<void> {
-    for (const specId of specIds) {
-      if (this.specLadders.has(specId)) continue;
-
-      try {
-        await this.limiter.acquire();
-        const spec = await this.pvpApi.getSpecialization(region, specId);
-        this.specLadders.set(specId, specLadderSuffix(spec.className, spec.name));
-      } catch (error) {
-        if (!(error instanceof BlizzardApiError && error.isNotFound)) throw error;
-      }
-    }
   }
 
   private async seasonMetadata(region: Region, seasonId: number) {

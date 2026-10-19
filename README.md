@@ -15,6 +15,7 @@ database directly, and can push corrections back through two sync endpoints.
 | PvP ladders    | Blizzard  | Every rated ladder (2v2, 3v3, rated battlegrounds, Solo Shuffle and Blitz per spec) in us, eu, kr, tw | Every hour            |
 | PvP characters | Blizzard  | Race, class, spec, hero talents and talent builds, guild, title, item level                            | Specs daily, rest weekly |
 | Spec popularity | computed | Which specs and hero talents are played above 1500, 1800, 2100, 2300 and 2700 rating                 | Once a day            |
+| Title cutoffs  | Blizzard  | The rating each title currently requires, per ladder, for the season being played                    | Every hour            |
 | PvP history    | Blizzard  | Final standings of every finished season (from season 27), and the rating each title required        | Once per season       |
 | Mythic+        | Raider.io | The top ~20,000 runs per region (us, eu, kr, tw, cn), the characters in them, dungeons, affixes        | Every 6 hours         |
 | Mythic+ extras | Raider.io | Season catalogue, title cutoffs (Keystone Master and up, top 0.1% and 1%), spec usage per dungeon      | With each pass        |

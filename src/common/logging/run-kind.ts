@@ -16,6 +16,7 @@ export const RunKind = {
   RaidCatalogue: 'raid-catalogue',
   RaidRankings: 'raid-rankings',
   Snapshot: 'snapshot',
+  SeasonRewards: 'season-rewards',
   Transition: 'transition',
 } as const;
 export type RunKind = (typeof RunKind)[keyof typeof RunKind];
