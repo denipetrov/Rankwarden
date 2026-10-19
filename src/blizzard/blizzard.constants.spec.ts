@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classSpecOfBracket,
   apiHost,
   EXCLUDED_BRACKETS,
   isIngestableBracket,
@@ -47,6 +48,29 @@ describe('specSplitFamilyOf', () => {
     // bare "shuffle" must not be mistaken for a per-spec bracket either.
     expect(specSplitFamilyOf('shuffle')).toBeNull();
     expect(specSplitFamilyOf('blitzkrieg')).toBeNull();
+  });
+});
+
+describe('classSpecOfBracket', () => {
+  it('reads the class and spec a per-spec ladder is for', () => {
+    expect(classSpecOfBracket('shuffle-mage-fire')).toEqual({ class: 'mage', spec: 'fire' });
+    expect(classSpecOfBracket('blitz-deathknight-unholy')).toEqual({
+      class: 'deathknight',
+      spec: 'unholy',
+    });
+    expect(classSpecOfBracket('shuffle-hunter-beastmastery')).toEqual({
+      class: 'hunter',
+      spec: 'beastmastery',
+    });
+  });
+
+  it('names nothing for the single-rating ladders', () => {
+    for (const bracket of ['2v2', '3v3', 'rbg']) expect(classSpecOfBracket(bracket)).toBeNull();
+  });
+
+  it('refuses a malformed per-spec name rather than guessing', () => {
+    expect(classSpecOfBracket('shuffle-mage')).toBeNull();
+    expect(classSpecOfBracket('shuffle-mage-')).toBeNull();
   });
 });
 

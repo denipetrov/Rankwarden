@@ -116,7 +116,10 @@ A few things to know before reading it:
 
 - **A PvP character is one document per season and region**, with every ladder they appear
   on inside it. The `*_ratings` collections hold one row per rating and are what ladders
-  are sorted from; Solo Shuffle and Blitz list a character once per spec they play.
+  are sorted from; Solo Shuffle and Blitz list a character once per spec they play. Each row
+  carries `class` and `spec` (e.g. `mage` / `fire`), so a board can be narrowed to a class or a
+  spec; on 2v2, 3v3 and rated battlegrounds they come from the character profile and are empty
+  until it has been collected.
 - **When querying `characters.ratings.<ladder>`, always add `{ $gt: 0 }`.** Without it,
   players who are not on that ladder sort to the top.
 - **Mythic+ characters are a separate collection** with a different id from Blizzard's.

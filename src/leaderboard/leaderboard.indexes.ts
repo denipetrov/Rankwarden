@@ -50,4 +50,13 @@ export const RATING_INDEXES: IndexDescription[] = [
   },
   // "Every rating this character holds", for a character page.
   { key: { characterId: 1 }, name: 'character' },
+  // A board narrowed to one class, in rating order:
+  //   find({ seasonId, region, class: 'mage' }).sort({ rating: -1 })
+  // Its own index: one led by class then spec cannot return every spec of a
+  // class in rating order without sorting in memory.
+  { key: { seasonId: 1, region: 1, class: 1, rating: -1 }, name: 'class_board' },
+  // A board narrowed to one class and spec, in rating order:
+  //   find({ seasonId, region, class: 'mage', spec: 'fire' }).sort({ rating: -1 })
+  // On shuffle and blitz that is one ladder, which no other index orders.
+  { key: { seasonId: 1, region: 1, class: 1, spec: 1, rating: -1 }, name: 'spec_board' },
 ];

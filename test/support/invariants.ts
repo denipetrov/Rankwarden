@@ -5,9 +5,11 @@ import { searchNameOf } from '@denipetrov/spirit-link/search';
 import {
   EXCLUDED_BRACKETS,
   RATING_FAMILIES,
+  classSpecOfBracket,
   isIngestableBracket,
   ratingFamilyOf,
 } from '../../src/blizzard/blizzard.constants.js';
+import { toSlug } from '../../src/representation/entities/spec-representation.entity.js';
 import type { MplusWorld } from './mplus-world.js';
 import type { World } from './world.js';
 import {
@@ -58,6 +60,7 @@ export async function expectInvariants(
   await expectNoExcludedBrackets(db);
   await expectNoOrphanRatingRows(db);
   await expectRowsInCorrectFamily(db);
+  await expectRatingRowsLabelled(db);
   await expectIdentityUniqueness(db);
   await expectIndexInventory(db);
   await expectRepresentationCoherent(db);
@@ -200,6 +203,49 @@ export async function expectRowsInCorrectFamily(db: Db): Promise<void> {
     const misfiled = brackets.filter((bracket) => ratingFamilyOf(String(bracket)) !== family);
 
     expect(misfiled, `I5: wrong family in ${RATING_COLLECTIONS[family]}`).toEqual([]);
+  }
+}
+
+/**
+ * I32 — every rating row carries its class and spec, and they are right: on a
+ * per-spec ladder the ones its name gives; on a single-rating ladder the ones
+ * of the character's enriched profile, or null while it has none.
+ */
+export async function expectRatingRowsLabelled(db: Db): Promise<void> {
+  const profiles = new Map(
+    (
+      await db
+        .collection(CHARACTERS_COLLECTION)
+        .find({}, { projection: { seasonId: 1, region: 1, characterId: 1, profile: 1 } })
+        .toArray()
+    ).map((character) => [
+      `${character.seasonId}:${character.region}:${character.characterId}`,
+      character.profile?.class
+        ? {
+            class: toSlug(character.profile.class.name),
+            spec: character.profile.spec ? toSlug(character.profile.spec.name) : null,
+          }
+        : { class: null, spec: null },
+    ]),
+  );
+
+  for (const family of RATING_FAMILIES) {
+    const rows = await db.collection(RATING_COLLECTIONS[family]).find({}).toArray();
+    const wrong = rows
+      .filter((row) => {
+        if (!('class' in row) || !('spec' in row)) return true;
+
+        const expected = classSpecOfBracket(row.bracket) ??
+          profiles.get(`${row.seasonId}:${row.region}:${row.characterId}`) ?? {
+            class: null,
+            spec: null,
+          };
+
+        return row.class !== expected.class || row.spec !== expected.spec;
+      })
+      .map((row) => `${row.bracket}/${row.characterId}: ${row.class}/${row.spec}`);
+
+    expect(wrong.slice(0, 5), `I32: class and spec on ${RATING_COLLECTIONS[family]}`).toEqual([]);
   }
 }
 

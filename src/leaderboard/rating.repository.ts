@@ -2,18 +2,26 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { AnyBulkWriteOperation, Collection } from 'mongodb';
 
 import {
+  classSpecOfBracket,
+  CORE_BRACKETS,
   ratingFamilyOf,
   RATING_FAMILIES,
+  specSplitFamilyOf,
   type Bracket,
   type Region,
   type RatingFamily,
 } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
+import { toSlug } from '../representation/entities/spec-representation.entity.js';
+import type { CharacterDocument } from './entities/character.entity.js';
 import { type RatingDocument } from './entities/rating.entity.js';
 import { CHARACTERS_COLLECTION, RATING_COLLECTIONS } from '../database/collections.js';
 
 const BULK_CHUNK_SIZE = 1_000;
+
+/** A rating row's class and spec, as slugs; spec null when only the class is known. */
+type ClassSpec = { class: string; spec: string | null };
 
 /**
  * Flat rating rows, one collection per ladder family.
@@ -33,7 +41,15 @@ export class RatingRepository {
     return this.mongo.collection<RatingDocument>(RATING_COLLECTIONS[family]);
   }
 
-  /** Mirrors one bracket's leaderboard into its family's collection. */
+  /**
+   * Mirrors one bracket's leaderboard into its family's collection.
+   *
+   * Each row is labelled with its class and spec. A per-spec ladder names them;
+   * a single-rating ladder does not, so they are read from the characters'
+   * enriched profiles — one query per chunk. A character not yet enriched gets
+   * null on a new row and keeps whatever an existing row already says;
+   * `labelFromProfile` fills it in once enrichment has run.
+   */
   async upsertBracket(
     family: RatingFamily,
     updates: readonly CharacterBracketUpdate[],
@@ -42,35 +58,98 @@ export class RatingRepository {
 
     for (let offset = 0; offset < updates.length; offset += BULK_CHUNK_SIZE) {
       const chunk = updates.slice(offset, offset + BULK_CHUNK_SIZE);
-      const operations = chunk.map<AnyBulkWriteOperation<RatingDocument>>((update) => ({
-        updateOne: {
-          filter: {
-            seasonId: update.seasonId,
-            region: update.region,
-            bracket: update.bracket,
-            characterId: update.characterId,
-          },
-          update: {
-            $set: {
-              rating: update.stats.rating,
-              fetchedAt: update.stats.fetchedAt,
-            },
-            $setOnInsert: {
+      const fromProfiles = specSplitFamilyOf(chunk[0]?.bracket ?? '')
+        ? new Map<number, ClassSpec>()
+        : await this.profileLabels(chunk);
+
+      const operations = chunk.map<AnyBulkWriteOperation<RatingDocument>>((update) => {
+        const label = classSpecOfBracket(update.bracket) ?? fromProfiles.get(update.characterId);
+
+        return {
+          updateOne: {
+            filter: {
               seasonId: update.seasonId,
               region: update.region,
               bracket: update.bracket,
               characterId: update.characterId,
             },
+            update: {
+              $set: {
+                rating: update.stats.rating,
+                fetchedAt: update.stats.fetchedAt,
+                ...(label ? { class: label.class, spec: label.spec } : {}),
+              },
+              $setOnInsert: {
+                seasonId: update.seasonId,
+                region: update.region,
+                bracket: update.bracket,
+                characterId: update.characterId,
+                ...(label ? {} : { class: null, spec: null }),
+              },
+            },
+            upsert: true,
           },
-          upsert: true,
-        },
-      }));
+        };
+      });
 
       const result = await this.collection(family).bulkWrite(operations, { ordered: false });
       written += result.upsertedCount + result.modifiedCount;
     }
 
     return written;
+  }
+
+  /**
+   * Labels a character's 2v2, 3v3 and rbg rows with the class and spec of their
+   * enriched profile. Called after enrichment writes a profile, so a respec or
+   * a first enrichment reaches the boards without waiting for anything else.
+   * Shuffle and blitz rows are left alone: their bracket already names both.
+   */
+  async labelFromProfile(seasonId: number, region: Region, characterId: number): Promise<void> {
+    const [label] = (await this.profileLabels([{ seasonId, region, characterId }])).values();
+    if (!label) return;
+
+    for (const family of CORE_BRACKETS) {
+      await this.collection(family).updateMany(
+        { seasonId, region, characterId },
+        { $set: { class: label.class, spec: label.spec } },
+      );
+    }
+  }
+
+  /**
+   * The class and spec slugs of each character's enriched profile, for the
+   * characters that have one. Keyed by character id; all of `characters` must
+   * share one season and region, as a bracket's rows always do.
+   */
+  private async profileLabels(
+    characters: readonly { seasonId: number; region: Region; characterId: number }[],
+  ): Promise<Map<number, ClassSpec>> {
+    const first = characters[0];
+    if (!first) return new Map();
+
+    const documents = await this.mongo
+      .collection<CharacterDocument>(CHARACTERS_COLLECTION)
+      .find(
+        {
+          seasonId: first.seasonId,
+          region: first.region,
+          characterId: { $in: characters.map((character) => character.characterId) },
+          'profile.class.name': { $exists: true },
+        },
+        { projection: { _id: 0, characterId: 1, 'profile.class': 1, 'profile.spec': 1 } },
+      )
+      .toArray();
+
+    return new Map(
+      documents.map((document) => [
+        document.characterId,
+        {
+          class: toSlug(document.profile!.class.name),
+          spec: document.profile!.spec ? toSlug(document.profile!.spec.name) : null,
+        },
+      ]),
+    );
   }
 
   /**
