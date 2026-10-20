@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
@@ -11,6 +11,7 @@ import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MongoService } from '../database/mongo.service.js';
 import { SeasonService } from '../season/season.service.js';
+import { REPRESENTATION_CUTOFFS } from './representation.constants.js';
 import {
   startOfUtcDay,
   toSlug,
@@ -59,15 +60,15 @@ export interface SnapshotSummary {
 export class SpecRepresentationService {
   private readonly logger = new Logger(SpecRepresentationService.name);
   private readonly regions: Region[];
-  private readonly minRatings: number[];
 
   constructor(
     config: ConfigService<Env, true>,
     private readonly mongo: MongoService,
     private readonly seasons: SeasonService,
+    /** `REPRESENTATION_MIN_RATINGS` from spirit-link, shared with the readers. */
+    @Inject(REPRESENTATION_CUTOFFS) private readonly minRatings: readonly number[],
   ) {
     this.regions = config.get('BLIZZARD_REGIONS', { infer: true });
-    this.minRatings = config.get('REPRESENTATION_MIN_RATINGS', { infer: true });
   }
 
   private get collection() {

@@ -792,8 +792,20 @@ That is deliberately not a fixed daily alarm — a restart or outage cannot sile
 day, and re-running upserts. Ticks also fire on sweep completion, which is what covers
 startup: the bootstrap tick always lands while the startup sweep holds the coordinator.
 
-Each run also purges snapshots predating the current season, **per region** (season starts
-differ by up to 32 hours between regions).
+**Cutoffs are a shared constant, not a setting:** `REPRESENTATION_MIN_RATINGS` from
+`@denipetrov/spirit-link/constants` (1500, 1800, 2100, 2300, 2700), the same list the backend
+and the front end use, so every cutoff a reader asks for is one that is written. It reaches the
+service through the `REPRESENTATION_CUTOFFS` injection token (`representation.constants.ts`),
+only so a test can count at cutoffs of its own: the harness key `TEST_REPRESENTATION_CUTOFFS`
+(e.g. `'0'`, which counts every row) overrides it. Changing the cutoffs is a spirit-link
+release, taken by all three applications.
+
+**The snapshot job deletes nothing.** Snapshots accumulate for the whole season, about 80 a
+day. They are removed only by the season purge (§4.8), which deletes `spec_representation`
+rows of the finished season per region, once that region's new season has started and the
+archive holds the old one. No copy is kept: the archive has a finished season's standings and
+title cutoffs, not its spec popularity. (Until 2026-09-07 the snapshot job also deleted
+snapshots from before the current season itself; the season purge replaced that.)
 
 ### 4.4 Season archive
 
@@ -2139,7 +2151,6 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `SEASON_PURGE_DRY_RUN`                | `true`                              | Log the plan, delete nothing; set `false` to arm           |
 | `REPRESENTATION_ENABLED`              | `true`                              |                                                            |
 | `REPRESENTATION_CHECK_INTERVAL_MS`    | `3600000`                           |                                                            |
-| `REPRESENTATION_MIN_RATINGS`          | `1500,1800,2100,2300,2700`          | Cutoffs to track                                           |
 | `ARCHIVE_ENABLED`                     | `true`                              |                                                            |
 | `ARCHIVE_CHECK_INTERVAL_MS`           | `3600000`                           |                                                            |
 | `ARCHIVE_WAIT_FOR_IDLE_MS`            | `1200000`                           | An archive tick's wait for the jobs above it (PvP and M+); 0 = skip |

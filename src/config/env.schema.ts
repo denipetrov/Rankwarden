@@ -232,40 +232,6 @@ const raidDifficultyCsv = (fallback: string) =>
     });
 
 /**
- * Comma-separated non-negative integers. Non-numeric entries used to be
- * filtered out silently, so a typo produced an empty cutoff list and the
- * snapshot job ran forever writing nothing while logging success.
- */
-const integerCsv = (fallback: string) =>
-  z
-    .string()
-    .default(fallback)
-    .transform((value, ctx) => {
-      const parts = split(value);
-
-      if (parts.length === 0) {
-        ctx.addIssue({ code: 'custom', message: 'must list at least one value' });
-        return z.NEVER;
-      }
-
-      const invalid = parts.filter((part) => {
-        const parsed = Number(part);
-
-        return !Number.isInteger(parsed) || parsed < 0;
-      });
-
-      if (invalid.length > 0) {
-        ctx.addIssue({
-          code: 'custom',
-          message: `expected comma-separated non-negative integers, got ${invalid.join(', ')}`,
-        });
-        return z.NEVER;
-      }
-
-      return [...new Set(parts.map(Number))].sort((left, right) => left - right);
-    });
-
-/**
  * Every environment variable the service reads, validated once at boot.
  * Anything missing or malformed fails fast instead of surfacing mid-sweep.
  */
@@ -486,8 +452,9 @@ export const envSchema = z.object({
     .default('true')
     .transform((value) => value === 'true'),
   REPRESENTATION_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
-  /** Rating cutoffs to track. */
-  REPRESENTATION_MIN_RATINGS: integerCsv('1500,1800,2100,2300,2700'),
+  // The rating cutoffs are not a setting: they are `REPRESENTATION_MIN_RATINGS`
+  // from `@denipetrov/spirit-link/constants`, shared with the backend and the
+  // front end so all three agree on which cutoffs exist.
 
   // Raider.io - the Mythic+ upstream. Metered separately from Blizzard.
   /**
