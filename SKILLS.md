@@ -2771,6 +2771,12 @@ What an agent changing this service has to keep true:
   data should override it to `true` once and read the logged plan (`deploy/README.md`).
 - **The Blizzard budget lives in memory**, so a restart forgets the hour already spent
   (§4.0). Avoid repeated deploys within an hour during an archive backfill.
+- **MongoDB 8.x will not start on Linux kernels 6.19 to 7.0.13** (SERVER-121912: the TCMalloc it
+  bundles clashes with those kernels, and 8.3 refuses at startup rather than risk crashing). CI
+  runs its MongoDB job on `ubuntu-22.04` (kernel 6.8) for that reason; the ubuntu-24.04 runner
+  image moved into the range on 2026-10-18. The same check applies to the production nodes:
+  before upgrading the DOKS node pool, confirm its kernel (`kubectl get nodes -o wide`) is below
+  6.19 or at least 7.0.14, or MongoDB will refuse to start after the nodes roll.
 - **MongoDB is a single standalone instance**: a node failure means minutes of downtime until
   the pod and volume move, with the nightly backup as the safety net. A replica set is the
   upgrade path when that matters.

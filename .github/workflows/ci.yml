@@ -29,7 +29,12 @@ env:
 jobs:
   test:
     name: Lint, build and test
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`: MongoDB 8.x refuses to start on Linux kernels
+    # 6.19 to 7.0.13 (SERVER-121912, a clash with the TCMalloc it bundles), and
+    # the ubuntu-24.04 image moved to such a kernel on 2026-10-18. The 22.04
+    # image is on 6.8. Return to ubuntu-latest once MongoDB ships a fixed release
+    # or the runners reach kernel 7.0.14+. Only this job runs MongoDB.
+    runs-on: ubuntu-22.04
     services:
       # The integration suite runs against a real MongoDB, the same version the
       # chart deploys. Every test file uses its own `rankwarden_test_*` database.
@@ -40,6 +45,12 @@ jobs:
           --health-cmd "mongosh --quiet --eval \"db.adminCommand('ping').ok\""
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
+      # Recorded on every passing run, so a kernel change in the image shows up
+      # here before it breaks MongoDB (which starts before any step, and so is
+      # never reached by this one when it refuses).
+      - name: Runner kernel
+        run: uname -r
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
