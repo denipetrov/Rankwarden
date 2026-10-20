@@ -8,6 +8,7 @@ import {
 } from '../../src/blizzard/auth/token-provider.js';
 import { BlizzardHttpService } from '../../src/blizzard/http/blizzard-http.service.js';
 import { RaiderIoHttpService } from '../../src/raiderio/http/raiderio-http.service.js';
+import { REPRESENTATION_CUTOFFS } from '../../src/representation/representation.constants.js';
 import { assertTestDatabase, testDbName, testMongoUri } from './database.js';
 import { FakeBlizzard } from './fake-blizzard.js';
 import { FakeRaiderIo } from './fake-raiderio.js';
@@ -172,6 +173,14 @@ export async function bootTestApp(
   const blizzard = new FakeBlizzard(world);
   const raiderIo = new FakeRaiderIo(mplusWorld);
   const builder = Test.createTestingModule({ imports: [AppModule] });
+
+  // The cutoffs are a shared constant, not configuration, so a test that wants
+  // its own — 0 counts every row — overrides the injected value instead.
+  if (env.TEST_REPRESENTATION_CUTOFFS !== undefined) {
+    builder
+      .overrideProvider(REPRESENTATION_CUTOFFS)
+      .useValue(env.TEST_REPRESENTATION_CUTOFFS.split(',').map(Number));
+  }
   // `compile()` silences Nest's logger unless one is set here, and everything a
   // bootstrap-ordering case wants to read happens inside `app.init()` — which
   // `app.useLogger` is already too late for.

@@ -45,7 +45,7 @@ describe('S6 — rollover at runtime', () => {
     // seasons behind the live one as history, and they would be offered first.
     ARCHIVE_MIN_SEASON: String(SEASON),
     ARCHIVE_MAX_SEASON: String(SEASON),
-    REPRESENTATION_MIN_RATINGS: '0',
+    TEST_REPRESENTATION_CUTOFFS: '0',
   };
 
   let harness: TestApp;

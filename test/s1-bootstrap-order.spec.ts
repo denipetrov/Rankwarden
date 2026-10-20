@@ -55,7 +55,7 @@ describe('S1.13 / S5.1 — bootstrap ordering', () => {
     ARCHIVE_MAX_SEASON: String(OLDER),
     ARCHIVE_SEASON_PAUSE_MS: '0',
     PROFILE_BATCH_SIZE: '200',
-    REPRESENTATION_MIN_RATINGS: '0',
+    TEST_REPRESENTATION_CUTOFFS: '0',
   };
 
   const logger = new CapturingLogger();

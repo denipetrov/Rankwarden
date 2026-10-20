@@ -32,7 +32,7 @@ describe('S5 — archive and representation', () => {
   const ENV = {
     SEASON_REFRESH_ENABLED: 'true',
     ARCHIVE_MAX_ENTRIES_PER_BRACKET: '5',
-    REPRESENTATION_MIN_RATINGS: '0,1800',
+    TEST_REPRESENTATION_CUTOFFS: '0,1800',
   };
 
   let harness: TestApp;

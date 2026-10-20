@@ -26,7 +26,7 @@ import {
 describe('S7 — edge conditions', () => {
   const ENV = {
     SEASON_REFRESH_ENABLED: 'true',
-    REPRESENTATION_MIN_RATINGS: '0,1800',
+    TEST_REPRESENTATION_CUTOFFS: '0,1800',
     PROFILE_BATCH_SIZE: '500',
     PROFILE_REQUESTS_PER_SECOND: '2000',
   };

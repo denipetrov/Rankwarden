@@ -792,8 +792,20 @@ That is deliberately not a fixed daily alarm — a restart or outage cannot sile
 day, and re-running upserts. Ticks also fire on sweep completion, which is what covers
 startup: the bootstrap tick always lands while the startup sweep holds the coordinator.
 
-Each run also purges snapshots predating the current season, **per region** (season starts
-differ by up to 32 hours between regions).
+**Cutoffs are a shared constant, not a setting:** `REPRESENTATION_MIN_RATINGS` from
+`@denipetrov/spirit-link/constants` (1500, 1800, 2100, 2300, 2700), the same list the backend
+and the front end use, so every cutoff a reader asks for is one that is written. It reaches the
+service through the `REPRESENTATION_CUTOFFS` injection token (`representation.constants.ts`),
+only so a test can count at cutoffs of its own: the harness key `TEST_REPRESENTATION_CUTOFFS`
+(e.g. `'0'`, which counts every row) overrides it. Changing the cutoffs is a spirit-link
+release, taken by all three applications.
+
+**The snapshot job deletes nothing.** Snapshots accumulate for the whole season, about 80 a
+day. They are removed only by the season purge (§4.8), which deletes `spec_representation`
+rows of the finished season per region, once that region's new season has started and the
+archive holds the old one. No copy is kept: the archive has a finished season's standings and
+title cutoffs, not its spec popularity. (Until 2026-09-07 the snapshot job also deleted
+snapshots from before the current season itself; the season purge replaced that.)
 
 ### 4.4 Season archive
 
@@ -2139,7 +2151,6 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `SEASON_PURGE_DRY_RUN`                | `true`                              | Log the plan, delete nothing; set `false` to arm           |
 | `REPRESENTATION_ENABLED`              | `true`                              |                                                            |
 | `REPRESENTATION_CHECK_INTERVAL_MS`    | `3600000`                           |                                                            |
-| `REPRESENTATION_MIN_RATINGS`          | `1500,1800,2100,2300,2700`          | Cutoffs to track                                           |
 | `ARCHIVE_ENABLED`                     | `true`                              |                                                            |
 | `ARCHIVE_CHECK_INTERVAL_MS`           | `3600000`                           |                                                            |
 | `ARCHIVE_WAIT_FOR_IDLE_MS`            | `1200000`                           | An archive tick's wait for the jobs above it (PvP and M+); 0 = skip |
@@ -2760,6 +2771,12 @@ What an agent changing this service has to keep true:
   data should override it to `true` once and read the logged plan (`deploy/README.md`).
 - **The Blizzard budget lives in memory**, so a restart forgets the hour already spent
   (§4.0). Avoid repeated deploys within an hour during an archive backfill.
+- **MongoDB 8.x will not start on Linux kernels 6.19 to 7.0.13** (SERVER-121912: the TCMalloc it
+  bundles clashes with those kernels, and 8.3 refuses at startup rather than risk crashing). CI
+  runs its MongoDB job on `ubuntu-22.04` (kernel 6.8) for that reason; the ubuntu-24.04 runner
+  image moved into the range on 2026-10-18. The same check applies to the production nodes:
+  before upgrading the DOKS node pool, confirm its kernel (`kubectl get nodes -o wide`) is below
+  6.19 or at least 7.0.14, or MongoDB will refuse to start after the nodes roll.
 - **MongoDB is a single standalone instance**: a node failure means minutes of downtime until
   the pod and volume move, with the nightly backup as the safety net. A replica set is the
   upgrade path when that matters.

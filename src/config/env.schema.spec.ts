@@ -42,20 +42,6 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...base, BLIZZARD_REGIONS: ' , ' })).toThrow(/BLIZZARD_REGIONS/);
   });
 
-  it('rejects a non-numeric rating cutoff instead of yielding an empty list', () => {
-    // Filtering left [] behind, and the snapshot job then ran forever writing
-    // nothing while logging success.
-    expect(() => validateEnv({ ...base, REPRESENTATION_MIN_RATINGS: '1500,l800' })).toThrow(
-      /REPRESENTATION_MIN_RATINGS[\s\S]*l800/,
-    );
-  });
-
-  it('sorts and de-duplicates the rating cutoffs', () => {
-    const env = validateEnv({ ...base, REPRESENTATION_MIN_RATINGS: '2100, 1500,1500 ' });
-
-    expect(env.REPRESENTATION_MIN_RATINGS).toEqual([1500, 2100]);
-  });
-
   it('defaults the API host template to production', () => {
     expect(validateEnv({ ...base }).BLIZZARD_API_HOST_TEMPLATE).toBe(
       'https://{region}.api.blizzard.com',
