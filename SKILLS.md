@@ -2020,7 +2020,7 @@ without waiting for the next sweep.
 { "seasonId": 42, "region": "us", "characterId": 195802602,
   "characterName": "Goküü", "realmId": 61, "realmSlug": "emerald-dream",
   "faction": "HORDE",
-  "brackets": { "3v3": { "rank": 119, "rating": 2093, "played": 10, "won": 5, "lost": 5 } },
+  "brackets": { "3v3": { "rating": 2093, "played": 10, "won": 5, "lost": 5 } },
   "profile": { … } }
 → 200 { "brackets": 1, "ignoredBrackets": [], "ratingRows": { … } }
 ```
@@ -2039,6 +2039,11 @@ Semantics that will bite a caller:
   subset deletes the rest. Send the whole document.
 - **`profile` is merged field by field.** Absent leaves the stored value; explicit `null`
   clears it. Only the halves supplied get their enrichment timestamp stamped.
+- **`rank` is not accepted** in a bracket. A rank is a position on the ladder, which only the
+  ladder knows — Blizzard's character data has none — so only the sweep writes it. A ladder the
+  character already has keeps the rank the last sweep recorded; one the sync adds is stored with
+  `rank: null` until the next sweep ranks it. A `rank` sent anyway is stripped like any unknown
+  key.
 - `ratings` is **not accepted** — it is recomputed from `brackets`, which is the only way
   the mirror cannot drift. Unknown keys are stripped, so a document read from Mongo can be
   posted back unchanged.

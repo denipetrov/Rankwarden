@@ -268,7 +268,7 @@ describe('S7 / S8 — edge cases and negative paths', () => {
 
       const aggregateOnly = await postJson(baseUrl, '/characters/sync', {
         ...base,
-        brackets: { 'shuffle-overall': { rank: 1, rating: 2400 } },
+        brackets: { 'shuffle-overall': { rating: 2400 } },
       });
       expect(aggregateOnly.status).toBe(400);
       expect(aggregateOnly.text).toContain('shuffle-overall');
@@ -276,7 +276,7 @@ describe('S7 / S8 — edge cases and negative paths', () => {
       const badRegion = await postJson(baseUrl, '/characters/sync', {
         ...base,
         region: 'xx',
-        brackets: { '3v3': { rank: 1, rating: 2400 } },
+        brackets: { '3v3': { rating: 2400 } },
       });
       expect(badRegion.status).toBe(400);
     });
@@ -295,7 +295,7 @@ describe('S7 / S8 — edge cases and negative paths', () => {
         realmId: doc.realmId,
         realmSlug: doc.realmSlug,
         faction: 'HORDE',
-        brackets: { '3v3': { rank: 1, rating: 2400 } },
+        brackets: { '3v3': { rating: 2400 } },
       });
 
       expect(response.status).toBe(404);
@@ -317,6 +317,14 @@ describe('S7 / S8 — edge cases and negative paths', () => {
       expect(Object.keys(after!.brackets as object).sort()).toEqual(
         Object.keys(doc.brackets as object).sort(),
       );
+      // The ranks it carried were ignored, and the ones the sweep recorded kept.
+      const ranks = (brackets: object) =>
+        Object.fromEntries(
+          Object.entries(brackets as Record<string, { rank: number | null }>).map(
+            ([key, stats]) => [key, stats.rank],
+          ),
+        );
+      expect(ranks(after!.brackets as object)).toEqual(ranks(doc.brackets as object));
 
       await expectInvariants(db);
     });

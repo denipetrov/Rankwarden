@@ -59,13 +59,25 @@ export class CharacterSyncService {
       (bracket) => !isIngestableBracket(bracket),
     );
 
+    // The sync carries no rank: a rank is the ladder's to give. Each ladder
+    // keeps the one the sweep last recorded, and one the character was not on
+    // yet has none until the next sweep ranks it.
+    const ranks = await this.characters.ladderRanks(
+      input.seasonId,
+      input.region,
+      input.characterId,
+    );
     const brackets: Record<string, BracketStats> = {};
     const ratings: Record<string, number> = {};
 
     for (const [bracket, stats] of Object.entries(input.brackets)) {
       if (!isIngestableBracket(bracket)) continue;
 
-      brackets[bracket] = { ...stats, fetchedAt: stats.fetchedAt ?? updatedAt };
+      brackets[bracket] = {
+        rank: ranks[bracket] ?? null,
+        ...stats,
+        fetchedAt: stats.fetchedAt ?? updatedAt,
+      };
       ratings[bracket] = stats.rating;
     }
 

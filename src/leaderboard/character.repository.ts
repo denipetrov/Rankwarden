@@ -356,6 +356,28 @@ export class CharacterRepository {
   }
 
   /**
+   * The rank the sweep last recorded on each of a character's ladders, so a
+   * sync, which carries none, can keep them. Empty for an unknown character.
+   */
+  async ladderRanks(
+    seasonId: number,
+    region: Region,
+    characterId: number,
+  ): Promise<Record<string, number | null>> {
+    const document = await this.collection.findOne(
+      { seasonId, region, characterId },
+      { projection: { _id: 0, brackets: 1 } },
+    );
+
+    return Object.fromEntries(
+      Object.entries(document?.brackets ?? {}).map(([bracket, stats]) => [
+        bracket,
+        stats?.rank ?? null,
+      ]),
+    );
+  }
+
+  /**
    * Updates an existing character from the sync endpoint. Never inserts: a
    * character absent here holds no rating we care about, and creating one would
    * fill the collection with players no ladder lists.

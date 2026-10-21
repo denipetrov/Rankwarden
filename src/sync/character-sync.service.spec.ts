@@ -20,10 +20,11 @@ const input = (brackets: Record<string, unknown>) =>
     brackets,
   });
 
-const stats = (rating: number) => ({ rank: 1, rating, played: 10, won: 6, lost: 4 });
+const stats = (rating: number) => ({ rating, played: 10, won: 6, lost: 4 });
 
 describe('CharacterSyncService', () => {
   const updateCharacter = vi.fn();
+  const ladderRanks = vi.fn();
   const replaceForCharacter = vi.fn();
   let coordinator: IngestionCoordinator;
   let service: CharacterSyncService;
@@ -31,6 +32,7 @@ describe('CharacterSyncService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     updateCharacter.mockResolvedValue({ matched: true });
+    ladderRanks.mockResolvedValue({});
     replaceForCharacter.mockResolvedValue({ written: 1, removed: 0 });
     coordinator = new IngestionCoordinator();
 
@@ -38,12 +40,31 @@ describe('CharacterSyncService', () => {
       providers: [
         CharacterSyncService,
         { provide: IngestionCoordinator, useValue: coordinator },
-        { provide: CharacterRepository, useValue: { updateCharacter } },
+        { provide: CharacterRepository, useValue: { updateCharacter, ladderRanks } },
         { provide: RatingRepository, useValue: { replaceForCharacter } },
       ],
     }).compile();
 
     service = moduleRef.get(CharacterSyncService);
+  });
+
+  it('takes no rank from the payload, since a rank belongs to the ladder', async () => {
+    // A caller that still sends one has it dropped, like any unknown key.
+    const parsed = input({ '3v3': { ...stats(2000), rank: 7 } });
+
+    expect(parsed.brackets['3v3']).not.toHaveProperty('rank');
+  });
+
+  it('keeps the rank the sweep recorded, and leaves a ladder new to the character unranked', async () => {
+    ladderRanks.mockResolvedValue({ '3v3': 119, '2v2': 40 });
+
+    await service.sync(input({ '3v3': stats(2093), rbg: stats(1900) }));
+
+    const [document] = updateCharacter.mock.calls[0]!;
+    expect(document.brackets['3v3']).toMatchObject({ rank: 119, rating: 2093 });
+    // Never ranked by a sweep: nothing to keep, and nothing made up.
+    expect(document.brackets.rbg).toMatchObject({ rank: null, rating: 1900 });
+    expect(document.brackets).not.toHaveProperty('2v2');
   });
 
   it('refuses to write while a ladder sweep is running', async () => {
