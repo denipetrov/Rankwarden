@@ -4,8 +4,13 @@ import { REGIONS } from '../../blizzard/blizzard.constants.js';
 
 const namedRef = z.object({ id: z.number().int(), name: z.string() });
 
+/**
+ * One ladder's standing, without a rank. A rank is a position on the ladder,
+ * which only the ladder itself knows — a character lookup from Blizzard does
+ * not return one — so the sweep alone writes it. A `rank` sent here is
+ * dropped like any other unknown key.
+ */
 const bracketStats = z.object({
-  rank: z.number().int(),
   rating: z.number().int(),
   played: z.number().int().nonnegative().default(0),
   won: z.number().int().nonnegative().default(0),

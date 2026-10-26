@@ -2,7 +2,12 @@ import type { Bracket, Region } from '../../blizzard/blizzard.constants.js';
 
 /** A character's standing in one bracket. */
 export interface BracketStats {
-  rank: number;
+  /**
+   * Place on the ladder, as the last sweep read it. Null for a ladder only the
+   * sync endpoint has added so far: a rank comes from the ladder alone, so it
+   * is filled in by the next sweep.
+   */
+  rank: number | null;
   rating: number;
   played: number;
   won: number;
