@@ -124,6 +124,13 @@ export interface MplusCharacterDocument {
    * only comparable between characters with the same `dungeonsCovered`.
    */
   mythicScore: number;
+  /**
+   * The `mythicScore` stored before the latest write, whether or not it
+   * changed: equal to it when the character gained nothing. A reader compares
+   * the two to show movement. Null on a character's first write, and on the
+   * archive's copies, which are written once.
+   */
+  previousMythicScore: number | null;
   /** How many of the season's dungeons `mythicScore` is summed over, 1-8. */
   dungeonsCovered: number;
   /**

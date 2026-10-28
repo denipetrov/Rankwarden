@@ -19,7 +19,8 @@ export interface CharacterBracketUpdate {
   realmSlug: string;
   faction: string | null;
   bracket: Bracket;
-  stats: BracketStats;
+  /** As read from the ladder; `previousRating` is taken from storage as it is written. */
+  stats: Omit<BracketStats, 'previousRating'>;
 }
 
 /** Splits a Blizzard leaderboard payload into per-character bracket updates. */

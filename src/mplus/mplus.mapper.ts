@@ -249,6 +249,9 @@ export class MplusCharacterAccumulator {
             characterName: character.name,
             searchName: searchNameOf(character.name),
             characterType: 'M+',
+            // Known only once storage is read: the live write fills it in, and the
+            // archive, written once, has none.
+            previousMythicScore: null,
             rioCharacterId: character.id || null,
             realmId: character.realm.wowRealmId ?? null,
             realmName: character.realm.name,

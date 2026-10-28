@@ -9,6 +9,13 @@ export interface BracketStats {
    */
   rank: number | null;
   rating: number;
+  /**
+   * The rating stored on this ladder before the latest write, whether or not
+   * it changed: equal to `rating` when the character held steady. A reader
+   * compares the two to show movement. Null the first time the character
+   * appears on the ladder.
+   */
+  previousRating: number | null;
   played: number;
   won: number;
   lost: number;
