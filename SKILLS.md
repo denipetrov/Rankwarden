@@ -99,6 +99,9 @@ this file updated in the same change.
 - Raider.io and Blizzard character ids are different id spaces; M+ characters live in
   `mplus_characters`, keyed by `region/realm/lowercased-name`.
 - `mythicScore` never decreases; nothing may lower it.
+- `previousRating` (each ladder in `characters`) and `previousMythicScore` (`mplus_characters`)
+  are the stored value before the latest write, written on **every** write even when unchanged.
+  Never skip it, never compute it with a separate read (§5.1).
 - A season is retired only after the next one has started in that region, and only once
   archived. A running season is never archived.
 - Every write of a character or guild name writes its `searchName` too, through
@@ -1007,8 +1010,8 @@ duplicates and reports success.
   characterName: 'Goküü', realmId: 61, realmSlug: 'emerald-dream', faction: 'HORDE',
 
   brackets: {                                    // full payload, never indexed
-    '3v3':               { rank, rating, played, won, lost, fetchedAt },
-    'shuffle-mage-fire': { rank, rating, played, won, lost, fetchedAt },
+    '3v3':               { rank, rating, previousRating, played, won, lost, fetchedAt },
+    'shuffle-mage-fire': { rank, rating, previousRating, played, won, lost, fetchedAt },
   },
   ratings: { '3v3': 2093, 'shuffle-mage-fire': 2688 },   // indexed mirror
   updatedAt: Date,
@@ -1080,6 +1083,26 @@ prefix costs nothing.
 > 85+. Mirroring only `rating` (the sole searchable field) into a flat map lets a single
 > index serve every bracket. Measured on 138k documents: 50 keys / 50 docs examined,
 > index-ordered, no blocking sort — for core _and_ per-spec ladders — from one 2.3MB index.
+
+**Previous rating, for movement.** Every ladder entry carries `previousRating`: the rating it
+held before its latest write — sweep or sync — written every time, so it equals `rating` when
+nothing moved, and `null` the first time a character appears on that ladder. The front end
+compares the two and decides what to show. Kept on `characters` only, not on the
+`*_ratings` rows; a board shows movement through the join it already makes for names.
+
+The sweep writes it with an update pipeline (`upsertBracketEntries`): the stored
+`brackets.<ladder>.rating` becomes `previousRating` in the same write that replaces it, so
+there is no read first. Values inside the pipeline are wrapped in `$literal`, and since a
+pipeline has no `$setOnInsert`, `characterType` is kept with `$ifNull`. Measured: the
+character write alone is about 70% slower than a plain `$set` (4.0 s → 6.8 s per 100,000
+rows), which disappears in the sweep's overall time because writes overlap the ladder
+requests — two real sweeps took 63 s and 55 s, against 56 s before. The sync endpoint reads
+the character anyway (for the ranks it keeps), so it takes the stored ratings from that read.
+
+`mplus_characters.previousMythicScore` follows the same rule; the pass already reads each
+stored character to merge its runs (§5.6), so it costs nothing. Null on the archive's copies,
+which are written once. Invariant **I33** checks both fields everywhere, and that a previous
+Mythic+ score is never above the current one.
 
 ### 5.2 Ratings collections — one row per rating
 
@@ -1227,6 +1250,7 @@ Indexes: `archive_board`, `archive_identity` (unique), `archive_character`, and
   rioCharacterId: 224292179, realmId: 1316, realmName: 'Nemesis', faction: 'alliance',
   profile: { classId, className, specId, specName, raceId, raceName, level, role },
   mythicScore: 3506.7,                         // see the warning below
+  previousMythicScore: 3480.2,                 // the score before the last write; null on the first
   dungeonsCovered: 7,                          // of the season's 8
   dungeonRuns: [                               // best run per dungeon, best score first
     { dungeon: {…}, keystoneRunId, mythicLevel, score, clearTimeMs,

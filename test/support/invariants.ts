@@ -61,6 +61,7 @@ export async function expectInvariants(
   await expectNoOrphanRatingRows(db);
   await expectRowsInCorrectFamily(db);
   await expectRatingRowsLabelled(db);
+  await expectPreviousValuesKept(db);
   await expectIdentityUniqueness(db);
   await expectIndexInventory(db);
   await expectRepresentationCoherent(db);
@@ -246,6 +247,48 @@ export async function expectRatingRowsLabelled(db: Db): Promise<void> {
       .map((row) => `${row.bracket}/${row.characterId}: ${row.class}/${row.spec}`);
 
     expect(wrong.slice(0, 5), `I32: class and spec on ${RATING_COLLECTIONS[family]}`).toEqual([]);
+  }
+}
+
+/**
+ * I33 — every ladder entry carries the rating it held before its last write,
+ * and every Mythic+ character the score: a number, or null on a first write.
+ * A Mythic+ score never falls, so a previous score above the current one would
+ * mean the two were written from different reads.
+ */
+export async function expectPreviousValuesKept(db: Db): Promise<void> {
+  const characters = await db
+    .collection(CHARACTERS_COLLECTION)
+    .find({}, { projection: { characterId: 1, brackets: 1 } })
+    .toArray();
+  const missing = characters.flatMap((character) =>
+    Object.entries((character.brackets ?? {}) as Record<string, { previousRating?: unknown }>)
+      .filter(
+        ([, stats]) => !(stats.previousRating === null || typeof stats.previousRating === 'number'),
+      )
+      .map(([bracket]) => `${character.characterId}/${bracket}`),
+  );
+
+  expect(missing.slice(0, 5), 'I33: every ladder entry has previousRating').toEqual([]);
+
+  for (const collection of [MPLUS_CHARACTERS_COLLECTION, MPLUS_ARCHIVE_CHARACTERS_COLLECTION]) {
+    const wrong = (
+      await db
+        .collection(collection)
+        .find({}, { projection: { key: 1, mythicScore: 1, previousMythicScore: 1 } })
+        .toArray()
+    )
+      .filter(
+        (row) =>
+          !(
+            row.previousMythicScore === null ||
+            (typeof row.previousMythicScore === 'number' &&
+              row.previousMythicScore <= row.mythicScore)
+          ),
+      )
+      .map((row) => `${row.key}: ${row.previousMythicScore} -> ${row.mythicScore}`);
+
+    expect(wrong.slice(0, 5), `I33: previousMythicScore on ${collection}`).toEqual([]);
   }
 }
 

@@ -117,10 +117,11 @@ export class MplusRepository {
 
     for (let offset = 0; offset < characters.length; offset += BULK_CHUNK_SIZE) {
       const chunk = characters.slice(offset, offset + BULK_CHUNK_SIZE);
-      const stored = await this.storedRunsFor(chunk);
+      const stored = await this.storedFor(chunk);
 
       const operations = chunk.map<AnyBulkWriteOperation<MplusCharacterDocument>>((character) => {
-        const previous = stored.get(character.key);
+        const held = stored.get(character.key);
+        const previous = held?.dungeonRuns;
         const dungeonRuns = previous
           ? mergeDungeonRuns(previous, character.dungeonRuns)
           : character.dungeonRuns;
@@ -130,7 +131,14 @@ export class MplusRepository {
         return {
           updateOne: {
             filter: { season: character.season, key: character.key },
-            update: { $set: withDungeonRuns(character, dungeonRuns) },
+            // The score stored now becomes the previous one, from the read the
+            // merge needs anyway.
+            update: {
+              $set: {
+                ...withDungeonRuns(character, dungeonRuns),
+                previousMythicScore: held?.mythicScore ?? null,
+              },
+            },
             upsert: true,
           },
         };
@@ -169,7 +177,7 @@ export class MplusRepository {
   ): Promise<{ matched: boolean; mythicScore: number; dungeonsCovered: number; added: number }> {
     const existing = await this.characters.findOne(
       { season, key },
-      { projection: { dungeonRuns: 1 } },
+      { projection: { dungeonRuns: 1, mythicScore: 1 } },
     );
 
     if (!existing) return { matched: false, mythicScore: 0, dungeonsCovered: 0, added: 0 };
@@ -185,6 +193,7 @@ export class MplusRepository {
     // Re-derived rather than trusted from the caller, the only way the three
     // cannot drift apart.
     update.dungeonRuns = dungeonRuns;
+    update.previousMythicScore = existing.mythicScore ?? null;
     update.mythicScore = scoreOf(dungeonRuns);
     update.dungeonsCovered = dungeonRuns.length;
 
@@ -199,17 +208,23 @@ export class MplusRepository {
   }
 
   /** The `dungeonRuns` already stored for a chunk, keyed by identity. */
-  private async storedRunsFor(
+  /** What a chunk's characters hold now: the runs to merge, and the score that becomes the previous one. */
+  private async storedFor(
     chunk: readonly MplusCharacterDocument[],
-  ): Promise<Map<string, MplusDungeonRun[]>> {
+  ): Promise<Map<string, { dungeonRuns: MplusDungeonRun[]; mythicScore: number | null }>> {
     const rows = await this.characters
       .find(
         { season: chunk[0].season, key: { $in: chunk.map((character) => character.key) } },
-        { projection: { key: 1, dungeonRuns: 1 } },
+        { projection: { key: 1, dungeonRuns: 1, mythicScore: 1 } },
       )
       .toArray();
 
-    return new Map(rows.map((row) => [row.key, row.dungeonRuns ?? []]));
+    return new Map(
+      rows.map((row) => [
+        row.key,
+        { dungeonRuns: row.dungeonRuns ?? [], mythicScore: row.mythicScore ?? null },
+      ]),
+    );
   }
 
   /**

@@ -351,7 +351,7 @@ describe('Mythic+ cleanup over passes', () => {
     await expectNoOrphanMplusCharacters(db);
   });
 
-  it('M3.9 three identical passes change nothing but timestamps', async () => {
+  it('M3.9 three identical passes change nothing but timestamps and the previous score', async () => {
     await resetBoard();
     world.seed('us', 30, 500, SEASON);
     // A tie on purpose, with one character on both runs: the fold keeps the
@@ -375,7 +375,9 @@ describe('Mythic+ cleanup over passes', () => {
         .toArray(),
       characters: await db
         .collection(MPLUS_CHARACTERS_COLLECTION)
-        .find({}, { projection: { _id: 0, updatedAt: 0 } })
+        // The previous score is the one thing a repeat is meant to change: null
+        // on the first write, the unchanged score on every one after.
+        .find({}, { projection: { _id: 0, updatedAt: 0, previousMythicScore: 0 } })
         .sort({ key: 1 })
         .toArray(),
     });
@@ -392,9 +394,46 @@ describe('Mythic+ cleanup over passes', () => {
       expect(us.prunedCharacters).toBe(0);
       expect(us.mergedCharacters).toBe(0);
       expect(await read()).toEqual(first);
+
+      // Written on every pass, even with nothing gained: equal to the score.
+      const scores = await db
+        .collection(MPLUS_CHARACTERS_COLLECTION)
+        .find({}, { projection: { _id: 0, mythicScore: 1, previousMythicScore: 1 } })
+        .toArray();
+      expect(scores.every((row) => row.previousMythicScore === row.mythicScore)).toBe(true);
     }
 
     expect((await character('us', 'Tied'))!.dungeonRuns[0].keystoneRunId).toBe(tiedRun);
+    await expectInvariants(db);
+  });
+
+  it('M3.10 a pass that raises a score keeps the one it replaced as the previous score', async () => {
+    await resetBoard();
+    world.addRun({
+      region: 'us',
+      season: SEASON,
+      score: 500,
+      dungeon: 0,
+      members: [member(7_400, 'Climber'), ...fillers('Early', 7_410)],
+    });
+
+    await pass();
+    const before = (await character('us', 'Climber'))!;
+    expect(before.previousMythicScore, 'nothing stored before the first write').toBeNull();
+
+    // A run in a second dungeon: the score grows by it.
+    world.addRun({
+      region: 'us',
+      season: SEASON,
+      score: 900,
+      dungeon: 1,
+      members: [member(7_400, 'Climber'), ...fillers('Later', 7_420)],
+    });
+
+    await pass();
+    const after = (await character('us', 'Climber'))!;
+    expect(after.mythicScore).toBeGreaterThan(before.mythicScore);
+    expect(after.previousMythicScore).toBe(before.mythicScore);
     await expectInvariants(db);
   });
 

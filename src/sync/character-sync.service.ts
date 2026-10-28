@@ -61,8 +61,9 @@ export class CharacterSyncService {
 
     // The sync carries no rank: a rank is the ladder's to give. Each ladder
     // keeps the one the sweep last recorded, and one the character was not on
-    // yet has none until the next sweep ranks it.
-    const ranks = await this.characters.ladderRanks(
+    // yet has none until the next sweep ranks it. The rating stored now becomes
+    // the previous one, as it does when the sweep writes.
+    const stored = await this.characters.storedLadders(
       input.seasonId,
       input.region,
       input.characterId,
@@ -74,7 +75,8 @@ export class CharacterSyncService {
       if (!isIngestableBracket(bracket)) continue;
 
       brackets[bracket] = {
-        rank: ranks[bracket] ?? null,
+        rank: stored[bracket]?.rank ?? null,
+        previousRating: stored[bracket]?.rating ?? null,
         ...stats,
         fetchedAt: stats.fetchedAt ?? updatedAt,
       };

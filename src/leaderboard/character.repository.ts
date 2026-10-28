@@ -83,6 +83,11 @@ export class CharacterRepository {
    * A character the sweep creates is `PvP`. The type is set on insert only: the
    * sweep reclassifying a document some other source created would put it in
    * the enrichment queue and spend quota on a profile that source already has.
+   *
+   * Written as an update pipeline, so each ladder's stored rating becomes its
+   * `previousRating` in the same write that replaces it — no read first. Every
+   * value is wrapped in `$literal`: inside a pipeline a string beginning with
+   * `$` would otherwise be read as a field path.
    */
   async upsertBracketEntries(updates: readonly CharacterBracketUpdate[]): Promise<number> {
     let written = 0;
@@ -96,24 +101,33 @@ export class CharacterRepository {
             region: update.region,
             characterId: update.characterId,
           },
-          update: {
-            $set: {
-              characterName: update.characterName,
-              searchName: searchNameOf(update.characterName),
-              realmId: update.realmId,
-              realmSlug: update.realmSlug,
-              faction: update.faction,
-              updatedAt: update.stats.fetchedAt,
-              [`brackets.${update.bracket}`]: update.stats,
-              [`ratings.${update.bracket}`]: update.stats.rating,
+          // On insert the filter's fields are set first, so the identity needs
+          // nothing here; a pipeline has no $setOnInsert, so the type is kept
+          // when present and `PvP` only when the document is new.
+          update: [
+            {
+              $set: {
+                characterName: { $literal: update.characterName },
+                searchName: { $literal: searchNameOf(update.characterName) },
+                realmId: { $literal: update.realmId },
+                realmSlug: { $literal: update.realmSlug },
+                faction: { $literal: update.faction },
+                updatedAt: { $literal: update.stats.fetchedAt },
+                characterType: { $ifNull: ['$characterType', 'PvP'] },
+                [`brackets.${update.bracket}`]: {
+                  $mergeObjects: [
+                    { $literal: update.stats },
+                    {
+                      previousRating: {
+                        $ifNull: [`$brackets.${update.bracket}.rating`, null],
+                      },
+                    },
+                  ],
+                },
+                [`ratings.${update.bracket}`]: { $literal: update.stats.rating },
+              },
             },
-            $setOnInsert: {
-              seasonId: update.seasonId,
-              region: update.region,
-              characterId: update.characterId,
-              characterType: 'PvP',
-            },
-          },
+          ],
           upsert: true,
         },
       }));
@@ -356,24 +370,24 @@ export class CharacterRepository {
   }
 
   /**
-   * The rank the sweep last recorded on each of a character's ladders, so a
-   * sync, which carries none, can keep them. Empty for an unknown character.
+   * What each of a character's ladders holds now: the rank the sweep last
+   * recorded, which a sync carries none of and so keeps, and the rating, which
+   * a sync's write turns into `previousRating`. Empty for an unknown character.
    */
-  async ladderRanks(
+  async storedLadders(
     seasonId: number,
     region: Region,
     characterId: number,
-  ): Promise<Record<string, number | null>> {
+  ): Promise<Record<string, { rank: number | null; rating: number }>> {
     const document = await this.collection.findOne(
       { seasonId, region, characterId },
       { projection: { _id: 0, brackets: 1 } },
     );
 
     return Object.fromEntries(
-      Object.entries(document?.brackets ?? {}).map(([bracket, stats]) => [
-        bracket,
-        stats?.rank ?? null,
-      ]),
+      Object.entries(document?.brackets ?? {}).flatMap(([bracket, stats]) =>
+        stats ? [[bracket, { rank: stats.rank ?? null, rating: stats.rating }]] : [],
+      ),
     );
   }
 

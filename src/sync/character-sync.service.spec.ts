@@ -24,7 +24,7 @@ const stats = (rating: number) => ({ rating, played: 10, won: 6, lost: 4 });
 
 describe('CharacterSyncService', () => {
   const updateCharacter = vi.fn();
-  const ladderRanks = vi.fn();
+  const storedLadders = vi.fn();
   const replaceForCharacter = vi.fn();
   let coordinator: IngestionCoordinator;
   let service: CharacterSyncService;
@@ -32,7 +32,7 @@ describe('CharacterSyncService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     updateCharacter.mockResolvedValue({ matched: true });
-    ladderRanks.mockResolvedValue({});
+    storedLadders.mockResolvedValue({});
     replaceForCharacter.mockResolvedValue({ written: 1, removed: 0 });
     coordinator = new IngestionCoordinator();
 
@@ -40,7 +40,7 @@ describe('CharacterSyncService', () => {
       providers: [
         CharacterSyncService,
         { provide: IngestionCoordinator, useValue: coordinator },
-        { provide: CharacterRepository, useValue: { updateCharacter, ladderRanks } },
+        { provide: CharacterRepository, useValue: { updateCharacter, storedLadders } },
         { provide: RatingRepository, useValue: { replaceForCharacter } },
       ],
     }).compile();
@@ -56,14 +56,22 @@ describe('CharacterSyncService', () => {
   });
 
   it('keeps the rank the sweep recorded, and leaves a ladder new to the character unranked', async () => {
-    ladderRanks.mockResolvedValue({ '3v3': 119, '2v2': 40 });
+    storedLadders.mockResolvedValue({
+      '3v3': { rank: 119, rating: 2050 },
+      '2v2': { rank: 40, rating: 1800 },
+    });
 
     await service.sync(input({ '3v3': stats(2093), rbg: stats(1900) }));
 
     const [document] = updateCharacter.mock.calls[0]!;
-    expect(document.brackets['3v3']).toMatchObject({ rank: 119, rating: 2093 });
+    // The rating stored until now becomes the previous one, as on a sweep.
+    expect(document.brackets['3v3']).toMatchObject({
+      rank: 119,
+      rating: 2093,
+      previousRating: 2050,
+    });
     // Never ranked by a sweep: nothing to keep, and nothing made up.
-    expect(document.brackets.rbg).toMatchObject({ rank: null, rating: 1900 });
+    expect(document.brackets.rbg).toMatchObject({ rank: null, rating: 1900, previousRating: null });
     expect(document.brackets).not.toHaveProperty('2v2');
   });
 
