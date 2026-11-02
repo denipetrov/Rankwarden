@@ -84,6 +84,7 @@ const BASE_ENV: Record<string, string> = {
   MPLUS_TRANSITION_CHECK_INTERVAL_MS: '3600000',
   RAID_CATALOGUE_ENABLED: 'false',
   RAID_RANKINGS_ENABLED: 'false',
+  BOSS_RANKINGS_ENABLED: 'false',
   RAID_RANKINGS_INTERVAL_MS: '3600000',
   // One board at a time, so the order requests are made in is the order the
   // boards are due in; the file about reading them at once raises it.

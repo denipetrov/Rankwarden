@@ -61,6 +61,8 @@ function matches(matcher: RequestMatcher, request: RecordedRaiderIoRequest): boo
         return request.params.raid === value;
       case 'difficulty':
         return request.params.difficulty === value;
+      case 'boss':
+        return request.params.boss === value;
       default:
         return request.path.includes(condition);
     }
@@ -263,6 +265,32 @@ export class FakeRaiderIo {
     params: Record<string, string | number> = {},
   ): unknown {
     if (path === 'mythic-plus/static-data') return this.world.staticData(expansionId);
+
+    if (path === 'raiding/boss-rankings') {
+      // As upstream: no `page` or `limit` is taken, and asking with one is a
+      // 400, as is a difficulty it does not know.
+      if (
+        !['mythic', 'heroic', 'normal'].includes(String(params.difficulty)) ||
+        params.limit !== undefined ||
+        params.page !== undefined
+      ) {
+        throw new RaiderIoApiError(400, url, 'Invalid request query input');
+      }
+
+      if (region !== 'world' && !this.world.regions.includes(region)) {
+        throw new RaiderIoApiError(400, url, 'Could not find requested region or sub region');
+      }
+
+      const payload = this.world.bossRankings(
+        String(params.raid),
+        String(params.boss),
+        region,
+        String(params.difficulty),
+      );
+      if (payload === null) throw new RaiderIoApiError(400, url, 'Could not find raid boss');
+
+      return payload;
+    }
 
     if (path === 'raiding/raid-rankings') {
       // The endpoint's real answers: a difficulty it does not know, or none, and

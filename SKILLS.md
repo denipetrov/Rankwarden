@@ -245,6 +245,7 @@ src/
     raid-rankings.repository.ts `raids.guilds.<board>.<difficulty>` and its stamp; nothing else
     guild.repository.ts         `guilds`: one document per guild
     raid-rankings.scheduler.ts  after every first pass, then per interval; yields to every job
+    boss.repository.ts          `bosses`: identity from the catalogue, boards from the rankings
   mplus-representation/
     mplus-spec-representation.mapper.ts   tallies -> per region/dungeon + all documents
     mplus-spec-representation.service.ts  live after each pass; archive once per season
@@ -1819,6 +1820,56 @@ Rules for writers:
 - **No backfill runs at startup.** A database filled before the field existed needs a one-off
   `$set` of `searchNameOf(name)` per document; production starts empty and never needs it.
 
+### 5.14 Bosses — `bosses`
+
+```js
+{ id: 210001,                        // the encounter id from the raid's encounters; the identity
+  raidId: 16915,                     // -> raids.id
+  name: 'Gatekeeper', slug: 'gatekeeper',
+  catalogueUpdatedAt: Date,
+  bossRankings: {                    // absent until a board is read
+    world: {                         // also us, eu, kr, tw
+      mythic: [                      // also heroic, normal; best first, fifty at most
+        { guildId: 1047044,          // -> guilds.id
+          rank: 1,                   // on this board, as served
+          itemLevelAvg: 327.866,     // null when not served
+          attempts: 9,               // pulls before the FIRST kill; often null upstream
+          firstDefeated: Date },     // the first kill; null for a guild still progressing
+        … ] } },
+  bossRankingsUpdatedAt: { world: { mythic: Date, … }, … },
+  bossRankingsRefusedAt?: { … } }    // as on raids (§5.12)
+```
+
+`GET /raiding/boss-rankings?raid=<slug>&boss=<slug>&difficulty=<d>&region=<board>`. Indexes:
+`boss_identity` (unique `id`), `boss_raid_slug` (`raidId`, `slug`).
+
+- **The catalogue writes the bosses.** Each walk upserts one document per encounter of every
+  raid it lists, after the raids themselves, field-level — so a walk never touches a board,
+  and a rename upstream reaches the boss. 245 bosses across 30 raids when checked live
+  (2026-11-02). The encounter `id` is unique across all of them; the `slug` is not
+  (`artificer-xymox` is in Castle Nathria and its Fated re-release), hence the index on
+  `raidId` and `slug` together.
+- **The raid rankings job reads the boards** (`BOSS_RANKINGS_ENABLED`, off by default; needs
+  `RAID_RANKINGS_ENABLED`), in the same run, for the same regions and difficulties, by the
+  same rules: an open raid's bosses every run, a closed raid's until one read lands after it
+  closed; refusals stamped and settled; the run's pauses, concurrency and give-up apply to
+  boss boards as to raid boards, and `?raid=<slug>` re-reads a raid's bosses too. A raid's
+  own boards are started before its bosses'. The bosses read are the raid's current
+  `encounters`, so a boss the catalogue stops listing is left as it was.
+- **One request a board, fifty guilds at most.** The endpoint takes no `page` or `limit` —
+  either is a 400 — and answers in 0.2-0.6s (checked live), unlike the raid rankings (§9.17).
+  245 bosses × 5 boards × 3 difficulties make a first run of ~3,700 requests; after it, only
+  the open raids' bosses are read.
+- **Only the first kill is kept.** Upstream lists every kill of the boss by the guild, oldest
+  first; `attempts` and `firstDefeated` come from the earliest. `attempts` is null for many
+  kills and every kill before Shadowlands, as served.
+- **A guild still progressing is ranked too**, after the ones that killed the boss, with no
+  kill (`firstDefeated` and `attempts` null).
+- **Guilds first.** A boss board can name a guild no raid board does, so its guilds are
+  written to `guilds` before the board, as for a raid's (invariant I32).
+- Requests are charged to the `raidRankings` consumer (the same run), and counted in the
+  run's result as `bossBoards`, a part of `boards`.
+
 ---
 
 ## 6. Blizzard API surface
@@ -1900,6 +1951,7 @@ Non-2xx becomes `RaiderIoApiError` with `statusCode`, `isNotFound` and `isBadReq
 | `/api/v1/mythic-plus/season-cutoffs?season&region`        | title + percentile cutoffs, one per season and region (§5.10)  |
 | `/api/v1/raiding/static-data?expansion_id`                | the raid catalogue, one expansion at a time; 400 past the last (§5.11) |
 | `/api/v1/raiding/raid-rankings?raid&difficulty&region&limit&page` | a raid's ranked guilds on one board, 20 a page (§5.12)   |
+| `/api/v1/raiding/boss-rankings?raid&boss&difficulty&region` | a boss's first fifty killers on one board, one request (§5.14) |
 
 **The access key travels as a query parameter**, which Raider.io requires and which means it
 lands inside every url — including the ones got bakes into its own error messages. It is
@@ -2233,6 +2285,8 @@ Every variable is validated by zod at boot; anything missing or malformed fails 
 | `RAID_RANKINGS_REQUEST_TIMEOUT_MS`    | `75000`                             | Per ranking request; upstream's gateway gives up at 60s    |
 | `RAID_RANKINGS_TOP`                   | `100`                               | Guilds kept per board                                      |
 | `RAID_RANKINGS_PAGE_SIZE`             | `20`                                | Guilds per ranking request (max 200); keep small (§9.17)   |
+| `BOSS_RANKINGS_ENABLED`               | `false`                             | A board per boss too, in `bosses` (§5.14); needs the rankings |
+| `RAIDERIO_PATH_BOSS_RANKINGS`         | `raiding/boss-rankings`             | Path of the boss-ranking endpoint                          |
 | `MPLUS_SEASON_REFRESH_ENABLED`        | `true`                              | Catalogue at boot + hourly season check; idle without M+   |
 | `MPLUS_SEASON_CHECK_INTERVAL_MS`      | `3600000`                           | No request unless the catalogue is due                     |
 | `MPLUS_TRANSITION_ENABLED`            | `true`                              | Retire superseded M+ seasons (§4.6.2)                      |
@@ -2515,7 +2569,10 @@ the harness side, and invariant I28 compares stored boards with what the world s
 > **I26** (every ranked `guildId` is a guild document), **I27** (a board is best first, no
 > rank or guild twice, at most a hundred, stamped, each boss tied to its raid's encounter),
 > **I29** (a guild document is whole) and **I30** (a raid document keeps its catalogue
-> fields and stays well under 16 MB) run with every `expectInvariants`. **I28** (a stored
+> fields and stays well under 16 MB) run with every `expectInvariants`, and so does **I32**
+> (a boss names a stored raid that lists it; its boards are stamped, best first, at most
+> fifty, every `guildId` a guild). Boss boards: `test/boss-rankings.spec.ts`; the fake serves
+> them from `MplusWorld.bossRankings()`, with `boss:<slug>` as a `RequestMatcher` key. **I28** (a stored
 > board holds exactly what the world serves for ranks 1-100) is opt-in — pass the
 > `MplusWorld` as the third argument, straight after the boards were read — because
 > self-consistency cannot see a board cut short.

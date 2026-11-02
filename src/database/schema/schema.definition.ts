@@ -31,7 +31,7 @@ import {
   MPLUS_CHARACTERS_INDEXES,
   MPLUS_RUNS_INDEXES,
 } from '../../mplus/mplus.indexes.js';
-import { GUILDS_INDEXES, RAIDS_INDEXES } from '../../raid/raid.indexes.js';
+import { GUILDS_INDEXES, RAIDS_INDEXES, BOSSES_INDEXES } from '../../raid/raid.indexes.js';
 import { SPEC_REPRESENTATION_INDEXES } from '../../representation/representation.indexes.js';
 import { SEASON_STATE_INDEXES, SEASON_TRANSITIONS_INDEXES } from '../../season/season.indexes.js';
 import {
@@ -40,6 +40,7 @@ import {
   ARCHIVE_SEASONS_COLLECTION,
   CHARACTERS_COLLECTION,
   GUILDS_COLLECTION,
+  BOSSES_COLLECTION,
   MPLUS_AFFIXES_COLLECTION,
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
@@ -122,6 +123,7 @@ export const DATABASE_SCHEMA: readonly CollectionSchema[] = [
   },
   { collection: RAIDS_COLLECTION, indexes: RAIDS_INDEXES },
   { collection: GUILDS_COLLECTION, indexes: GUILDS_INDEXES },
+  { collection: BOSSES_COLLECTION, indexes: BOSSES_INDEXES },
   // Keyed by `_id` alone, so it has no index of its own. Declared all the same,
   // so that every collection the service writes to is one the schema step made.
   { collection: QUOTA_WINDOWS_COLLECTION, indexes: [] },

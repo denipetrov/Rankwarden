@@ -439,3 +439,33 @@ describe('validateEnv — paging that used to be compiled in', () => {
     }
   });
 });
+
+describe('validateEnv — boss rankings', () => {
+  const withRankings = {
+    ...base,
+    RAIDER_IO_API_KEY: 'key',
+    RAID_CATALOGUE_ENABLED: 'true',
+    RAID_RANKINGS_ENABLED: 'true',
+  };
+
+  it('is off by default, and asks for the boss endpoint by its usual path', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.BOSS_RANKINGS_ENABLED).toBe(false);
+    expect(env.RAIDERIO_PATH_BOSS_RANKINGS).toBe('raiding/boss-rankings');
+  });
+
+  it('refuses to run without the raid rankings job that reads it', () => {
+    expect(() =>
+      validateEnv({
+        ...base,
+        RAIDER_IO_API_KEY: 'key',
+        RAID_CATALOGUE_ENABLED: 'true',
+        BOSS_RANKINGS_ENABLED: 'true',
+      }),
+    ).toThrow(/BOSS_RANKINGS_ENABLED: is read by the raid rankings job/);
+    expect(
+      validateEnv({ ...withRankings, BOSS_RANKINGS_ENABLED: 'true' }).BOSS_RANKINGS_ENABLED,
+    ).toBe(true);
+  });
+});

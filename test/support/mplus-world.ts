@@ -122,6 +122,36 @@ function progressOn(
   return guild.progress[raid];
 }
 
+/** A guild as every raiding endpoint describes it. */
+function guildPayload(guild: WorldGuild) {
+  return {
+    id: guild.id,
+    name: guild.name,
+    displayName: guild.name,
+    faction: guild.faction,
+    realm: {
+      id: 1,
+      name: guild.realmName,
+      altName: null,
+      slug: guild.realmSlug,
+      isConnected: true,
+      realmType: 'live',
+    },
+    region: {
+      name: guild.region.toUpperCase(),
+      slug: guild.region,
+      short_name: guild.region.toUpperCase(),
+    },
+    path: `/guilds/${guild.region}/${guild.realmSlug}/${encodeURIComponent(guild.name)}`,
+    // Upstream always serves a logo: a default one when the guild has none.
+    logo: guild.logo ?? `https://cdn.raiderio.net/images/site/${guild.faction}_icon4.png`,
+    isDefaultLogo: guild.logo === undefined,
+  };
+}
+
+/** Bosses on a boss board at most, as upstream serves it. */
+const BOSS_BOARD_SIZE = 50;
+
 export interface MplusWorldSeason {
   slug: string;
   name: string;
@@ -440,29 +470,7 @@ export class MplusWorld {
         .map(({ guild, rank, regionRank }) => ({
           rank,
           regionRank,
-          guild: {
-            id: guild.id,
-            name: guild.name,
-            displayName: guild.name,
-            faction: guild.faction,
-            realm: {
-              id: 1,
-              name: guild.realmName,
-              altName: null,
-              slug: guild.realmSlug,
-              isConnected: true,
-              realmType: 'live',
-            },
-            region: {
-              name: guild.region.toUpperCase(),
-              slug: guild.region,
-              short_name: guild.region.toUpperCase(),
-            },
-            path: `/guilds/${guild.region}/${guild.realmSlug}/${encodeURIComponent(guild.name)}`,
-            // Upstream always serves a logo: a default one when the guild has none.
-            logo: guild.logo ?? `https://cdn.raiderio.net/images/site/${guild.faction}_icon4.png`,
-            isDefaultLogo: guild.logo === undefined,
-          },
+          guild: guildPayload(guild),
           encountersDefeated: on(guild)!
             .filter((boss) => boss.defeatedAt !== undefined)
             .map((boss) => ({
@@ -491,6 +499,83 @@ export class MplusWorld {
                   : {}),
               })),
         })),
+    };
+  }
+
+  /**
+   * One `/raiding/boss-rankings` board, in the API's own shape, or null for a
+   * raid or boss it does not know — which upstream answers with a 400.
+   *
+   * The guilds that killed the boss, earliest kill first, then the ones still
+   * progressing on it, least health left first; fifty at most, in one answer.
+   * Each kill list is oldest first and carries a later kill too, so a reader
+   * that keeps the wrong one is caught.
+   */
+  bossRankings(raid: string, boss: string, region: string, difficulty: string): unknown | null {
+    const listed = this.raids.find((entry) => entry.slug === raid);
+    if (!listed || !listed.encounters.some((encounter) => encounter.slug === boss)) return null;
+
+    const standing = (guild: WorldGuild) =>
+      progressOn(guild, raid, difficulty)?.find((entry) => entry.slug === boss);
+    const killedAt = (guild: WorldGuild) => Date.parse(standing(guild)!.defeatedAt!);
+    const onBoss = this.guilds.filter((guild) => standing(guild) !== undefined);
+    const killed = onBoss
+      .filter((guild) => standing(guild)!.defeatedAt !== undefined)
+      .sort((left, right) => killedAt(left) - killedAt(right) || left.id - right.id);
+    const progressing = onBoss
+      .filter((guild) => standing(guild)!.defeatedAt === undefined)
+      .sort(
+        (left, right) =>
+          (standing(left)!.bestPercent ?? 100) - (standing(right)!.bestPercent ?? 100) ||
+          left.id - right.id,
+      );
+    const regionRanks = new Map<string, number>();
+
+    return {
+      bossRankings: [...killed, ...progressing]
+        .map((guild, index) => {
+          const regionRank = (regionRanks.get(guild.region) ?? 0) + 1;
+          regionRanks.set(guild.region, regionRank);
+
+          return { guild, worldRank: index + 1, regionRank };
+        })
+        .filter(({ guild }) => region === 'world' || guild.region === region)
+        .slice(0, BOSS_BOARD_SIZE)
+        .map(({ guild, worldRank, regionRank }) => {
+          const progress = standing(guild)!;
+          const first = progress.defeatedAt;
+          const again = first
+            ? new Date(Date.parse(first) + 7 * 86_400_000).toISOString()
+            : undefined;
+
+          return {
+            rank: region === 'world' ? worldRank : regionRank,
+            regionRank,
+            guild: guildPayload(guild),
+            encountersDefeated: first
+              ? [
+                  {
+                    slug: boss,
+                    firstDefeated: first,
+                    lastDefeated: first,
+                    attempts: progress.pulls,
+                  },
+                  { slug: boss, firstDefeated: again, lastDefeated: again, attempts: 1 },
+                ]
+              : [],
+            doesVideoExist: false,
+            streamers: { count: 0 },
+            recruitmentProfiles: [],
+            itemLevelAvg: 300 + (guild.id % 40) + 0.375,
+            ...(first
+              ? {}
+              : {
+                  isAttemptOnly: true,
+                  bestPercent: progress.bestPercent ?? null,
+                  pullCount: progress.pulls,
+                }),
+          };
+        }),
     };
   }
 

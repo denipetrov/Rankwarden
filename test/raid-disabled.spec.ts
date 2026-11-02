@@ -7,7 +7,11 @@ import { bootTestApp, type TestApp } from './support/app.js';
 import { getJson } from './support/http.js';
 import { CapturingLogger } from './support/logger.js';
 import { World } from './support/world.js';
-import { GUILDS_COLLECTION, RAIDS_COLLECTION } from '../src/database/collections.js';
+import {
+  BOSSES_COLLECTION,
+  GUILDS_COLLECTION,
+  RAIDS_COLLECTION,
+} from '../src/database/collections.js';
 
 /**
  * Raid plan R7.7 — with both raid jobs switched off, which is how every
@@ -39,6 +43,7 @@ describe('Raid jobs switched off', () => {
     );
     expect(await db.collection(RAIDS_COLLECTION).countDocuments()).toBe(0);
     expect(await db.collection(GUILDS_COLLECTION).countDocuments()).toBe(0);
+    expect(await db.collection(BOSSES_COLLECTION).countDocuments()).toBe(0);
     expect(logger.matching(/^Raid catalogue disabled$/)).toHaveLength(1);
     expect(logger.matching(/^Raid rankings disabled$/)).toHaveLength(1);
   });

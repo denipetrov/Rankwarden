@@ -1,6 +1,8 @@
 import { searchNameOf } from '@denipetrov/spirit-link/search';
 
-import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
+import type { BossRanking } from '../raiderio/schemas/boss-rankings.schema.js';
+import type { RaidRanking, RankedGuild } from '../raiderio/schemas/raid-rankings.schema.js';
+import type { BossRankedGuild } from './entities/boss.entity.js';
 import type { GuildDocument } from './entities/guild.entity.js';
 import type {
   RaidEncounter,
@@ -17,7 +19,7 @@ function toDate(value: string | null | undefined): Date | null {
 }
 
 /** The guild a ranking entry describes, as the `guilds` collection stores it. */
-export function toGuildDocument(entry: RaidRanking, updatedAt: Date): GuildDocument {
+export function toGuildDocument(entry: { guild: RankedGuild }, updatedAt: Date): GuildDocument {
   const { guild } = entry;
 
   return {
@@ -64,5 +66,27 @@ export function toRankedGuild(
     guildId: entry.guild.id,
     encountersPulled,
     encountersDefeated,
+  };
+}
+
+/**
+ * A boss-ranking entry as its boss stores it: the guild by id, its place, its
+ * item level, and its **first** kill — the earliest of the kills listed, which
+ * is the first one listed on every board checked. A guild ranked for progress
+ * it has not turned into a kill has no kill to report.
+ */
+export function toBossRankedGuild(entry: BossRanking): BossRankedGuild {
+  const kills = (entry.encountersDefeated ?? [])
+    .map((kill) => ({ kill, at: toDate(kill.firstDefeated) }))
+    .filter((dated): dated is { kill: (typeof dated)['kill']; at: Date } => dated.at !== null)
+    .sort((left, right) => left.at.getTime() - right.at.getTime());
+  const first = kills[0];
+
+  return {
+    guildId: entry.guild.id,
+    rank: entry.rank,
+    itemLevelAvg: entry.itemLevelAvg ?? null,
+    attempts: first?.kill.attempts ?? null,
+    firstDefeated: first?.at ?? null,
   };
 }

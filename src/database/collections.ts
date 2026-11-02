@@ -91,6 +91,9 @@ export const RAIDS_COLLECTION = 'raids';
 /** Guild progression rows behind those boards. */
 export const GUILDS_COLLECTION = 'guilds';
 
+/** Every boss of every raid, each with the boards of the guilds that killed it first. */
+export const BOSSES_COLLECTION = 'bosses';
+
 // ------------------------------------------------------------- Infrastructure
 
 /**
@@ -126,5 +129,6 @@ export const ALL_COLLECTIONS: readonly string[] = [
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   RAIDS_COLLECTION,
   GUILDS_COLLECTION,
+  BOSSES_COLLECTION,
   QUOTA_WINDOWS_COLLECTION,
 ];

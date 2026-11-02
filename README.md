@@ -21,6 +21,7 @@ database directly, and can push corrections back through two sync endpoints.
 | Mythic+ extras | Raider.io | Season catalogue, title cutoffs (Keystone Master and up, top 0.1% and 1%), spec usage per dungeon      | With each pass        |
 | Mythic+ history | Raider.io | The top 2,000 runs per region of every finished season since Legion                                  | Once per season       |
 | Raids          | Raider.io | Every raid since Legion with its bosses, and the top 100 guilds per raid, region and difficulty        | Hourly while open     |
+| Raid bosses    | Raider.io | Every boss of every raid (`bosses`), and the first 50 guilds to kill each, per region and difficulty | Hourly while open     |
 
 When a new season starts, the previous one is removed from the live collections, region by
 region, but only after it has been archived. During the gap between two seasons the
@@ -109,7 +110,7 @@ All data lives in one MongoDB database, `rankwarden`, in 25 collections:
 | Mythic+, live     | `mplus_runs`, `mplus_characters`, `mplus_affixes`, `mplus_spec_representation`                |
 | Mythic+, seasons  | `mplus_seasons`, `mplus_dungeons`, `mplus_season_state`, `mplus_season_transitions`           |
 | Mythic+, history  | `mplus_archive_runs`, `mplus_archive_characters`                                              |
-| Raids             | `raids`, `guilds`                                                                             |
+| Raids             | `raids`, `guilds`, `bosses`                                                                    |
 | Internal          | `quota_windows`                                                                               |
 
 A few things to know before reading it:

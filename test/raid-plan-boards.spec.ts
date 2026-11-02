@@ -584,6 +584,7 @@ describe('Raid plan R2-R7 — boards, guilds and failures', () => {
       expect(health.body.jobs.raidRankingsRunning).toBe(false);
       expect(health.body.jobs.raidRankings).toEqual({
         boards: 4,
+        bossBoards: 0,
         failed: 1,
         refused: 0,
         settled: 0,

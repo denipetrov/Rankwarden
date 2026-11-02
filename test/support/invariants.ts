@@ -18,6 +18,7 @@ import {
 } from '../../src/mplus/entities/mplus-character.entity.js';
 import {
   ARCHIVE_ENTRIES_COLLECTION,
+  BOSSES_COLLECTION,
   CHARACTERS_COLLECTION,
   GUILDS_COLLECTION,
   MPLUS_AFFIXES_COLLECTION,
@@ -89,6 +90,7 @@ export async function expectInvariants(
   await expectRaidBoardsWellFormed(db);
   await expectGuildsWhole(db);
   await expectRaidDocumentsWhole(db);
+  await expectBossesWellFormed(db);
   await expectSearchNamesFolded(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
@@ -1343,5 +1345,82 @@ export async function expectRaidDocumentsWhole(db: Db): Promise<void> {
     expect(BSON.calculateObjectSize(raid), `${label} is well under the 16 MB limit`).toBeLessThan(
       RAID_DOCUMENT_BUDGET_BYTES,
     );
+  }
+}
+
+interface StoredBoss {
+  id: number;
+  raidId: number;
+  slug: string;
+  bossRankings?: Record<string, Record<string, { rank: number; guildId: number }[]>>;
+  bossRankingsUpdatedAt?: Record<string, Record<string, Date>>;
+}
+
+/**
+ * I32 - a boss belongs to its raid, and its boards are as trustworthy as one.
+ *
+ * Every boss names a stored raid that lists it among its encounters, under the
+ * same slug; every board is stamped, best first, no guild twice, at most fifty,
+ * and every guild it names is a document in `guilds`.
+ */
+export async function expectBossesWellFormed(db: Db): Promise<void> {
+  const bosses = await db.collection<StoredBoss>(BOSSES_COLLECTION).find({}).toArray();
+  if (bosses.length === 0) return;
+
+  const raids = new Map(
+    (
+      await db
+        .collection<StoredRaid & { id: number }>(RAIDS_COLLECTION)
+        .find({}, { projection: { id: 1, encounters: 1 } })
+        .toArray()
+    ).map((raid) => [raid.id, raid.encounters]),
+  );
+  const known = new Set(
+    (
+      await db
+        .collection(GUILDS_COLLECTION)
+        .find({}, { projection: { id: 1 } })
+        .toArray()
+    ).map((guild) => guild.id as number),
+  );
+
+  for (const boss of bosses) {
+    const label = `I32: boss ${boss.id} (${boss.slug})`;
+    const encounters = raids.get(boss.raidId);
+
+    expect(encounters, `${label} names a stored raid`).toBeDefined();
+    expect(
+      encounters!.find((encounter) => encounter.id === boss.id)?.slug,
+      `${label} is one of its raid's encounters, by id and slug`,
+    ).toBe(boss.slug);
+
+    const stamped = Object.entries(boss.bossRankingsUpdatedAt ?? {}).flatMap(
+      ([region, byDifficulty]) => Object.keys(byDifficulty).map((d) => `${region}/${d}`),
+    );
+    const boards = Object.entries(boss.bossRankings ?? {}).flatMap(([region, byDifficulty]) =>
+      Object.entries(byDifficulty).map(
+        ([difficulty, board]): [string, { rank: number; guildId: number }[]] => [
+          `${region}/${difficulty}`,
+          board,
+        ],
+      ),
+    );
+    expect(stamped.sort(), `${label} stamps exactly the boards it stores`).toEqual(
+      boards.map(([name]) => name).sort(),
+    );
+
+    for (const [name, board] of boards) {
+      const ranks = board.map((entry) => entry.rank);
+
+      expect(board.length, `${label} ${name} is at most fifty`).toBeLessThanOrEqual(50);
+      expect(ranks, `${label} ${name} is best first`).toEqual([...ranks].sort((a, b) => a - b));
+      expect(new Set(board.map((entry) => entry.guildId)).size, `${label} ${name}`).toBe(
+        board.length,
+      );
+      expect(
+        board.filter((entry) => !known.has(entry.guildId)).map((entry) => entry.guildId),
+        `${label} ${name}: every guildId is a guild document`,
+      ).toEqual([]);
+    }
   }
 }

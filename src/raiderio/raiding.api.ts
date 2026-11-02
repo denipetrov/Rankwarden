@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema.js';
 import { RaiderIoHttpService } from './http/raiderio-http.service.js';
 import type { RaidDifficulty, RaidRankingRegion } from './raiderio.constants.js';
+import { bossRankingsSchema, type BossRanking } from './schemas/boss-rankings.schema.js';
 import { raidRankingsSchema, type RaidRanking } from './schemas/raid-rankings.schema.js';
 import { raidStaticDataSchema, type RaidStaticData } from './schemas/raid-static-data.schema.js';
 
@@ -18,6 +19,7 @@ import { raidStaticDataSchema, type RaidStaticData } from './schemas/raid-static
 export class RaidingApi {
   private readonly staticDataPath: string;
   private readonly rankingsPath: string;
+  private readonly bossRankingsPath: string;
   private readonly pageSize: number;
 
   constructor(
@@ -26,6 +28,7 @@ export class RaidingApi {
   ) {
     this.staticDataPath = config.get('RAIDERIO_PATH_RAID_STATIC_DATA', { infer: true });
     this.pageSize = config.get('RAID_RANKINGS_PAGE_SIZE', { infer: true });
+    this.bossRankingsPath = config.get('RAIDERIO_PATH_BOSS_RANKINGS', { infer: true });
     this.rankingsPath = config.get('RAIDERIO_PATH_RAID_RANKINGS', { infer: true });
   }
 
@@ -79,5 +82,29 @@ export class RaidingApi {
     });
 
     return raidRankingsSchema.parse(payload).raidRankings;
+  }
+
+  /**
+   * The guilds that killed one boss of one raid first, on one board at one
+   * difficulty: fifty at most, best first, in one answer — the endpoint takes
+   * no `page` or `limit`, and refuses either with a 400. A boss it does not
+   * know is a 400 too ("Could not find raid boss"). Fast where the raid
+   * rankings are slow: 0.2-0.6s a board when checked live (2026-11-02).
+   */
+  async getBossRankings(
+    raid: string,
+    boss: string,
+    region: RaidRankingRegion,
+    difficulty: RaidDifficulty,
+    timeoutMs?: number,
+  ): Promise<BossRanking[]> {
+    const payload = await this.http.get(this.bossRankingsPath, {
+      region,
+      timeoutMs,
+      healthProvider: UpstreamProvider.RaiderIoRankings,
+      searchParams: { raid, boss, difficulty, region },
+    });
+
+    return bossRankingsSchema.parse(payload).bossRankings;
   }
 }

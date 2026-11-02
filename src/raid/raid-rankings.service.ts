@@ -8,10 +8,12 @@ import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { type RaidDifficulty, type RaidRankingRegion } from '../raiderio/raiderio.constants.js';
 import { RaidingApi } from '../raiderio/raiding.api.js';
 import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
+import { BossRepository, type BossStamps } from './boss.repository.js';
 import type { GuildDocument } from './entities/guild.entity.js';
+import type { RaidEncounter } from './entities/raid.entity.js';
 import { GuildRepository } from './guild.repository.js';
 import { RaidCatalogueService } from './raid-catalogue.service.js';
-import { toGuildDocument, toRankedGuild } from './raid-rankings.mapper.js';
+import { toBossRankedGuild, toGuildDocument, toRankedGuild } from './raid-rankings.mapper.js';
 import { RaidRankingsRepository, type RaidRankingTarget } from './raid-rankings.repository.js';
 
 /**
@@ -31,8 +33,10 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const REFUSED_RETRY_MS = 86_400_000;
 
 export interface RaidRankingsRefresh {
-  /** Boards read and stored. */
+  /** Boards read and stored, a raid's and its bosses' alike. */
   boards: number;
+  /** Of `boards`, the boss boards (`bosses`). */
+  bossBoards: number;
   /**
    * Boards that were due and were not stored: the ones that could not be read,
    * and the ones Raider.io refused. What was stored is kept.
@@ -69,11 +73,15 @@ export interface RaidRankingsControl {
   whenClear?: () => Promise<boolean>;
 }
 
-/** One ranking to read: a raid, on one board, at one difficulty. */
+/**
+ * One ranking to read: a raid, on one board, at one difficulty — or, with
+ * `boss`, one boss of that raid on that board.
+ */
 interface Board {
   raid: RaidRankingTarget;
   region: RaidRankingRegion;
   difficulty: RaidDifficulty;
+  boss?: { encounter: RaidEncounter; stamps: BossStamps };
 }
 
 /** When a raid closes everywhere, or null while any region's end is unknown. */
@@ -113,6 +121,7 @@ export class RaidRankingsService {
   private readonly timeoutMs: number;
   private readonly top: number;
   private readonly pageSize: number;
+  private readonly bossRankings: boolean;
   /**
    * The scheduled run in flight and the one asked for by hand, kept apart: a
    * scheduled run yields to other jobs and one asked for by hand does not, so
@@ -129,6 +138,7 @@ export class RaidRankingsService {
     private readonly catalogue: RaidCatalogueService,
     private readonly repository: RaidRankingsRepository,
     private readonly guilds: GuildRepository,
+    private readonly bosses: BossRepository,
   ) {
     this.regions = config.get('RAID_RANKINGS_REGIONS', { infer: true });
     this.difficulties = config.get('RAID_RANKINGS_DIFFICULTIES', { infer: true });
@@ -136,6 +146,7 @@ export class RaidRankingsService {
     this.timeoutMs = config.get('RAID_RANKINGS_REQUEST_TIMEOUT_MS', { infer: true });
     this.top = config.get('RAID_RANKINGS_TOP', { infer: true });
     this.pageSize = config.get('RAID_RANKINGS_PAGE_SIZE', { infer: true });
+    this.bossRankings = config.get('BOSS_RANKINGS_ENABLED', { infer: true });
   }
 
   get isRunning(): boolean {
@@ -215,9 +226,14 @@ export class RaidRankingsService {
   }
 
   private isDue(board: Board, now: Date): boolean {
-    const { raid, region, difficulty } = board;
-    const readAt = raid.guildsUpdatedAt?.[region]?.[difficulty];
-    const refusedAt = raid.guildsRefusedAt?.[region]?.[difficulty];
+    const { raid, region, difficulty, boss } = board;
+    // A boss's board settles by the same rules as its raid's, by its own stamps.
+    const readAt = boss
+      ? boss.stamps.bossRankingsUpdatedAt?.[region]?.[difficulty]
+      : raid.guildsUpdatedAt?.[region]?.[difficulty];
+    const refusedAt = boss
+      ? boss.stamps.bossRankingsRefusedAt?.[region]?.[difficulty]
+      : raid.guildsRefusedAt?.[region]?.[difficulty];
     const closes = closesAt(raid);
     const open = closes === null || closes > now;
 
@@ -261,6 +277,7 @@ export class RaidRankingsService {
   ): Promise<RaidRankingsRefresh> {
     const result: RaidRankingsRefresh = {
       boards: 0,
+      bossBoards: 0,
       failed: 0,
       refused: 0,
       settled: 0,
@@ -269,16 +286,32 @@ export class RaidRankingsService {
       stopped: null,
     };
 
+    const bossStamps = this.bossRankings
+      ? await this.bosses.stamps(raids.map((raid) => raid.id))
+      : new Map<number, BossStamps>();
+    const consider = (board: Board) => {
+      if (force || this.isDue(board, now)) due.push(board);
+      else result.settled += 1;
+    };
+
     // Raid by raid, and within a raid the hardest difficulty first: the order
     // the boards are started in, and so what a run that ends early has read.
+    // A raid's own boards come before its bosses'. The bosses are the raid's
+    // current `encounters`, so a boss the catalogue no longer lists for it is
+    // not read, and its document keeps what it had.
     const due: Board[] = [];
     for (const raid of raids) {
       for (const difficulty of this.difficulties) {
-        for (const region of this.regions) {
-          const board = { raid, region, difficulty };
+        for (const region of this.regions) consider({ raid, region, difficulty });
+      }
 
-          if (force || this.isDue(board, now)) due.push(board);
-          else result.settled += 1;
+      if (!this.bossRankings) continue;
+
+      for (const encounter of raid.encounters) {
+        const boss = { encounter, stamps: bossStamps.get(encounter.id) ?? {} };
+
+        for (const difficulty of this.difficulties) {
+          for (const region of this.regions) consider({ raid, region, difficulty, boss });
         }
       }
     }
@@ -309,7 +342,9 @@ export class RaidRankingsService {
 
         const board = due[next];
         next += 1;
-        const label = `${board.region} ${board.difficulty} ranking of ${board.raid.slug}`;
+        const label =
+          `${board.region} ${board.difficulty} ranking of ` +
+          (board.boss ? `${board.boss.encounter.slug} in ${board.raid.slug}` : board.raid.slug);
 
         try {
           // Not `+= await`: that reads the total before the board is read, and
@@ -317,6 +352,7 @@ export class RaidRankingsService {
           const written = await this.readBoard(board, now);
           result.guilds += written;
           result.boards += 1;
+          if (board.boss) result.bossBoards += 1;
           stored.add(board.raid.id);
           failuresSinceSuccess = 0;
         } catch (error) {
@@ -352,7 +388,9 @@ export class RaidRankingsService {
 
     if (result.boards > 0 || result.failed > 0 || result.stopped !== null) {
       this.logger.log(
-        `Raid rankings: ${result.boards} board(s) read across ${result.raids} raid(s), ` +
+        `Raid rankings: ${result.boards} board(s) read across ${result.raids} raid(s)` +
+          (result.bossBoards > 0 ? `, ${result.bossBoards} of them boss boards` : '') +
+          ', ' +
           `${result.guilds} guild write(s)` +
           (result.failed > 0
             ? `; ${result.failed} board(s) failed` +
@@ -368,14 +406,21 @@ export class RaidRankingsService {
   /** Stamps a refused board. A failure to do so costs one more ask, not the run. */
   private async recordRefusal(board: Board, now: Date, label: string): Promise<void> {
     try {
-      await this.repository.markRefused(board.raid.id, board.region, board.difficulty, now);
+      if (board.boss) {
+        await this.bosses.markRefused(board.boss.encounter.id, board.region, board.difficulty, now);
+      } else {
+        await this.repository.markRefused(board.raid.id, board.region, board.difficulty, now);
+      }
     } catch (error) {
       this.logger.warn(`Could not record the refusal of the ${label}: ${describeError(error)}`);
     }
   }
 
   /** Reads and stores one board. Returns the guild writes it made. */
-  private async readBoard({ raid, region, difficulty }: Board, now: Date): Promise<number> {
+  private async readBoard(target: Board, now: Date): Promise<number> {
+    if (target.boss) return this.readBossBoard(target, target.boss.encounter, now);
+
+    const { raid, region, difficulty } = target;
     const entries = await this.readPages(raid.slug, region, difficulty);
 
     const guilds = new Map<number, GuildDocument>();
@@ -400,6 +445,39 @@ export class RaidRankingsService {
     // Guilds before the board, so a guildId on a raid always resolves.
     const written = await this.guilds.upsertGuilds([...guilds.values()]);
     await this.repository.setBoard(raid.id, region, difficulty, board, now);
+
+    return written;
+  }
+
+  /**
+   * Reads and stores one boss's board: one request, the whole board. Guilds
+   * first, as for a raid's board, so every `guildId` on a boss resolves too —
+   * a boss board can name guilds no raid board does.
+   */
+  private async readBossBoard(
+    { raid, region, difficulty }: Board,
+    encounter: RaidEncounter,
+    now: Date,
+  ): Promise<number> {
+    const entries = await this.api.getBossRankings(
+      raid.slug,
+      encounter.slug,
+      region,
+      difficulty,
+      this.timeoutMs,
+    );
+
+    const guilds = new Map<number, GuildDocument>();
+    for (const entry of entries) guilds.set(entry.guild.id, toGuildDocument(entry, now));
+
+    const written = await this.guilds.upsertGuilds([...guilds.values()]);
+    await this.bosses.setBoard(
+      { id: encounter.id, raidId: raid.id, name: encounter.name, slug: encounter.slug },
+      region,
+      difficulty,
+      entries.map(toBossRankedGuild),
+      now,
+    );
 
     return written;
   }

@@ -6,7 +6,8 @@ import { describeError } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { RaidingApi } from '../raiderio/raiding.api.js';
-import { toRaidDocument } from './raid-catalogue.mapper.js';
+import { BossRepository } from './boss.repository.js';
+import { toBossDocuments, toRaidDocument } from './raid-catalogue.mapper.js';
 import { RaidCatalogueRepository } from './raid-catalogue.repository.js';
 
 /**
@@ -62,6 +63,7 @@ export class RaidCatalogueService {
     config: ConfigService<Env, true>,
     private readonly api: RaidingApi,
     private readonly repository: RaidCatalogueRepository,
+    private readonly bosses: BossRepository,
   ) {
     this.firstExpansion = config.get('RAID_CATALOGUE_FIRST_EXPANSION', { infer: true });
     this.ttlMs = config.get('RAID_CATALOGUE_TTL_MS', { infer: true });
@@ -161,6 +163,9 @@ export class RaidCatalogueService {
       raids += await this.repository.upsertRaids(
         data.raids.map((raid) => toRaidDocument(raid, expansionId, now)),
       );
+      // Each raid's bosses as documents of their own, written after their
+      // raid so a boss's raidId always names a stored raid.
+      await this.bosses.upsertBosses(data.raids.flatMap((raid) => toBossDocuments(raid, now)));
     }
 
     if (complete && expansions.length === 0) {
