@@ -78,16 +78,40 @@ describe('Boss rankings', () => {
   it('keeps every boss of every raid as a document of its own, under its raid', async () => {
     const bosses = await db
       .collection(BOSSES_COLLECTION)
-      .find({}, { projection: { _id: 0, id: 1, raidId: 1, name: 1, slug: 1 } })
+      .find({}, { projection: { _id: 0, id: 1, raidId: 1, raidSlug: 1, name: 1, slug: 1 } })
       .sort({ id: 1 })
       .toArray();
 
     expect(bosses).toEqual([
-      { id: 197124, raidId: 16178, name: 'Plexus Sentinel', slug: 'plexus-sentinel' },
-      { id: 197131, raidId: 16178, name: 'Dimensius', slug: 'dimensius' },
-      { id: 200001, raidId: 16340, name: 'First Boss', slug: 'first-boss' },
-      { id: 210001, raidId: 16915, name: 'Gatekeeper', slug: 'gatekeeper' },
-      { id: 210008, raidId: 16915, name: 'The Abyssal Queen', slug: 'the-abyssal-queen' },
+      {
+        id: 197124,
+        raidId: 16178,
+        raidSlug: 'manaforge-omega',
+        name: 'Plexus Sentinel',
+        slug: 'plexus-sentinel',
+      },
+      {
+        id: 197131,
+        raidId: 16178,
+        raidSlug: 'manaforge-omega',
+        name: 'Dimensius',
+        slug: 'dimensius',
+      },
+      { id: 200001, raidId: 16340, raidSlug: 'tier-mn-1', name: 'First Boss', slug: 'first-boss' },
+      {
+        id: 210001,
+        raidId: 16915,
+        raidSlug: 'the-venomous-abyss',
+        name: 'Gatekeeper',
+        slug: 'gatekeeper',
+      },
+      {
+        id: 210008,
+        raidId: 16915,
+        raidSlug: 'the-venomous-abyss',
+        name: 'The Abyssal Queen',
+        slug: 'the-abyssal-queen',
+      },
     ]);
 
     const indexes = Object.fromEntries(
@@ -98,6 +122,7 @@ describe('Boss rankings', () => {
     expect(indexes).toEqual({
       boss_identity: { key: { id: 1 }, unique: true },
       boss_raid_slug: { key: { raidId: 1, slug: 1 }, unique: false },
+      boss_raid_slug_name: { key: { raidSlug: 1, slug: 1 }, unique: false },
     });
   });
 

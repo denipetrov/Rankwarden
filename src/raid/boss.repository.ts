@@ -8,7 +8,7 @@ import type { BossDocument, BossRankedGuild } from './entities/boss.entity.js';
 /** A boss as a catalogue walk writes it: no boards. */
 export type CataloguedBoss = Pick<
   BossDocument,
-  'id' | 'raidId' | 'name' | 'slug' | 'catalogueUpdatedAt'
+  'id' | 'raidId' | 'raidSlug' | 'name' | 'slug' | 'catalogueUpdatedAt'
 >;
 
 /** What the rankings job needs to know of a boss's boards to decide what to read. */
@@ -75,6 +75,7 @@ export class BossRepository {
         $unset: { [`bossRankingsRefusedAt.${region}.${difficulty}`]: '' },
         $setOnInsert: {
           raidId: boss.raidId,
+          raidSlug: boss.raidSlug,
           name: boss.name,
           slug: boss.slug,
           catalogueUpdatedAt: readAt,

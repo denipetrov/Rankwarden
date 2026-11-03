@@ -17,6 +17,9 @@ export const BOSSES_INDEXES: IndexDescription[] = [
   // A raid's bosses, and a boss by name within its raid. Not unique by slug
   // alone: a re-release's boss can share the original's.
   { key: { raidId: 1, slug: 1 }, name: 'boss_raid_slug' },
+  // The same by the raid's slug, which is what a reader searches with:
+  // { raidSlug: 'the-venomous-abyss' }, or with a boss slug for one boss.
+  { key: { raidSlug: 1, slug: 1 }, name: 'boss_raid_slug_name' },
 ];
 
 /** Indexes on `guilds`. */

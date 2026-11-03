@@ -472,7 +472,13 @@ export class RaidRankingsService {
 
     const written = await this.guilds.upsertGuilds([...guilds.values()]);
     await this.bosses.setBoard(
-      { id: encounter.id, raidId: raid.id, name: encounter.name, slug: encounter.slug },
+      {
+        id: encounter.id,
+        raidId: raid.id,
+        raidSlug: raid.slug,
+        name: encounter.name,
+        slug: encounter.slug,
+      },
       region,
       difficulty,
       entries.map(toBossRankedGuild),

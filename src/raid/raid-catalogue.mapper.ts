@@ -43,6 +43,7 @@ export function toBossDocuments(raid: StaticRaid, catalogueUpdatedAt: Date): Cat
   return (raid.encounters ?? []).map((encounter) => ({
     id: encounter.id,
     raidId: raid.id,
+    raidSlug: raid.slug,
     name: encounter.name,
     slug: encounter.slug,
     catalogueUpdatedAt,

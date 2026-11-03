@@ -269,9 +269,30 @@ describe('RaidCatalogueService — bosses', () => {
     await service.refresh(new Date('2026-11-02T00:00:00Z'));
 
     expect(upsertBosses.mock.calls.flatMap(([bosses]) => bosses)).toEqual([
-      { id: 10, raidId: 1, name: 'Boss', slug: 'one-boss', catalogueUpdatedAt: expect.any(Date) },
-      { id: 20, raidId: 2, name: 'Boss', slug: 'two-boss', catalogueUpdatedAt: expect.any(Date) },
-      { id: 30, raidId: 3, name: 'Boss', slug: 'three-boss', catalogueUpdatedAt: expect.any(Date) },
+      {
+        id: 10,
+        raidId: 1,
+        raidSlug: 'one',
+        name: 'Boss',
+        slug: 'one-boss',
+        catalogueUpdatedAt: expect.any(Date),
+      },
+      {
+        id: 20,
+        raidId: 2,
+        raidSlug: 'two',
+        name: 'Boss',
+        slug: 'two-boss',
+        catalogueUpdatedAt: expect.any(Date),
+      },
+      {
+        id: 30,
+        raidId: 3,
+        raidSlug: 'three',
+        name: 'Boss',
+        slug: 'three-boss',
+        catalogueUpdatedAt: expect.any(Date),
+      },
     ]);
     // An expansion's bosses after its raids, so raidId always names a stored raid.
     expect(upsertRaids.mock.invocationCallOrder[0]).toBeLessThan(

@@ -1825,6 +1825,7 @@ Rules for writers:
 ```js
 { id: 210001,                        // the encounter id from the raid's encounters; the identity
   raidId: 16915,                     // -> raids.id
+  raidSlug: 'the-venomous-abyss',    // -> raids.slug, kept in step by every walk; search by it
   name: 'Gatekeeper', slug: 'gatekeeper',
   catalogueUpdatedAt: Date,
   bossRankings: {                    // absent until a board is read
@@ -1841,7 +1842,8 @@ Rules for writers:
 ```
 
 `GET /raiding/boss-rankings?raid=<slug>&boss=<slug>&difficulty=<d>&region=<board>`. Indexes:
-`boss_identity` (unique `id`), `boss_raid_slug` (`raidId`, `slug`).
+`boss_identity` (unique `id`), `boss_raid_slug` (`raidId`, `slug`), `boss_raid_slug_name`
+(`raidSlug`, `slug`) — `{ raidSlug: 'the-venomous-abyss' }` lists a raid's bosses.
 
 - **The catalogue writes the bosses.** Each walk upserts one document per encounter of every
   raid it lists, after the raids themselves, field-level — so a walk never touches a board,

@@ -106,7 +106,7 @@ function serviceOver(
   );
   const setBossBoard = vi.fn<
     (
-      boss: { id: number; raidId: number; name: string; slug: string },
+      boss: { id: number; raidId: number; raidSlug: string; name: string; slug: string },
       region: string,
       difficulty: string,
       board: unknown[],
@@ -946,7 +946,13 @@ describe('RaidRankingsService', () => {
       await service.refreshDue(NOW);
 
       const [identity, region, difficulty, board, readAt] = setBossBoard.mock.calls[0];
-      expect(identity).toEqual({ id: 11, raidId: 4, name: 'First', slug: 'first' });
+      expect(identity).toEqual({
+        id: 11,
+        raidId: 4,
+        raidSlug: 'open',
+        name: 'First',
+        slug: 'first',
+      });
       expect([region, difficulty, readAt]).toEqual(['world', 'mythic', NOW]);
       expect(board).toEqual([
         {

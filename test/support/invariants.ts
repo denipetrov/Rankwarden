@@ -1351,6 +1351,7 @@ export async function expectRaidDocumentsWhole(db: Db): Promise<void> {
 interface StoredBoss {
   id: number;
   raidId: number;
+  raidSlug: string;
   slug: string;
   bossRankings?: Record<string, Record<string, { rank: number; guildId: number }[]>>;
   bossRankingsUpdatedAt?: Record<string, Record<string, Date>>;
@@ -1359,8 +1360,8 @@ interface StoredBoss {
 /**
  * I32 - a boss belongs to its raid, and its boards are as trustworthy as one.
  *
- * Every boss names a stored raid that lists it among its encounters, under the
- * same slug; every board is stamped, best first, no guild twice, at most fifty,
+ * Every boss names a stored raid, by id and by that raid's slug, that lists it
+ * among its encounters under the same slug; every board is stamped, best first, no guild twice, at most fifty,
  * and every guild it names is a document in `guilds`.
  */
 export async function expectBossesWellFormed(db: Db): Promise<void> {
@@ -1374,6 +1375,14 @@ export async function expectBossesWellFormed(db: Db): Promise<void> {
         .find({}, { projection: { id: 1, encounters: 1 } })
         .toArray()
     ).map((raid) => [raid.id, raid.encounters]),
+  );
+  const raidSlugs = new Map(
+    (
+      await db
+        .collection<StoredRaid & { id: number }>(RAIDS_COLLECTION)
+        .find({}, { projection: { id: 1, slug: 1 } })
+        .toArray()
+    ).map((raid) => [raid.id, raid.slug]),
   );
   const known = new Set(
     (
@@ -1389,6 +1398,7 @@ export async function expectBossesWellFormed(db: Db): Promise<void> {
     const encounters = raids.get(boss.raidId);
 
     expect(encounters, `${label} names a stored raid`).toBeDefined();
+    expect(boss.raidSlug, `${label} carries its raid's slug`).toBe(raidSlugs.get(boss.raidId));
     expect(
       encounters!.find((encounter) => encounter.id === boss.id)?.slug,
       `${label} is one of its raid's encounters, by id and slug`,

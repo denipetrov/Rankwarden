@@ -36,6 +36,12 @@ export interface BossDocument {
   id: number;
   /** The `id` of the raid in `raids` the boss belongs to. */
   raidId: number;
+  /**
+   * The slug of that raid, as `raids.slug`: what the raiding endpoints and a
+   * reader search by. Kept in step by every catalogue walk, so a raid renamed
+   * upstream renames it on its bosses too.
+   */
+  raidSlug: string;
   name: string;
   slug: string;
   /** When a catalogue walk last listed the boss on its raid. */
