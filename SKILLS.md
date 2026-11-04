@@ -1314,8 +1314,13 @@ Indexes — `mplus_runs`: `run_identity` (unique `season+region+keystoneRunId`),
 (`season+region+score` desc), `run_dungeon_board`, `run_roster` (`rosterKeys`),
 `run_freshness` (drives stage 1 of the cleanup). `mplus_characters`:
 `mplus_character_identity` (unique `season+key`, and what the merge read `$in`s on),
-`mplus_score_board` (`season+region+mythicScore` desc — the front end's sort) and
-`mplus_character_lookup`. There is deliberately **no** freshness index on characters: since
+`mplus_score_board` (`season+region+mythicScore` desc — the front end's sort),
+`mplus_character_lookup`, and the filtered boards: `mplus_class_board`, `mplus_spec_board`,
+`mplus_role_board` (`season` + `profile.classId` / `profile.specId` / `profile.role` +
+`mythicScore` desc, across regions) and their `…_region_board` twins with `region` after
+`season`. A page filtered to one class, spec or role is then an index range in score order:
+50 keys read for the top 50 (checked on the development data, 2026-11-04), not the whole
+board. There is deliberately **no** freshness index on characters: since
 §5.7 stage 2 replaced the timestamp check with a referential one, nothing queries
 `updatedAt`, and an index nothing reads only costs write throughput.
 
@@ -1481,7 +1486,9 @@ Indexes — `mplus_seasons`: `season_identity` (unique `slug`), `season_expansio
 (`season+score`), `archive_run_region_board`, `archive_run_dungeon_board`,
 `archive_run_roster`. `mplus_archive_characters`: `archive_character_identity` (unique
 `season+key`), `archive_score_board`, `archive_score_region_board`,
-`archive_character_lookup`.
+`archive_character_lookup`, and the same six filtered boards as the live collection:
+`archive_class_board`, `archive_spec_board`, `archive_role_board` and their
+`…_region_board` twins.
 
 ### 5.9 Mythic+ spec representation — `mplus_spec_representation`
 
@@ -1833,7 +1840,7 @@ Rules for writers:
       mythic: [                      // also heroic, normal; best first, fifty at most
         { guildId: 1047044,          // -> guilds.id
           rank: 1,                   // on this board, as served
-          itemLevelAvg: 327.866,     // null when not served
+          itemLevelAvg: 327.866,     // null when unknown; the last known value is kept
           attempts: 9,               // pulls before the FIRST kill; often null upstream
           firstDefeated: Date },     // the first kill; null for a guild still progressing
         … ] } },
@@ -1862,6 +1869,12 @@ Rules for writers:
   either is a 400 — and answers in 0.2-0.6s (checked live), unlike the raid rankings (§9.17).
   245 bosses × 5 boards × 3 difficulties make a first run of ~3,700 requests; after it, only
   the open raids' bosses are read.
+- **`itemLevelAvg`: 0 is "unknown", and the last known value is kept.** Upstream serves
+  `0` for a guild it has no item level for, and which guilds get one changes from hour to hour
+  (Ula'tek's world board: Liquid `0` and Method `325.847` one day, the other way round the next).
+  A `0` is stored as `null`, and a board read with `null` for a guild keeps the value the board
+  it replaces had for that guild; a new value always wins. Before this, 14% of entries held a
+  `0` (fixed in the development database on 2026-11-03).
 - **Only the first kill is kept.** Upstream lists every kill of the boss by the guild, oldest
   first; `attempts` and `firstDefeated` come from the earliest. `attempts` is null for many
   kills and every kill before Shadowlands, as served.

@@ -13,7 +13,12 @@ import type { GuildDocument } from './entities/guild.entity.js';
 import type { RaidEncounter } from './entities/raid.entity.js';
 import { GuildRepository } from './guild.repository.js';
 import { RaidCatalogueService } from './raid-catalogue.service.js';
-import { toBossRankedGuild, toGuildDocument, toRankedGuild } from './raid-rankings.mapper.js';
+import {
+  keepKnownItemLevels,
+  toBossRankedGuild,
+  toGuildDocument,
+  toRankedGuild,
+} from './raid-rankings.mapper.js';
 import { RaidRankingsRepository, type RaidRankingTarget } from './raid-rankings.repository.js';
 
 /**
@@ -471,6 +476,7 @@ export class RaidRankingsService {
     for (const entry of entries) guilds.set(entry.guild.id, toGuildDocument(entry, now));
 
     const written = await this.guilds.upsertGuilds([...guilds.values()]);
+    const previous = await this.bosses.board(encounter.id, region, difficulty);
     await this.bosses.setBoard(
       {
         id: encounter.id,
@@ -481,7 +487,7 @@ export class RaidRankingsService {
       },
       region,
       difficulty,
-      entries.map(toBossRankedGuild),
+      keepKnownItemLevels(entries.map(toBossRankedGuild), previous),
       now,
     );
 

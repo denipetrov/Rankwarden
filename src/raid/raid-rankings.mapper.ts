@@ -85,8 +85,37 @@ export function toBossRankedGuild(entry: BossRanking): BossRankedGuild {
   return {
     guildId: entry.guild.id,
     rank: entry.rank,
-    itemLevelAvg: entry.itemLevelAvg ?? null,
+    // Upstream sends 0 for a guild it has no item level for, and which guilds
+    // get one moves from hour to hour. 0 is never a real item level.
+    itemLevelAvg: entry.itemLevelAvg && entry.itemLevelAvg > 0 ? entry.itemLevelAvg : null,
     attempts: first?.kill.attempts ?? null,
     firstDefeated: first?.at ?? null,
   };
+}
+
+/**
+ * A boss board as read, with each guild's item level kept from the board it
+ * replaces where this read has none.
+ *
+ * Raider.io's `itemLevelAvg` comes and goes: a guild served 325.8 one day is
+ * served 0 the next, and another the other way round (Ula'tek's world Mythic
+ * board, checked live 2026-11-02 and 2026-11-03). The board is replaced whole,
+ * so without this a guild's item level would vanish whenever upstream had none
+ * to hand. The last value it did have is the better answer.
+ */
+export function keepKnownItemLevels(
+  board: readonly BossRankedGuild[],
+  previous: readonly BossRankedGuild[] | null,
+): BossRankedGuild[] {
+  const known = new Map(
+    (previous ?? [])
+      .filter((entry) => entry.itemLevelAvg !== null && entry.itemLevelAvg > 0)
+      .map((entry) => [entry.guildId, entry.itemLevelAvg]),
+  );
+
+  return board.map((entry) =>
+    entry.itemLevelAvg === null && known.has(entry.guildId)
+      ? { ...entry, itemLevelAvg: known.get(entry.guildId)! }
+      : entry,
+  );
 }

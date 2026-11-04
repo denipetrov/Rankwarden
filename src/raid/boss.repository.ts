@@ -98,6 +98,21 @@ export class BossRepository {
     );
   }
 
+  /** One board of one boss as stored, or null when it was never read. */
+  async board(
+    bossId: number,
+    region: RaidRankingRegion,
+    difficulty: RaidDifficulty,
+  ): Promise<BossRankedGuild[] | null> {
+    const path = `bossRankings.${region}.${difficulty}`;
+    const found = await this.bosses.findOne<Pick<BossDocument, 'bossRankings'>>(
+      { id: bossId },
+      { projection: { _id: 0, [path]: 1 } },
+    );
+
+    return found?.bossRankings?.[region]?.[difficulty] ?? null;
+  }
+
   findById(id: number): Promise<BossDocument | null> {
     return this.bosses.findOne({ id });
   }

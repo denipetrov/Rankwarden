@@ -305,6 +305,37 @@ describe('Boss rankings', () => {
     expect((await board('gatekeeper', 'eu'))!.map((entry) => entry.rank)).toEqual([1, 3]);
   });
 
+  it('keeps an item level upstream stops sending, and takes one it starts sending', async () => {
+    const entry = (id: number, rank: number, itemLevelAvg: number) => ({
+      rank,
+      guild: { id, name: `Guild ${id}` },
+      itemLevelAvg,
+      encountersDefeated: [{ slug: 'the-abyssal-queen', firstDefeated: '2026-09-03T00:00:00Z' }],
+    });
+    const serve = (echo: number, liquid: number) =>
+      app.raiderIo.corrupt(
+        'raiding/boss-rankings&boss:the-abyssal-queen&region:us',
+        { bossRankings: [entry(1047044, 1, echo), entry(43113, 2, liquid)] },
+        1,
+      );
+
+    // One read with Echo's and none for Liquid; the next the other way round.
+    serve(331.25, 0);
+    await rankings.refreshDue();
+    serve(0, 329.719);
+    await rankings.refreshDue();
+
+    expect(
+      (await board('the-abyssal-queen', 'us'))!.map((ranked) => [
+        ranked.guildId,
+        ranked.itemLevelAvg,
+      ]),
+    ).toEqual([
+      [1047044, 331.25],
+      [43113, 329.719],
+    ]);
+  });
+
   it("survives a catalogue refresh, which writes around the bosses' boards", async () => {
     const before = await boss('the-abyssal-queen');
     world.raids.find((entry) => entry.slug === 'the-venomous-abyss')!.encounters[1].name =

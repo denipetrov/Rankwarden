@@ -121,6 +121,22 @@ describe('Mythic+ catalogue walk and indexes', () => {
       mplus_score_board: plain({ season: 1, region: 1, mythicScore: -1 }),
       mplus_character_lookup: plain({ nameKey: 1, realmSlug: 1 }),
       mplus_character_search: plain({ searchName: 1 }),
+      mplus_class_board: plain({ season: 1, 'profile.classId': 1, mythicScore: -1 }),
+      mplus_spec_board: plain({ season: 1, 'profile.specId': 1, mythicScore: -1 }),
+      mplus_role_board: plain({ season: 1, 'profile.role': 1, mythicScore: -1 }),
+      mplus_class_region_board: plain({
+        season: 1,
+        region: 1,
+        'profile.classId': 1,
+        mythicScore: -1,
+      }),
+      mplus_spec_region_board: plain({
+        season: 1,
+        region: 1,
+        'profile.specId': 1,
+        mythicScore: -1,
+      }),
+      mplus_role_region_board: plain({ season: 1, region: 1, 'profile.role': 1, mythicScore: -1 }),
     });
     expect(await indexes(MPLUS_AFFIXES_COLLECTION)).toEqual({
       affix_identity: unique({ id: 1 }),
@@ -144,6 +160,27 @@ describe('Mythic+ catalogue walk and indexes', () => {
       archive_score_board: plain({ season: 1, mythicScore: -1 }),
       archive_score_region_board: plain({ season: 1, region: 1, mythicScore: -1 }),
       archive_character_lookup: plain({ nameKey: 1, realmSlug: 1 }),
+      archive_class_board: plain({ season: 1, 'profile.classId': 1, mythicScore: -1 }),
+      archive_spec_board: plain({ season: 1, 'profile.specId': 1, mythicScore: -1 }),
+      archive_role_board: plain({ season: 1, 'profile.role': 1, mythicScore: -1 }),
+      archive_class_region_board: plain({
+        season: 1,
+        region: 1,
+        'profile.classId': 1,
+        mythicScore: -1,
+      }),
+      archive_spec_region_board: plain({
+        season: 1,
+        region: 1,
+        'profile.specId': 1,
+        mythicScore: -1,
+      }),
+      archive_role_region_board: plain({
+        season: 1,
+        region: 1,
+        'profile.role': 1,
+        mythicScore: -1,
+      }),
     });
     // And no legacy one-per-region identity, which would refuse every
     // per-dungeon document.

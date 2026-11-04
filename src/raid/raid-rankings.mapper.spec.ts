@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { raidRankingsSchema } from '../raiderio/schemas/raid-rankings.schema.js';
 import { bossRankingsSchema } from '../raiderio/schemas/boss-rankings.schema.js';
-import { toBossRankedGuild, toGuildDocument, toRankedGuild } from './raid-rankings.mapper.js';
+import {
+  keepKnownItemLevels,
+  toBossRankedGuild,
+  toGuildDocument,
+  toRankedGuild,
+} from './raid-rankings.mapper.js';
 
 /** Trimmed from a real `/raiding/raid-rankings` answer (checked live, 2026-10-02). */
 const ECHO = {
@@ -348,5 +353,36 @@ describe('bossRankingsSchema', () => {
     });
 
     expect(bossRankings.map((ranked) => ranked.rank)).toEqual([17, 19]);
+  });
+});
+
+describe('item levels on a boss board', () => {
+  const ranked = (guildId: number, itemLevelAvg: number | null) => ({
+    guildId,
+    rank: guildId,
+    itemLevelAvg,
+    attempts: null,
+    firstDefeated: null,
+  });
+
+  it('reads a 0 from upstream as no item level, never as one', () => {
+    const [entry] = bossRankingsSchema.parse({
+      bossRankings: [{ rank: 2, guild: { id: 1047044, name: 'Echo' }, itemLevelAvg: 0 }],
+    }).bossRankings;
+
+    expect(toBossRankedGuild(entry).itemLevelAvg).toBeNull();
+  });
+
+  it('keeps the last known item level where a read has none, and takes a new one over it', () => {
+    expect(
+      keepKnownItemLevels(
+        [ranked(1, 329.719), ranked(2, null), ranked(3, null), ranked(4, null)],
+        [ranked(1, 320), ranked(2, 325.847), ranked(3, null)],
+      ).map((entry) => entry.itemLevelAvg),
+    ).toEqual([329.719, 325.847, null, null]);
+  });
+
+  it('keeps nothing when the board was never read', () => {
+    expect(keepKnownItemLevels([ranked(1, null)], null)).toEqual([ranked(1, null)]);
   });
 });

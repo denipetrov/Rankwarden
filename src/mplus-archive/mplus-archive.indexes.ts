@@ -17,4 +17,21 @@ export const MPLUS_ARCHIVE_CHARACTERS_INDEXES: IndexDescription[] = [
   { key: { season: 1, mythicScore: -1 }, name: 'archive_score_board' },
   { key: { season: 1, region: 1, mythicScore: -1 }, name: 'archive_score_region_board' },
   { key: { nameKey: 1, realmSlug: 1 }, name: 'archive_character_lookup' },
+  // The archived boards filtered to one class, spec or role, index-ordered by
+  // score, across every region and within one, as on the live collection.
+  { key: { season: 1, 'profile.classId': 1, mythicScore: -1 }, name: 'archive_class_board' },
+  { key: { season: 1, 'profile.specId': 1, mythicScore: -1 }, name: 'archive_spec_board' },
+  { key: { season: 1, 'profile.role': 1, mythicScore: -1 }, name: 'archive_role_board' },
+  {
+    key: { season: 1, region: 1, 'profile.classId': 1, mythicScore: -1 },
+    name: 'archive_class_region_board',
+  },
+  {
+    key: { season: 1, region: 1, 'profile.specId': 1, mythicScore: -1 },
+    name: 'archive_spec_region_board',
+  },
+  {
+    key: { season: 1, region: 1, 'profile.role': 1, mythicScore: -1 },
+    name: 'archive_role_region_board',
+  },
 ];

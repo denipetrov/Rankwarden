@@ -7,6 +7,7 @@ import type { RaidingApi } from '../raiderio/raiding.api.js';
 import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
 import type { BossRanking } from '../raiderio/schemas/boss-rankings.schema.js';
 import type { BossRepository, BossStamps } from './boss.repository.js';
+import type { BossRankedGuild } from './entities/boss.entity.js';
 import type { GuildDocument } from './entities/guild.entity.js';
 import type { GuildRepository } from './guild.repository.js';
 import type { RaidCatalogueService } from './raid-catalogue.service.js';
@@ -61,6 +62,7 @@ function serviceOver(
     bosses?: boolean;
     bossStamps?: Map<number, BossStamps>;
     serveBoss?: (raid: string, boss: string, region: string, difficulty: string) => BossRanking[];
+    storedBossBoards?: Map<number, BossRankedGuild[]>;
   } = {},
 ) {
   const getRaidRankingsPage = vi.fn<
@@ -142,6 +144,7 @@ function serviceOver(
       { upsertGuilds } as unknown as GuildRepository,
       {
         stamps: vi.fn(async () => settings.bossStamps ?? new Map()),
+        board: vi.fn(async (id: number) => settings.storedBossBoards?.get(id) ?? null),
         setBoard: setBossBoard,
         markRefused: markBossRefused,
       } as unknown as BossRepository,
@@ -967,6 +970,38 @@ describe('RaidRankingsService', () => {
       expect(upsertGuilds.mock.calls.at(-2)![0]).toEqual([
         expect.objectContaining({ id: 7, name: 'Guild 7' }),
       ]);
+    });
+
+    it('keeps a guild item level from the stored board when this read has none', async () => {
+      quiet();
+      const served = (guildId: number, itemLevelAvg: number): BossRanking => ({
+        ...killedBy(guildId, guildId),
+        itemLevelAvg,
+      });
+      const stored = (guildId: number, itemLevelAvg: number | null): BossRankedGuild => ({
+        guildId,
+        rank: guildId,
+        itemLevelAvg,
+        attempts: 0,
+        firstDefeated: new Date('2026-08-25T10:57:34Z'),
+      });
+      const { service, setBossBoard } = serviceOver(
+        [withBosses(target('open', OPEN_END))],
+        () => [],
+        ['world'],
+        {
+          bosses: true,
+          // Guild 1 has a value now; 2 had one and now has 0; 3 has never had one.
+          serveBoss: (_raid, boss) =>
+            boss === 'first' ? [served(1, 329.719), served(2, 0), served(3, 0)] : [],
+          storedBossBoards: new Map([[11, [stored(1, null), stored(2, 325.847), stored(3, null)]]]),
+        },
+      );
+
+      await service.refreshDue(NOW);
+
+      const board = setBossBoard.mock.calls[0][3] as BossRankedGuild[];
+      expect(board.map((entry) => entry.itemLevelAvg)).toEqual([329.719, 325.847, null]);
     });
 
     it("settles a closed raid's boss board by its own stamps, not its raid's", async () => {
