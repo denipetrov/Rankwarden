@@ -11,6 +11,7 @@ import {
   AGGREGATE_REGION,
   DEFAULT_RAID_RANKING_REGIONS,
   MAX_RUNS_PAGE,
+  MPLUS_SEASON_DUNGEONS,
   RAID_DIFFICULTIES,
   RAID_RANKING_MAX_PAGE_SIZE,
   RAID_RANKING_PAGE_SIZE,
@@ -873,8 +874,10 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
 
   // A pass that cannot finish inside its own interval means each pass is still
   // running when the next is due, so the cadence in the configuration is not
-  // the cadence in reality.
-  const pagesPerPass = env.RAIDERIO_MAX_PAGES * env.RAIDERIO_REGIONS.length;
+  // the cadence in reality. A pass reads every dungeon's board, and how many
+  // dungeons a season lists is not known until the catalogue is read, so this
+  // assumes the usual eight; the pass's own outlook judges the real count.
+  const pagesPerPass = env.RAIDERIO_MAX_PAGES * MPLUS_SEASON_DUNGEONS * env.RAIDERIO_REGIONS.length;
   const passMs = (pagesPerPass / Math.max(1, bucketPerMinute)) * 60_000;
 
   if (env.MPLUS_ENABLED && passMs > env.MPLUS_INTERVAL_MS) {

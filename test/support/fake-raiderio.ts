@@ -357,7 +357,12 @@ export class FakeRaiderIo {
         throw new RaiderIoApiError(404, url, `season ${season} is not served`);
       }
 
-      return this.world.runsPage(season ?? 'season-mn-2', region, page ?? 0);
+      return this.world.runsPage(
+        season ?? 'season-mn-2',
+        region,
+        page ?? 0,
+        params.dungeon === undefined ? 'all' : String(params.dungeon),
+      );
     }
 
     throw new RaiderIoApiError(404, url, `unrouted path ${path}`);

@@ -27,6 +27,8 @@ export interface MplusCharacterSyncResult {
   /** The recomputed stats, so a caller sees what the merge actually settled on. */
   mythicScore: number;
   dungeonsCovered: number;
+  /** Whether the merged runs now cover every dungeon the season lists. */
+  isFullyCovered: boolean;
 }
 
 /**
@@ -106,6 +108,7 @@ export class MplusCharacterSyncService {
       fields,
       (input.profile ?? {}) as Partial<MplusCharacterProfile>,
       input.dungeonRuns as MplusDungeonRun[],
+      catalogued?.dungeonIds?.length ?? 0,
     );
 
     if (!result.matched) {
@@ -115,7 +118,8 @@ export class MplusCharacterSyncService {
     this.logger.log(
       `Synced Mythic+ ${key}: ${input.dungeonRuns.length} run(s) in, ` +
         `${result.added} new dungeon(s), score now ${result.mythicScore} ` +
-        `over ${result.dungeonsCovered} dungeon(s)`,
+        `over ${result.dungeonsCovered} dungeon(s)` +
+        (result.isFullyCovered ? ', fully covered' : ''),
     );
 
     return {
@@ -124,6 +128,7 @@ export class MplusCharacterSyncService {
       addedDungeons: result.added,
       mythicScore: result.mythicScore,
       dungeonsCovered: result.dungeonsCovered,
+      isFullyCovered: result.isFullyCovered,
     };
   }
 }

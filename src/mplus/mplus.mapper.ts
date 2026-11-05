@@ -17,6 +17,7 @@ import type {
   MplusRosterMember,
   MplusRunDocument,
 } from './entities/mplus-run.entity.js';
+import { isFullyCovered } from './mplus-coverage.js';
 
 /**
  * Whether a roster entry belongs to a player who opted out of public profiles.
@@ -174,15 +175,23 @@ export function mergeDungeonRuns(
   return [...best.values()].sort((left, right) => right.score - left.score);
 }
 
-/** Applies a set of best runs to a document, with the two fields derived from it. */
+/** The fields derived from a character's best runs, never written apart from them. */
+export type DerivedFromRuns = 'mythicScore' | 'dungeonsCovered' | 'isFullyCovered' | 'dungeonRuns';
+
+/**
+ * Applies a set of best runs to a document, with the fields derived from it.
+ * `seasonDungeons` is how many dungeons the season lists, 0 when unknown.
+ */
 export function withDungeonRuns<T>(
   document: T,
   dungeonRuns: MplusDungeonRun[],
-): T & Pick<MplusCharacterDocument, 'mythicScore' | 'dungeonsCovered' | 'dungeonRuns'> {
+  seasonDungeons: number,
+): T & Pick<MplusCharacterDocument, DerivedFromRuns> {
   return {
     ...document,
     mythicScore: scoreOf(dungeonRuns),
     dungeonsCovered: dungeonRuns.length,
+    isFullyCovered: isFullyCovered(dungeonRuns.length, seasonDungeons),
     dungeonRuns,
   };
 }
@@ -196,14 +205,22 @@ export function withDungeonRuns<T>(
  * distinct characters rather than by rows.
  *
  * "Best" is the highest-scoring run in that dungeon. Ties go to the first seen,
- * which is the higher-ranked one, since pages arrive in rank order.
+ * which is the higher-ranked one, since a board's pages arrive in rank order.
+ *
+ * The identity and profile fields — name, realm, faction, class, spec, race,
+ * role — come from the character's highest-scoring run anywhere in the region.
+ * The pass reads one dungeon board after another, so the first run seen is
+ * the first dungeon's, not the best; taking the profile from it would make a
+ * character's spec depend on which dungeon happens to be read first.
  */
 export class MplusCharacterAccumulator {
   private readonly characters = new Map<
     string,
     {
-      document: Omit<MplusCharacterDocument, 'mythicScore' | 'dungeonsCovered' | 'dungeonRuns'>;
+      document: Omit<MplusCharacterDocument, DerivedFromRuns>;
       best: Map<number, MplusDungeonRun>;
+      /** The score of the run the document's profile was taken from. */
+      profileScore: number;
     }
   >();
 
@@ -212,6 +229,8 @@ export class MplusCharacterAccumulator {
     private readonly seasonId: number | null,
     /** The region every character is filed under: the board being read. */
     private readonly region: RaiderIoRegion,
+    /** How many dungeons the season lists, for `isFullyCovered`; 0 when unknown. */
+    private readonly seasonDungeons: number,
   ) {}
 
   get size(): number {
@@ -235,42 +254,17 @@ export class MplusCharacterAccumulator {
 
       const { character } = entry;
       const key = mplusCharacterKey(character.region.slug, character.realm.slug, character.name);
-      let existing = this.characters.get(key);
+      const existing = this.characters.get(key) ?? {
+        document: this.documentOf(entry, key, updatedAt),
+        best: new Map<number, MplusDungeonRun>(),
+        profileScore: ranking.score,
+      };
+      if (!this.characters.has(key)) this.characters.set(key, existing);
 
-      if (!existing) {
-        existing = {
-          document: {
-            season: this.season,
-            seasonId: this.seasonId,
-            region: this.region,
-            key,
-            realmSlug: character.realm.slug,
-            nameKey: mplusNameKey(character.name),
-            characterName: character.name,
-            searchName: searchNameOf(character.name),
-            characterType: 'M+',
-            // Known only once storage is read: the live write fills it in, and the
-            // archive, written once, has none.
-            previousMythicScore: null,
-            rioCharacterId: character.id || null,
-            realmId: character.realm.wowRealmId ?? null,
-            realmName: character.realm.name,
-            faction: character.faction ?? null,
-            profile: {
-              classId: character.class.id,
-              className: character.class.name,
-              specId: character.spec?.id ?? null,
-              specName: character.spec?.name ?? null,
-              raceId: character.race?.id ?? null,
-              raceName: character.race?.name ?? null,
-              level: character.level ?? null,
-              role: entry.role,
-            },
-            updatedAt,
-          },
-          best: new Map(),
-        };
-        this.characters.set(key, existing);
+      // Strictly better only: a tie keeps the profile of the run seen first.
+      if (ranking.score > existing.profileScore) {
+        existing.document = this.documentOf(entry, key, updatedAt);
+        existing.profileScore = ranking.score;
       }
 
       const previous = existing.best.get(dungeon.id);
@@ -291,6 +285,45 @@ export class MplusCharacterAccumulator {
     }
   }
 
+  /** A character's identity and profile, as one roster entry describes it. */
+  private documentOf(
+    entry: MythicPlusRanking['run']['roster'][number],
+    key: string,
+    updatedAt: Date,
+  ): Omit<MplusCharacterDocument, DerivedFromRuns> {
+    const { character } = entry;
+
+    return {
+      season: this.season,
+      seasonId: this.seasonId,
+      region: this.region,
+      key,
+      realmSlug: character.realm.slug,
+      nameKey: mplusNameKey(character.name),
+      characterName: character.name,
+      searchName: searchNameOf(character.name),
+      characterType: 'M+',
+      // Known only once storage is read: the live write fills it in, and the
+      // archive, written once, has none.
+      previousMythicScore: null,
+      rioCharacterId: character.id || null,
+      realmId: character.realm.wowRealmId ?? null,
+      realmName: character.realm.name,
+      faction: character.faction ?? null,
+      profile: {
+        classId: character.class.id,
+        className: character.class.name,
+        specId: character.spec?.id ?? null,
+        specName: character.spec?.name ?? null,
+        raceId: character.race?.id ?? null,
+        raceName: character.race?.name ?? null,
+        level: character.level ?? null,
+        role: entry.role,
+      },
+      updatedAt,
+    };
+  }
+
   /**
    * The finished documents for this region, with the score this pass alone saw.
    *
@@ -305,6 +338,7 @@ export class MplusCharacterAccumulator {
       withDungeonRuns(
         document,
         [...best.values()].sort((left, right) => right.score - left.score),
+        this.seasonDungeons,
       ),
     );
 

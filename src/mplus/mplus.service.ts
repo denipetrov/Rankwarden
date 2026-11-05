@@ -13,11 +13,18 @@ import { mapWithConcurrency } from '../common/utils/concurrency.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
 import { MythicPlusApi } from '../raiderio/mythic-plus.api.js';
-import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
+import {
+  ALL_DUNGEONS,
+  byRegionPriority,
+  type RaiderIoRegion,
+} from '../raiderio/raiderio.constants.js';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import { MplusSpecRepresentationService } from '../mplus-representation/mplus-spec-representation.service.js';
 import { MplusCutoffsService } from '../mplus-season/mplus-cutoffs.service.js';
-import { MplusSeasonService } from '../mplus-season/mplus-season.service.js';
+import {
+  MplusSeasonService,
+  type ResolvedMplusSeason,
+} from '../mplus-season/mplus-season.service.js';
 import type { MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import type { MplusRunDocument } from './entities/mplus-run.entity.js';
 import { MplusCharacterAccumulator, toAffixDocument, toRunDocument } from './mplus.mapper.js';
@@ -28,6 +35,11 @@ export interface MplusRegionResult {
   region: RaiderIoRegion;
   /** The season ingested for the region: the one current there when the pass began. */
   season: string;
+  /**
+   * The boards read: one per dungeon the season lists, or `['all']` when the
+   * catalogue could not name them.
+   */
+  boards: string[];
   pagesPlanned: number;
   pagesFetched: number;
   pagesFailed: number;
@@ -76,13 +88,18 @@ export interface MplusSweepResult {
 }
 
 /**
- * Ingests the top Mythic+ runs for the current season, one region at a time.
+ * Ingests the top Mythic+ runs for the current season, one region at a time,
+ * in `RAIDERIO_REGION_PRIORITY` order (us, eu, cn, kr, tw).
  *
- * A pass is `RAIDERIO_MAX_RUNS_PAGE + 1` pages per region — 1,001 requests, up to 20,020
- * runs — fetched with bounded concurrency and written as it goes rather than
- * accumulated whole: a region is ~100,000 roster rows, and holding all of them
- * before the first write would make memory scale with the ladder rather than
- * with the batch.
+ * Each region is read **one dungeon board at a time**: `RAIDERIO_MAX_RUNS_PAGE
+ * + 1` pages of each dungeon the season lists — 1,001 requests and up to
+ * 20,020 runs per dungeon, 8,008 requests a region for an eight-dungeon
+ * season. The single all-dungeons board held only ~2,000-3,500 runs of each
+ * dungeon, so most characters were missing dungeons and `mythicScore` was a
+ * partial sum; per dungeon, a character's best run in each is read to the same
+ * depth. Pages are fetched with bounded concurrency and written as they go
+ * rather than accumulated whole, so memory scales with the batch rather than
+ * with the ladder.
  *
  * What is *not* streamed is the character fold. `mythicScore` is a character's
  * best run in each dungeon summed across the whole region, so it cannot be
@@ -115,7 +132,7 @@ export class MplusService {
     private readonly representation: MplusSpecRepresentationService,
     private readonly cutoffs: MplusCutoffsService,
   ) {
-    this.regions = config.get('RAIDERIO_REGIONS', { infer: true });
+    this.regions = byRegionPriority(config.get('RAIDERIO_REGIONS', { infer: true }));
     this.concurrency = config.get('RAIDERIO_CONCURRENCY', { infer: true });
     this.pageBatch = config.get('RAIDERIO_PAGE_BATCH', { infer: true });
     this.maxPages = config.get('RAIDERIO_MAX_PAGES', { infer: true });
@@ -218,7 +235,7 @@ export class MplusService {
       }
 
       const season = resolution.get(region)!;
-      const result = await this.sweepRegion(season.slug, season.seasonId, region);
+      const result = await this.sweepRegion(season, region);
       results.push(result);
 
       if (result.stoppedEarly && !stoppedEarly) stoppedEarly = result.stoppedEarly;
@@ -229,6 +246,7 @@ export class MplusService {
     // region rolled would discard a season before the archive had read it.
 
     const seasons = Object.fromEntries(results.map((result) => [result.region, result.season]));
+    await this.refreshCoverage(regions.map((region) => resolution.get(region)!));
     await this.recordRepresentation(Object.values(seasons));
     await this.recordCutoffs(
       new Map(results.map((result) => [result.region, result.season] as const)),
@@ -258,21 +276,28 @@ export class MplusService {
   }
 
   /**
-   * One region: pages in batches, writing each batch, folding characters across
-   * the whole region, then pruning what fell off the board.
+   * One region: each dungeon board in turn, pages in batches, writing each
+   * batch, folding characters across every board of the region, then pruning
+   * what fell off.
    */
   private async sweepRegion(
-    season: string,
-    seasonId: number | null,
+    season: ResolvedMplusSeason,
     region: RaiderIoRegion,
   ): Promise<MplusRegionResult> {
     const fetchedAt = new Date();
-    const accumulator = new MplusCharacterAccumulator(season, seasonId, region);
+    const accumulator = new MplusCharacterAccumulator(
+      season.slug,
+      season.seasonId,
+      region,
+      season.dungeons,
+    );
     const lastPage = Math.min(this.maxPages - 1, this.maxRunsPage);
+    const boards = await this.boardsOf(season, region);
     const result: MplusRegionResult = {
       region,
-      season,
-      pagesPlanned: lastPage + 1,
+      season: season.slug,
+      boards,
+      pagesPlanned: boards.length * (lastPage + 1),
       pagesFetched: 0,
       pagesFailed: 0,
       runs: 0,
@@ -283,6 +308,102 @@ export class MplusService {
       prunedCharacters: 0,
       stoppedEarly: null,
     };
+
+    for (const board of boards) {
+      await this.sweepBoard(season.slug, region, board, lastPage, fetchedAt, accumulator, result);
+      if (result.stoppedEarly) break;
+    }
+
+    const characters = accumulator.drain();
+    const { merged } = await this.repository.upsertCharacters(characters, season.dungeons);
+    result.characters = characters.length;
+    result.mergedCharacters = merged;
+
+    // A region that answered with an empty board while runs are stored for it
+    // is a read that went wrong, not a ladder every player left: an empty page
+    // is also how the data ends, so nothing else would tell the two apart, and
+    // the prune below would empty the region and strand its characters.
+    if (
+      !result.stoppedEarly &&
+      result.runs === 0 &&
+      result.pagesFailed === 0 &&
+      (await this.repository.countRuns(season.slug, region)) > 0
+    ) {
+      result.stoppedEarly = 'the board came back empty';
+      this.logger.warn(
+        `Mythic+ ${region} answered an empty board for ${season.slug} while runs are stored ` +
+          'for it; ' +
+          'keeping them and skipping the prune',
+      );
+    }
+
+    // Pruning only after a clean pass. A pass that stopped early — a spent
+    // budget, a yielded coordinator, a run of failed pages — looks exactly like
+    // a leaderboard that lost most of its runs, and pruning on that basis would
+    // delete the region and refill it next pass, hourly, with a hole in the
+    // board each time.
+    if (!result.stoppedEarly && result.pagesFailed === 0 && result.pagesFetched > 0) {
+      const pruned = await this.repository.pruneStale(season.slug, region, fetchedAt);
+      result.prunedRuns = pruned.runs;
+      result.missedRuns = pruned.missed;
+      result.prunedCharacters = pruned.characters;
+    } else if (result.pagesFailed > 0) {
+      this.logger.warn(
+        `${result.pagesFailed} page(s) failed for ${region}; skipping the prune so a partial ` +
+          'pass cannot empty the board',
+      );
+    }
+
+    this.logger.log(
+      `Mythic+ ${region}: ${result.runs} runs over ${result.pagesFetched} page(s) ` +
+        `of ${boards.length} board(s), ` +
+        `${result.characters} characters` +
+        (result.mergedCharacters > 0
+          ? `, ${result.mergedCharacters} kept a dungeon that left the window`
+          : '') +
+        (result.prunedRuns || result.prunedCharacters
+          ? `, pruned ${result.prunedRuns} run(s) and ${result.prunedCharacters} character(s)`
+          : ''),
+    );
+
+    return result;
+  }
+
+  /**
+   * The boards to read for a season: each dungeon it lists, or the single
+   * all-dungeons board when the catalogue cannot name them all. Falling back
+   * rather than skipping keeps a region on the board — its characters are
+   * just less likely to be complete — where skipping would leave it unread.
+   */
+  private async boardsOf(season: ResolvedMplusSeason, region: RaiderIoRegion): Promise<string[]> {
+    const slugs = await this.seasons.dungeonSlugs(season);
+    if (slugs) return slugs;
+
+    this.logger.warn(
+      `The catalogue cannot name every dungeon of ${season.slug}; reading ${region} ` +
+        'from the all-dungeons board instead',
+    );
+
+    return [ALL_DUNGEONS];
+  }
+
+  /**
+   * One board of a region: its pages in batches, each batch written as it
+   * arrives and folded into the region's characters.
+   *
+   * The board ends at a 400 (past the last page the endpoint serves) or an
+   * empty page. Anything that stops the pass — a spent budget, a yield that
+   * ran out — is recorded on `result.stoppedEarly` for the region.
+   */
+  private async sweepBoard(
+    season: string,
+    region: RaiderIoRegion,
+    board: string,
+    lastPage: number,
+    fetchedAt: Date,
+    accumulator: MplusCharacterAccumulator,
+    result: MplusRegionResult,
+  ): Promise<void> {
     let exhausted = false;
 
     for (let first = 0; first <= lastPage && !exhausted; first += this.pageBatch) {
@@ -296,14 +417,15 @@ export class MplusService {
       if (!(await this.budget.waitForAllowance(RaiderIoConsumer.Mplus, 1, this.budgetWaitMs))) {
         result.stoppedEarly = 'Raider.io budget spent';
         this.logger.warn(
-          `Raider.io budget for the current minute is spent; stopping ${region} at page ${first}`,
+          `Raider.io budget for the current minute is spent; stopping ${region} ` +
+            `at ${board} page ${first}`,
         );
-        break;
+        return;
       }
 
-      if (!(await this.yieldToLiveIngestion(`in ${region} at page ${first}`))) {
+      if (!(await this.yieldToLiveIngestion(`in ${region} at ${board} page ${first}`))) {
         result.stoppedEarly = 'live PvP ingestion started';
-        break;
+        return;
       }
 
       const pages = Array.from(
@@ -313,15 +435,17 @@ export class MplusService {
 
       const fetched = await mapWithConcurrency(pages, this.concurrency, async (page) => {
         try {
-          return await this.api.getRunsPage(season, region, page);
+          return await this.api.getRunsPage(season, region, page, board);
         } catch (error) {
           // A 400 means the page is past the end of what the endpoint will
           // serve. It is the documented end of the data, not a failure, so it
-          // stops the region rather than counting against it.
+          // ends the board rather than counting against it.
           if (error instanceof RaiderIoApiError && error.isBadRequest) return null;
 
           result.pagesFailed += 1;
-          this.logger.warn(`Mythic+ page ${page} for ${region} failed: ${describeError(error)}`);
+          this.logger.warn(
+            `Mythic+ ${board} page ${page} for ${region} failed: ${describeError(error)}`,
+          );
 
           return undefined;
         }
@@ -339,7 +463,7 @@ export class MplusService {
 
         result.pagesFetched += 1;
         // An empty page is the other way the data ends: the endpoint answers
-        // 200 with `rankings: []` rather than 400 for a region with fewer runs
+        // 200 with `rankings: []` rather than 400 for a board with fewer runs
         // than the page cap.
         if (page.rankings.length === 0) exhausted = true;
 
@@ -361,58 +485,30 @@ export class MplusService {
       await this.repository.upsertRuns(runs);
       result.runs += runs.length;
     }
+  }
 
-    const characters = accumulator.drain();
-    const { merged } = await this.repository.upsertCharacters(characters);
-    result.characters = characters.length;
-    result.mergedCharacters = merged;
+  /**
+   * Brings `isFullyCovered` in line for the characters this pass did not write:
+   * those it kept from earlier passes, and any written before the flag was.
+   * Never fails the pass — the flag is re-derived on the next one.
+   */
+  private async refreshCoverage(seasons: readonly ResolvedMplusSeason[]): Promise<void> {
+    const dungeonsBySeason = new Map(seasons.map((season) => [season.slug, season.dungeons]));
 
-    // A region that answered with an empty board while runs are stored for it
-    // is a read that went wrong, not a ladder every player left: an empty page
-    // is also how the data ends, so nothing else would tell the two apart, and
-    // the prune below would empty the region and strand its characters.
-    if (
-      !result.stoppedEarly &&
-      result.runs === 0 &&
-      result.pagesFailed === 0 &&
-      (await this.repository.countRuns(season, region)) > 0
-    ) {
-      result.stoppedEarly = 'the board came back empty';
-      this.logger.warn(
-        `Mythic+ ${region} answered an empty board for ${season} while runs are stored for it; ` +
-          'keeping them and skipping the prune',
-      );
+    for (const [season, dungeons] of dungeonsBySeason) {
+      try {
+        const corrected = await this.repository.refreshCoverage(season, dungeons);
+
+        if (corrected > 0) {
+          this.logger.log(`Re-derived isFullyCovered for ${corrected} ${season} character(s)`);
+        }
+      } catch (error) {
+        this.logger.error(
+          `Could not refresh Mythic+ coverage for ${season}: ${describeError(error)}`,
+          errorStack(error),
+        );
+      }
     }
-
-    // Pruning only after a clean pass. A pass that stopped early — a spent
-    // budget, a yielded coordinator, a run of failed pages — looks exactly like
-    // a leaderboard that lost most of its runs, and pruning on that basis would
-    // delete the region and refill it next pass, hourly, with a hole in the
-    // board each time.
-    if (!result.stoppedEarly && result.pagesFailed === 0 && result.pagesFetched > 0) {
-      const pruned = await this.repository.pruneStale(season, region, fetchedAt);
-      result.prunedRuns = pruned.runs;
-      result.missedRuns = pruned.missed;
-      result.prunedCharacters = pruned.characters;
-    } else if (result.pagesFailed > 0) {
-      this.logger.warn(
-        `${result.pagesFailed} page(s) failed for ${region}; skipping the prune so a partial ` +
-          'pass cannot empty the board',
-      );
-    }
-
-    this.logger.log(
-      `Mythic+ ${region}: ${result.runs} runs over ${result.pagesFetched} page(s), ` +
-        `${result.characters} characters` +
-        (result.mergedCharacters > 0
-          ? `, ${result.mergedCharacters} kept a dungeon that left the window`
-          : '') +
-        (result.prunedRuns || result.prunedCharacters
-          ? `, pruned ${result.prunedRuns} run(s) and ${result.prunedCharacters} character(s)`
-          : ''),
-    );
-
-    return result;
   }
 
   /**

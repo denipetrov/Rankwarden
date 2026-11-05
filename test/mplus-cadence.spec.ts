@@ -39,6 +39,10 @@ describe('F1: a scheduled Mythic+ pass landing during enrichment', () => {
         MPLUS_ENABLED: 'true',
         MPLUS_INTERVAL_MS: String(INTERVAL_MS),
         MPLUS_YIELD_WAIT_MS: '5000',
+        // A pass is 40 pages (five of each of eight dungeon boards); at the
+        // default 14 a second that outlasts the interval and the boot check
+        // refuses it.
+        RAIDERIO_REQUESTS_PER_SECOND: '100',
       },
       undefined,
       logger,

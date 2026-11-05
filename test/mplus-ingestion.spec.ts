@@ -71,14 +71,16 @@ describe('Mythic+ ingestion', () => {
   });
 
   it('stops at the end of the data rather than at the page ceiling', async () => {
-    // us holds 60 runs — three pages — against a 5-page ceiling, so pages 3 and
-    // 4 come back empty. The pass has to read that as the end of the board and
-    // stop, not as a board that lost its last two pages.
+    // us holds 60 runs, 20 in each of three dungeons — one page per board —
+    // against a 5-page ceiling on each of the season's eight boards, five of
+    // which hold nothing. The pass has to read an empty page as the end of a
+    // board and stop, not as a board that lost its remaining pages.
     const result = await mplus.sweep();
     const us = result!.regions.find((region) => region.region === 'us')!;
 
     expect(us.stoppedEarly, 'running out of data is not stopping early').toBeNull();
-    expect(us.pagesPlanned).toBe(5);
+    expect(us.boards).toHaveLength(8);
+    expect(us.pagesPlanned).toBe(40);
     expect(us.runs).toBe(60);
     expect(us.prunedRuns, 'and nothing is pruned for the pages that held nothing').toBe(0);
   });

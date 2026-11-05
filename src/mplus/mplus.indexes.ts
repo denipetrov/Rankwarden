@@ -45,6 +45,13 @@ export const MPLUS_CHARACTERS_INDEXES: IndexDescription[] = [
     key: { season: 1, region: 1, 'profile.role': 1, mythicScore: -1 },
     name: 'mplus_role_region_board',
   },
+  // The board restricted to characters whose runs cover every dungeon of the
+  // season, so their score is complete: across every region, and within one.
+  { key: { season: 1, isFullyCovered: 1, mythicScore: -1 }, name: 'mplus_covered_board' },
+  {
+    key: { season: 1, region: 1, isFullyCovered: 1, mythicScore: -1 },
+    name: 'mplus_covered_region_board',
+  },
 ];
 
 /** Indexes on `mplus_affixes`. */

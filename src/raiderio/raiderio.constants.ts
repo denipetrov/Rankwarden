@@ -11,6 +11,35 @@ export const RAIDERIO_REGIONS = ['us', 'eu', 'kr', 'tw', 'cn'] as const;
 export type RaiderIoRegion = (typeof RAIDERIO_REGIONS)[number];
 
 /**
+ * The order the Mythic+ pass reads regions in, most wanted first. A pass is
+ * long, and anything that stops it early — a spent budget, a yield that runs
+ * out — then costs the regions that matter least.
+ */
+export const RAIDERIO_REGION_PRIORITY: readonly RaiderIoRegion[] = ['us', 'eu', 'cn', 'kr', 'tw'];
+
+/** `regions` in `RAIDERIO_REGION_PRIORITY` order, whatever order they were configured in. */
+export function byRegionPriority(regions: readonly RaiderIoRegion[]): RaiderIoRegion[] {
+  return [...regions].sort(
+    (left, right) =>
+      RAIDERIO_REGION_PRIORITY.indexOf(left) - RAIDERIO_REGION_PRIORITY.indexOf(right),
+  );
+}
+
+/**
+ * The `dungeon` value that ranks every dungeon's runs into one board. The live
+ * pass reads each dungeon's own board instead and falls back to this only for
+ * a season whose dungeons the catalogue cannot name; the archive reads it.
+ */
+export const ALL_DUNGEONS = 'all';
+
+/**
+ * How many dungeons a Mythic+ season lists: eight in every season of The War
+ * Within and Midnight. Only for judging the configuration before the catalogue has
+ * been read; the pass reads each season's own list.
+ */
+export const MPLUS_SEASON_DUNGEONS = 8;
+
+/**
  * The aggregate pseudo-region. It is the union of the real ones, so ingesting
  * it alongside them would fetch every run twice and leave the runs with no
  * region of their own to be filtered by. Nothing reads it — the live pass and

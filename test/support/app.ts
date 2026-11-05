@@ -66,6 +66,11 @@ const BASE_ENV: Record<string, string> = {
   // raise this deliberately.
   RAIDERIO_MAX_PAGES: '5',
   RAIDERIO_PAGE_BATCH: '5',
+  // A pass reads a batch of every dungeon board in every region — 80 requests
+  // for two regions of an eight-dungeon season, empty boards included — and a
+  // file runs a dozen passes inside one minute. Files about the budget set
+  // their own.
+  RAIDERIO_MINUTE_LIMIT: '100000',
   // A spent minute is waited out in production. Here it has to be observable
   // without a sixty-second sleep, so a spent budget stops at once.
   RAIDERIO_BUDGET_WAIT_MS: '0',

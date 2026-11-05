@@ -21,7 +21,8 @@ describe('Mythic+ readiness with an infeasible cadence', () => {
   beforeAll(async () => {
     app = await bootTestApp(
       World.seed({ regions: ['us'], players: 5 }),
-      { RAIDERIO_REGIONS: 'us', MPLUS_INTERVAL_MS: '300' },
+      // The production minute, so the outlook judges against 900 usable.
+      { RAIDERIO_REGIONS: 'us', MPLUS_INTERVAL_MS: '300', RAIDERIO_MINUTE_LIMIT: '1000' },
       undefined,
       undefined,
       new MplusWorld().seed('us', 40, 500),
@@ -46,7 +47,7 @@ describe('Mythic+ readiness with an infeasible cadence', () => {
     expect(ready.body.status).toBe('degraded');
     expect(ready.body.mplus.outlook.feasible).toBe(false);
     expect(ready.body.mplus.problems).toEqual([
-      'a full pass is 5 pages, more than the 900 a minute the budget allows can deliver inside one interval',
+      'a full pass is 40 pages, more than the 900 a minute the budget allows can deliver inside one interval',
     ]);
   });
 });

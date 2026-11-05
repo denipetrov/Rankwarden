@@ -281,11 +281,12 @@ describe('validateEnv — Mythic+', () => {
   });
 
   it('rejects a pass longer than its interval, but only while the pass is on', () => {
-    // 5,005 pages at 14 a second is about six minutes.
+    // 1,001 pages of each of eight dungeon boards in five regions is 40,040
+    // pages, at 14 a second about 48 minutes.
     const tooShort = { ...key, MPLUS_INTERVAL_MS: '60000' };
 
     expect(issues({ ...tooShort, MPLUS_ENABLED: 'true' })).toEqual([
-      expect.stringMatching(/MPLUS_INTERVAL_MS: a pass is 5005 pages, .* about 6 minutes/),
+      expect.stringMatching(/MPLUS_INTERVAL_MS: a pass is 40040 pages, .* about 48 minutes/),
     ]);
     expect(issues(tooShort), 'nothing to keep a cadence for').toEqual([]);
   });

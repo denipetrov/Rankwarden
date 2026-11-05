@@ -34,4 +34,10 @@ export const MPLUS_ARCHIVE_CHARACTERS_INDEXES: IndexDescription[] = [
     key: { season: 1, region: 1, 'profile.role': 1, mythicScore: -1 },
     name: 'archive_role_region_board',
   },
+  // Fully covered characters only, as on the live collection.
+  { key: { season: 1, isFullyCovered: 1, mythicScore: -1 }, name: 'archive_covered_board' },
+  {
+    key: { season: 1, region: 1, isFullyCovered: 1, mythicScore: -1 },
+    name: 'archive_covered_region_board',
+  },
 ];

@@ -186,10 +186,11 @@ describe('Mythic+ pass over irregular payloads', () => {
 
   it("M2.4 a character's best run per dungeon folds across batch boundaries", async () => {
     await resetBoard();
-    world.seed('us', 100, 1_000, SEASON);
+    // A hundred runs in dungeon A, so A's own board fills all five pages.
+    world.seed('us', 100, 1_000, SEASON, 0);
     const folder = member(3_001, 'Folder');
-    // Page 0: the best run in dungeon A. Page 4: a worse one in A, which must
-    // not win for arriving later, in a later batch. Page 3: the only run in B.
+    // A's page 0: the best run in A. A's page 4: a worse one, which must not
+    // win for arriving later, in a later batch. B's board: the only run in B.
     const best = world.addRun({
       region: 'us',
       season: SEASON,
@@ -215,9 +216,12 @@ describe('Mythic+ pass over irregular payloads', () => {
     await pass();
 
     const pages = app.raiderIo.requests
-      .filter((request) => request.path === 'mythic-plus/runs')
+      .filter(
+        (request) =>
+          request.path === 'mythic-plus/runs' && request.params.dungeon === WORLD_DUNGEONS[0].slug,
+      )
       .map((request) => request.page);
-    expect(pages.sort()).toEqual([0, 1, 2, 3, 4]);
+    expect(pages.sort(), "A's board, in two batches").toEqual([0, 1, 2, 3, 4]);
 
     const stored = (await character('Folder'))!;
     expect(
@@ -239,12 +243,14 @@ describe('Mythic+ pass over irregular payloads', () => {
 
   it('M2.6 a board that grows under the pass stores the doubled run once, and marks only what left', async () => {
     await resetBoard();
-    world.seed('us', 100, 1_000, SEASON);
+    // One dungeon's board, deeper than the five pages read.
+    world.seed('us', 100, 1_000, SEASON, 0);
     await pass();
 
     let inserted = false;
     app.raiderIo.beforeServe = (request) => {
       if (inserted || request.path !== 'mythic-plus/runs' || request.page !== 3) return;
+      if (request.params.dungeon !== WORLD_DUNGEONS[0].slug) return;
       inserted = true;
       world.addRun({
         region: 'us',
@@ -282,7 +288,7 @@ describe('Mythic+ pass over irregular payloads', () => {
 
   it('M2.6 a board that shrinks under the pass loses nothing still ranked', async () => {
     await resetBoard();
-    world.seed('us', 100, 1_000, SEASON);
+    world.seed('us', 100, 1_000, SEASON, 0);
     await pass();
 
     // A page-0 run disappears after pages 0-2 were read: everything below it
@@ -291,6 +297,7 @@ describe('Mythic+ pass over irregular payloads', () => {
     const skipped = world.runs.find((entry) => entry.score === 940)!;
     app.raiderIo.beforeServe = (request) => {
       if (removed || request.path !== 'mythic-plus/runs' || request.page !== 3) return;
+      if (request.params.dungeon !== WORLD_DUNGEONS[0].slug) return;
       removed = true;
       world.removeRuns((entry) => entry.score === 995);
     };
@@ -439,13 +446,24 @@ describe('Mythic+ pass over irregular payloads', () => {
 
     await pass();
 
+    // Each dungeon the season lists, by slug, in the catalogue's order: the
+    // three the world plays, then five with nothing on them. A hundred runs
+    // over three dungeons is two pages a board, so every board ends inside
+    // its first batch of three.
+    const season = (await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: SEASON }))!;
+    const boards = [
+      ...WORLD_DUNGEONS.map((dungeon) => dungeon.slug),
+      ...Array.from({ length: season.dungeonIds.length - 3 }, (_unused, i) => `dungeon-${i + 3}`),
+    ];
     const runs = app.raiderIo.requests.filter((request) => request.path === 'mythic-plus/runs');
-    expect(runs).toHaveLength(MAX_PAGES);
+    expect(runs.map((request) => `${request.params.dungeon}:${request.page}`)).toEqual(
+      boards.flatMap((board) => [0, 1, 2].map((page) => `${board}:${page}`)),
+    );
     for (const request of runs) {
       expect(request.params).toEqual({
         season: SEASON,
         region: 'us',
-        dungeon: 'all',
+        dungeon: request.params.dungeon,
         page: request.page,
       });
     }
@@ -460,17 +478,18 @@ describe('Mythic+ pass over irregular payloads', () => {
 
   it('M10.7 schema drift on one page fails that page, not the pass — live and archived', async () => {
     await resetBoard();
-    world.seed('us', 100, 500, SEASON).seed('us', 60, 400, FINISHED);
-    await pass();
+    world.seed('us', 100, 500, SEASON, 0).seed('us', 60, 400, FINISHED);
+    const first = await pass();
     const drift = { rankings: 'not an array' };
 
+    // Page 2 of the first board read: the deep one.
     app.raiderIo.corrupt(`mythic-plus/runs&season:${SEASON}&page:2`, drift, 1);
     const drifted = await pass();
 
     expect(drifted.regions[0].pagesFailed).toBe(1);
-    expect(drifted.regions[0].pagesFetched).toBe(MAX_PAGES - 1);
+    expect(drifted.regions[0].pagesFetched).toBe(first.regions[0].pagesFetched - 1);
     expect(drifted.regions[0].prunedRuns, 'a failed page means no prune').toBe(0);
-    const warning = logger.of('warn', /Mythic\+ page 2 for us failed/);
+    const warning = logger.of('warn', /Mythic\+ temple-of-sethraliss page 2 for us failed/);
     expect(warning).toHaveLength(1);
     expect(warning[0].message).toMatch(/schema issues: rankings:/);
 

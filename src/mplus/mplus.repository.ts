@@ -10,7 +10,8 @@ import {
   type MplusDungeonRun,
 } from './entities/mplus-character.entity.js';
 import { type MplusRunDocument } from './entities/mplus-run.entity.js';
-import { mergeDungeonRuns, scoreOf, withDungeonRuns } from './mplus.mapper.js';
+import { refreshCoverage } from './mplus-coverage.js';
+import { mergeDungeonRuns, withDungeonRuns } from './mplus.mapper.js';
 import {
   MPLUS_AFFIXES_COLLECTION,
   MPLUS_CHARACTERS_COLLECTION,
@@ -111,6 +112,7 @@ export class MplusRepository {
    */
   async upsertCharacters(
     characters: readonly MplusCharacterDocument[],
+    seasonDungeons: number,
   ): Promise<{ written: number; merged: number }> {
     let written = 0;
     let merged = 0;
@@ -135,7 +137,7 @@ export class MplusRepository {
             // merge needs anyway.
             update: {
               $set: {
-                ...withDungeonRuns(character, dungeonRuns),
+                ...withDungeonRuns(character, dungeonRuns, seasonDungeons),
                 previousMythicScore: held?.mythicScore ?? null,
               },
             },
@@ -174,13 +176,28 @@ export class MplusRepository {
     fields: Partial<MplusCharacterDocument>,
     profile: Partial<MplusCharacterProfile>,
     incoming: readonly MplusDungeonRun[],
-  ): Promise<{ matched: boolean; mythicScore: number; dungeonsCovered: number; added: number }> {
+    seasonDungeons: number,
+  ): Promise<{
+    matched: boolean;
+    mythicScore: number;
+    dungeonsCovered: number;
+    isFullyCovered: boolean;
+    added: number;
+  }> {
     const existing = await this.characters.findOne(
       { season, key },
       { projection: { dungeonRuns: 1, mythicScore: 1 } },
     );
 
-    if (!existing) return { matched: false, mythicScore: 0, dungeonsCovered: 0, added: 0 };
+    if (!existing) {
+      return {
+        matched: false,
+        mythicScore: 0,
+        dungeonsCovered: 0,
+        isFullyCovered: false,
+        added: 0,
+      };
+    }
 
     const stored = existing.dungeonRuns ?? [];
     const dungeonRuns = mergeDungeonRuns(stored, incoming);
@@ -190,24 +207,29 @@ export class MplusRepository {
       if (value !== undefined) update[`profile.${name}`] = value;
     }
 
-    // Re-derived rather than trusted from the caller, the only way the three
-    // cannot drift apart.
-    update.dungeonRuns = dungeonRuns;
+    // Re-derived rather than trusted from the caller, the only way they cannot
+    // drift apart. Over the merged runs, stored and pushed together, so a push
+    // that supplies only the dungeons a character was missing completes it.
+    const derived = withDungeonRuns({}, dungeonRuns, seasonDungeons);
+    Object.assign(update, derived);
     update.previousMythicScore = existing.mythicScore ?? null;
-    update.mythicScore = scoreOf(dungeonRuns);
-    update.dungeonsCovered = dungeonRuns.length;
 
     await this.characters.updateOne({ season, key }, { $set: update });
 
     return {
       matched: true,
-      mythicScore: update.mythicScore as number,
-      dungeonsCovered: dungeonRuns.length,
+      mythicScore: derived.mythicScore,
+      dungeonsCovered: derived.dungeonsCovered,
+      isFullyCovered: derived.isFullyCovered,
       added: dungeonRuns.length - stored.length,
     };
   }
 
-  /** The `dungeonRuns` already stored for a chunk, keyed by identity. */
+  /** Re-derives `isFullyCovered` for a season's characters a write did not reach. */
+  refreshCoverage(season: string, seasonDungeons: number): Promise<number> {
+    return refreshCoverage(this.characters, season, seasonDungeons);
+  }
+
   /** What a chunk's characters hold now: the runs to merge, and the score that becomes the previous one. */
   private async storedFor(
     chunk: readonly MplusCharacterDocument[],

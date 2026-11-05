@@ -137,6 +137,13 @@ describe('Mythic+ catalogue walk and indexes', () => {
         mythicScore: -1,
       }),
       mplus_role_region_board: plain({ season: 1, region: 1, 'profile.role': 1, mythicScore: -1 }),
+      mplus_covered_board: plain({ season: 1, isFullyCovered: 1, mythicScore: -1 }),
+      mplus_covered_region_board: plain({
+        season: 1,
+        region: 1,
+        isFullyCovered: 1,
+        mythicScore: -1,
+      }),
     });
     expect(await indexes(MPLUS_AFFIXES_COLLECTION)).toEqual({
       affix_identity: unique({ id: 1 }),
@@ -179,6 +186,13 @@ describe('Mythic+ catalogue walk and indexes', () => {
         season: 1,
         region: 1,
         'profile.role': 1,
+        mythicScore: -1,
+      }),
+      archive_covered_board: plain({ season: 1, isFullyCovered: 1, mythicScore: -1 }),
+      archive_covered_region_board: plain({
+        season: 1,
+        region: 1,
+        isFullyCovered: 1,
         mythicScore: -1,
       }),
     });

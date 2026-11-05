@@ -209,7 +209,7 @@ describe('MplusCharacterAccumulator', () => {
   const at = new Date('2026-09-14T00:00:00.000Z');
 
   it('sums the best run per dungeon, not every run', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
     const roster = [{ id: 1, name: 'Exxibae' }];
 
     // Two runs of the same dungeon: only the higher score counts.
@@ -226,7 +226,7 @@ describe('MplusCharacterAccumulator', () => {
   });
 
   it('rounds away the float noise eight summed scores produce', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
     const roster = [{ id: 1, name: 'Exxibae' }];
 
     for (const [index, score] of [515.3, 502.6, 498.1, 471.2].entries()) {
@@ -239,7 +239,7 @@ describe('MplusCharacterAccumulator', () => {
   });
 
   it('keeps the first of two equal scores, which is the better-ranked run', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
     const roster = [{ id: 1, name: 'Exxibae' }];
 
     accumulator.add(ranking({ runId: 10, rank: 1, score: 500, dungeonId: 9527, roster }), at);
@@ -248,8 +248,82 @@ describe('MplusCharacterAccumulator', () => {
     expect(accumulator.drain()[0].dungeonRuns[0].keystoneRunId).toBe(10);
   });
 
+  it('flags a character fully covered only when it holds every dungeon the season lists', () => {
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 2);
+
+    accumulator.add(
+      ranking({
+        runId: 1,
+        score: 500,
+        dungeonId: 9527,
+        roster: [
+          { id: 1, name: 'Both' },
+          { id: 2, name: 'One' },
+        ],
+      }),
+      at,
+    );
+    accumulator.add(
+      ranking({ runId: 2, score: 300, dungeonId: 9526, roster: [{ id: 1, name: 'Both' }] }),
+      at,
+    );
+
+    const byName = new Map(accumulator.drain().map((doc) => [doc.characterName, doc]));
+    expect(byName.get('Both')!.isFullyCovered).toBe(true);
+    expect(byName.get('One')!.isFullyCovered).toBe(false);
+  });
+
+  it("takes the profile from the character's best run, not the first board read", () => {
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
+
+    // Boards are read one dungeon after another, so a worse run in the first
+    // dungeon arrives before the best run in a later one.
+    accumulator.add(
+      ranking({
+        runId: 1,
+        score: 300,
+        dungeonId: 9527,
+        roster: [{ id: 1, name: 'A', specId: 258 }],
+      }),
+      at,
+    );
+    accumulator.add(
+      ranking({
+        runId: 2,
+        score: 500,
+        dungeonId: 9526,
+        roster: [{ id: 1, name: 'A', specId: 256 }],
+      }),
+      at,
+    );
+    accumulator.add(
+      ranking({
+        runId: 3,
+        score: 400,
+        dungeonId: 16368,
+        roster: [{ id: 1, name: 'A', specId: 257 }],
+      }),
+      at,
+    );
+
+    const [character] = accumulator.drain();
+    expect(character.profile.specId).toBe(256);
+    expect(character.dungeonRuns.map((run) => run.specId)).toEqual([256, 257, 258]);
+  });
+
+  it('flags no one fully covered against an unknown dungeon list', () => {
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 0);
+
+    accumulator.add(
+      ranking({ runId: 1, score: 500, dungeonId: 9527, roster: [{ id: 1, name: 'A' }] }),
+      at,
+    );
+
+    expect(accumulator.drain()[0].isFullyCovered).toBe(false);
+  });
+
   it('keys on realm and name, so a case difference is the same character', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
 
     accumulator.add(
       ranking({ runId: 1, score: 500, dungeonId: 9527, roster: [{ id: 1, name: 'Exxibae' }] }),
@@ -271,7 +345,7 @@ describe('MplusCharacterAccumulator', () => {
    * player's name.
    */
   it('never folds anonymised characters together', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
 
     accumulator.add(
       ranking({
@@ -297,7 +371,7 @@ describe('MplusCharacterAccumulator', () => {
   });
 
   it('separates the same name on two realms', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
 
     accumulator.add(
       ranking({
@@ -316,7 +390,7 @@ describe('MplusCharacterAccumulator', () => {
   });
 
   it('records the spec and role each run was played on', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
 
     accumulator.add(
       ranking({
@@ -336,7 +410,7 @@ describe('MplusCharacterAccumulator', () => {
   });
 
   it('drains empty, so a second region does not inherit the first', () => {
-    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us');
+    const accumulator = new MplusCharacterAccumulator('season-mn-2', 18, 'us', 8);
 
     accumulator.add(
       ranking({ runId: 1, score: 500, dungeonId: 9527, roster: [{ id: 1, name: 'Exxibae' }] }),

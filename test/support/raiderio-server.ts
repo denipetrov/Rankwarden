@@ -111,7 +111,10 @@ export class RaiderIoServer {
         };
       }
 
-      return { status: 200, body: this.world.runsPage(season, region, page) };
+      return {
+        status: 200,
+        body: this.world.runsPage(season, region, page, hit.query.get('dungeon') ?? 'all'),
+      };
     }
 
     return { status: 404, body: { statusCode: 404, message: `unrouted path ${hit.path}` } };

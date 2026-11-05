@@ -6,7 +6,7 @@ import { MplusService } from '../src/mplus/mplus.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { holdActive, releaseAllHolds } from './support/hold.js';
 import { expectInvariants, expectMplusStoredMatchesServed } from './support/invariants.js';
-import { MplusWorld } from './support/mplus-world.js';
+import { MplusWorld, WORLD_DUNGEONS } from './support/mplus-world.js';
 import { World } from './support/world.js';
 import { MPLUS_RUNS_COLLECTION } from '../src/database/collections.js';
 
@@ -27,17 +27,23 @@ describe('Mythic+ pass pausing for live ingestion', () => {
   let db: Db;
   const world = new MplusWorld();
 
+  /** Pages read of a region's one deep board; the season's other boards are empty. */
   const pagesOf = (region: string) =>
     app.raiderIo.requests
-      .filter((request) => request.path === 'mythic-plus/runs' && request.region === region)
+      .filter(
+        (request) =>
+          request.path === 'mythic-plus/runs' &&
+          request.region === region &&
+          request.params.dungeon === WORLD_DUNGEONS[0].slug,
+      )
       .map((request) => request.page!)
       .sort((a, b) => a - b);
 
   beforeAll(async () => {
     world
-      .seed('us', PAGES * 20, 900, SEASON)
-      .seed('eu', PAGES * 20, 880, SEASON)
-      .seed('kr', PAGES * 20, 860, SEASON);
+      .seed('us', PAGES * 20, 900, SEASON, 0)
+      .seed('eu', PAGES * 20, 880, SEASON, 0)
+      .seed('kr', PAGES * 20, 860, SEASON, 0);
 
     app = await bootTestApp(
       World.seed({ regions: ['us'], players: 5 }),
@@ -70,6 +76,7 @@ describe('Mythic+ pass pausing for live ingestion', () => {
         !release &&
         request.path === 'mythic-plus/runs' &&
         request.region === 'eu' &&
+        request.params.dungeon === WORLD_DUNGEONS[0].slug &&
         request.page === 2
       ) {
         release = holdActive(app.app, 'enrichment');

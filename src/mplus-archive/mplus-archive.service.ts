@@ -398,7 +398,12 @@ export class MplusArchiveService {
     region: RaiderIoRegion,
   ): Promise<RegionOutcome> {
     const archivedAt = new Date();
-    const accumulator = new MplusCharacterAccumulator(season.slug, season.blizzardSeasonId, region);
+    const accumulator = new MplusCharacterAccumulator(
+      season.slug,
+      season.blizzardSeasonId,
+      region,
+      season.dungeonIds?.length ?? 0,
+    );
     const entry: MplusRegionArchive = {
       status: 'complete',
       pagesFetched: 0,
@@ -517,6 +522,24 @@ export class MplusArchiveService {
 
   /** Figures for seasons archived without them. Never fails the tick. */
   private async backfillRepresentation(): Promise<void> {
+    // `isFullyCovered` for archived characters written before the flag was:
+    // the archive is never rewritten, so nothing else would set it. A no-op
+    // once every season matches.
+    await this.recordFigures('coverage', async () => {
+      for (const season of await this.seasons.allSeasons()) {
+        const corrected = await this.repository.refreshCoverage(
+          season.slug,
+          season.dungeonIds?.length ?? 0,
+        );
+
+        if (corrected > 0) {
+          this.logger.log(
+            `Re-derived isFullyCovered for ${corrected} archived ${season.slug} character(s)`,
+          );
+        }
+      }
+    });
+
     await this.recordFigures('spec representation', async () => {
       const filled = await this.representation.backfillArchived();
 

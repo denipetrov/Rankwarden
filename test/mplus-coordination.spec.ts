@@ -28,7 +28,8 @@ describe('Mythic+ coordination and observability', () => {
 
     app = await bootTestApp(
       World.seed({ regions: ['us'], players: 20 }),
-      { RAIDERIO_REGIONS: 'us' },
+      // The production minute, which readiness is asserted to report.
+      { RAIDERIO_REGIONS: 'us', RAIDERIO_MINUTE_LIMIT: '1000' },
       undefined,
       undefined,
       mplusWorld,

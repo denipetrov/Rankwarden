@@ -651,9 +651,11 @@ export class MplusWorld {
 
   /**
    * Adds `count` runs to a region, scored descending from `topScore`, served for
-   * `season` only when one is given.
+   * `season` only when one is given. The runs cycle through the three
+   * `WORLD_DUNGEONS`, or all go to the one at index `dungeon` — for a case that
+   * needs a single dungeon board deeper than the pages a pass reads.
    */
-  seed(region: string, count: number, topScore = 500, season?: string): this {
+  seed(region: string, count: number, topScore = 500, season?: string, dungeon?: number): this {
     const dungeons = [
       [9527, 'Temple of Sethraliss', 'temple-of-sethraliss'],
       [9526, "Kings' Rest", 'kings-rest'],
@@ -661,7 +663,7 @@ export class MplusWorld {
     ] as const;
 
     for (let index = 0; index < count; index += 1) {
-      const [dungeonId, dungeonName, dungeonSlug] = dungeons[index % dungeons.length];
+      const [dungeonId, dungeonName, dungeonSlug] = dungeons[dungeon ?? index % dungeons.length];
       const base = this.runs.length + 1;
 
       this.runs.push({
@@ -836,14 +838,26 @@ export class MplusWorld {
     };
   }
 
-  /** One page of `/mythic-plus/runs`, in the API's own shape. */
-  runsPage(season: string, region: string, page: number): unknown {
-    const board = `${season}|${region}`;
+  /**
+   * The requests `runsPage` has answered, as `region|dungeon|page`, so a case
+   * can assert which boards a pass read and in what order.
+   */
+  servedPages: string[] = [];
+
+  /**
+   * One page of `/mythic-plus/runs`, in the API's own shape. `dungeon` is a
+   * dungeon slug for that dungeon's own board, ranked within it, or `all` for
+   * every dungeon's runs ranked together — as upstream.
+   */
+  runsPage(season: string, region: string, page: number, dungeon = 'all'): unknown {
+    this.servedPages.push(`${region}|${dungeon}|${page}`);
+    const board = `${season}|${region}|${dungeon}`;
     const ranked =
       (this.cacheRankings ? this.rankings.get(board) : undefined) ??
       this.runs
         .filter((run) => run.region === region)
         .filter((run) => run.season === undefined || run.season === season)
+        .filter((run) => dungeon === 'all' || run.dungeonSlug === dungeon)
         .sort((left, right) => right.score - left.score);
     if (this.cacheRankings) this.rankings.set(board, ranked);
     const start = page * RUNS_PER_PAGE;
@@ -964,8 +978,8 @@ export class MplusWorld {
           })),
         },
       })),
-      leaderboard_url: `https://raider.io/mythic-plus-rankings/${season}/all/${region}`,
-      params: { dungeon: 'all', page, region, season },
+      leaderboard_url: `https://raider.io/mythic-plus-rankings/${season}/${dungeon}/${region}`,
+      params: { dungeon, page, region, season },
     };
   }
 }
