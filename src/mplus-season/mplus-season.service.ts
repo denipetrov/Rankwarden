@@ -23,6 +23,8 @@ export interface ResolvedMplusSeason {
   expansionId: number;
   /** Dungeons the season lists, for reporting how complete a score is. */
   dungeons: number;
+  /** Their ids, in the catalogue's order: the boards the live pass reads. */
+  dungeonIds: number[];
   /** When the season opened in this region. */
   startsAt: Date;
   /** When it ends in this region — Raider.io's 2030 placeholder while it runs. */
@@ -57,6 +59,7 @@ export function resolveRegions(
       seasonId: season.blizzardSeasonId,
       expansionId: season.expansionId,
       dungeons: season.dungeonIds.length,
+      dungeonIds: [...season.dungeonIds],
       startsAt,
       endsAt,
       ended: endsAt !== null && endsAt.getTime() <= now.getTime(),
@@ -239,6 +242,26 @@ export class MplusSeasonService implements OnModuleInit {
     this.logger.log(
       `Mythic+ season ${next.season} in ${region} now ends ${next.endsAt?.toISOString() ?? 'unknown'}`,
     );
+  }
+
+  /**
+   * The slug of each dungeon a season lists, in its own order — the boards the
+   * live pass reads — or null when the catalogue cannot name all of them. A
+   * season listing a dungeon the catalogue lacks would otherwise be read
+   * without that dungeon, and its characters would never be complete.
+   */
+  async dungeonSlugs(season: ResolvedMplusSeason): Promise<string[] | null> {
+    if (season.dungeonIds.length === 0) return null;
+
+    const known = new Map(
+      (await this.repository.findDungeons(season.dungeonIds)).map((dungeon) => [
+        dungeon.id,
+        dungeon.slug,
+      ]),
+    );
+    const slugs = season.dungeonIds.map((id) => known.get(id));
+
+    return slugs.every((slug): slug is string => Boolean(slug)) ? slugs : null;
   }
 
   /** Everything observed for a region, or undefined if it never has been. */

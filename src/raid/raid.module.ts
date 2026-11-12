@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { RaiderIoModule } from '../raiderio/raiderio.module.js';
+import { BossRepository } from './boss.repository.js';
 import { GuildRepository } from './guild.repository.js';
 import { RaidCatalogueRepository } from './raid-catalogue.repository.js';
 import { RaidCatalogueScheduler } from './raid-catalogue.scheduler.js';
@@ -20,10 +21,17 @@ import { RaidRankingsService } from './raid-rankings.service.js';
     RaidCatalogueService,
     RaidCatalogueScheduler,
     GuildRepository,
+    BossRepository,
     RaidRankingsRepository,
     RaidRankingsService,
     RaidRankingsScheduler,
   ],
-  exports: [RaidCatalogueRepository, RaidCatalogueService, GuildRepository, RaidRankingsService],
+  exports: [
+    RaidCatalogueRepository,
+    RaidCatalogueService,
+    GuildRepository,
+    BossRepository,
+    RaidRankingsService,
+  ],
 })
 export class RaidModule {}

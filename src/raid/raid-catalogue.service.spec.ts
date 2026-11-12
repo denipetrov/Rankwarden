@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import type { RaidingApi } from '../raiderio/raiding.api.js';
 import type { RaidStaticData, StaticRaid } from '../raiderio/schemas/raid-static-data.schema.js';
+import type { BossRepository, CataloguedBoss } from './boss.repository.js';
 import type { RaidCatalogueRepository } from './raid-catalogue.repository.js';
 import { RaidCatalogueService } from './raid-catalogue.service.js';
 
@@ -50,6 +51,7 @@ function serviceOver(
     return { raids: byExpansion[expansionId] };
   });
   const upsertRaids = vi.fn(async (raids: unknown[]) => raids.length);
+  const upsertBosses = vi.fn(async (bosses: readonly CataloguedBoss[]) => bosses.length);
   const markUnlisted = vi.fn(async () => 0);
   const catalogueUpdatedAt = vi.fn(async () => options.updatedAt ?? null);
   const env: Record<string, unknown> = {
@@ -67,7 +69,9 @@ function serviceOver(
         catalogueUpdatedAt,
         highestListedExpansion: vi.fn(async () => options.newest ?? null),
       } as unknown as RaidCatalogueRepository,
+      { upsertBosses } as unknown as BossRepository,
     ),
+    upsertBosses,
     getStaticData,
     upsertRaids,
     markUnlisted,
@@ -247,5 +251,52 @@ describe('RaidCatalogueService — a 400 that is not the end', () => {
     const { service } = serviceOver({});
 
     expect(service.lastStatus).toEqual({ running: false, lastWalk: null });
+  });
+});
+
+describe('RaidCatalogueService — bosses', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('writes every boss of every raid it lists, under its raid', async () => {
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const { service, upsertBosses, upsertRaids } = serviceOver({
+      6: [raid(1, 'one'), raid(2, 'two')],
+      7: [raid(3, 'three')],
+    });
+
+    await service.refresh(new Date('2026-11-02T00:00:00Z'));
+
+    expect(upsertBosses.mock.calls.flatMap(([bosses]) => bosses)).toEqual([
+      {
+        id: 10,
+        raidId: 1,
+        raidSlug: 'one',
+        name: 'Boss',
+        slug: 'one-boss',
+        catalogueUpdatedAt: expect.any(Date),
+      },
+      {
+        id: 20,
+        raidId: 2,
+        raidSlug: 'two',
+        name: 'Boss',
+        slug: 'two-boss',
+        catalogueUpdatedAt: expect.any(Date),
+      },
+      {
+        id: 30,
+        raidId: 3,
+        raidSlug: 'three',
+        name: 'Boss',
+        slug: 'three-boss',
+        catalogueUpdatedAt: expect.any(Date),
+      },
+    ]);
+    // An expansion's bosses after its raids, so raidId always names a stored raid.
+    expect(upsertRaids.mock.invocationCallOrder[0]).toBeLessThan(
+      upsertBosses.mock.invocationCallOrder[0],
+    );
   });
 });

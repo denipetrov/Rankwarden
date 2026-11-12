@@ -51,6 +51,7 @@ describe('resolveRegions', () => {
       seasonId: 18,
       expansionId: 11,
       dungeons: 8,
+      dungeonIds: [1, 2, 3, 4, 5, 6, 7, 8],
       startsAt: new Date('2026-08-19T04:00:00Z'),
       endsAt: PLACEHOLDER_END,
       ended: false,

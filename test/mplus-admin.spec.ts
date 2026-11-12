@@ -288,7 +288,8 @@ describe('Mythic+ admin routes and health', () => {
     const failed = await getJson<Ready>(app.url(), '/health/ready');
     expect(failed.status).toBe(200);
     expect(failed.body.status).toBe('degraded');
-    expect(failed.body.mplus.problems).toEqual(['1 of 5 pages failed on the last pass']);
+    // Five pages of each of the season's eight dungeon boards.
+    expect(failed.body.mplus.problems).toEqual(['1 of 40 pages failed on the last pass']);
 
     // Stopped early.
     const release = holdActive(app.app, 'sweep');
@@ -322,9 +323,9 @@ describe('Mythic+ admin routes and health', () => {
         /Mythic\+ pass for season-mn-2 finished in \d+s: 40 runs, \d+ characters across 1 region\(s\)/,
       ),
     ).toHaveLength(1);
-    expect(logger.matching(/Mythic\+ us: 40 runs over 5 page\(s\), \d+ characters/)).toHaveLength(
-      1,
-    );
+    expect(
+      logger.matching(/Mythic\+ us: 40 runs over \d+ page\(s\) of 8 board\(s\), \d+ characters/),
+    ).toHaveLength(1);
 
     // A spent minute is expected, not an error: one warning, no stack.
     logger.clear();

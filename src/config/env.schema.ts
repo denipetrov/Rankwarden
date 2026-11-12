@@ -11,6 +11,7 @@ import {
   AGGREGATE_REGION,
   DEFAULT_RAID_RANKING_REGIONS,
   MAX_RUNS_PAGE,
+  MPLUS_SEASON_DUNGEONS,
   RAID_DIFFICULTIES,
   RAID_RANKING_MAX_PAGE_SIZE,
   RAID_RANKING_PAGE_SIZE,
@@ -478,6 +479,7 @@ export const envSchema = z.object({
   RAIDERIO_PATH_MPLUS_STATIC_DATA: pathTemplate('mythic-plus/static-data'),
   RAIDERIO_PATH_RAID_STATIC_DATA: pathTemplate('raiding/static-data'),
   RAIDERIO_PATH_RAID_RANKINGS: pathTemplate('raiding/raid-rankings'),
+  RAIDERIO_PATH_BOSS_RANKINGS: pathTemplate('raiding/boss-rankings'),
   /** Regions to ingest M+ runs for. Includes `cn`, which Blizzard's list cannot. */
   RAIDERIO_REGIONS: raiderIoRegionCsv(RAIDERIO_REGIONS.join(',')),
   RAIDERIO_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
@@ -645,6 +647,16 @@ export const envSchema = z.object({
    * the guilds on them (`guilds`). Needs the catalogue it hangs off, so it is refused
    * without `RAID_CATALOGUE_ENABLED`.
    */
+  /**
+   * Keeps a board per boss as well (`bosses`): the first fifty guilds to kill
+   * each boss, on every board and difficulty the raid rankings read, in the
+   * same run. One request a board: 245 bosses make the first run some 3,700
+   * requests. Needs `RAID_RANKINGS_ENABLED`.
+   */
+  BOSS_RANKINGS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   RAID_RANKINGS_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
@@ -801,6 +813,16 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
     });
   }
 
+  if (env.BOSS_RANKINGS_ENABLED && !env.RAID_RANKINGS_ENABLED) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['BOSS_RANKINGS_ENABLED'],
+      message:
+        'is read by the raid rankings job; set RAID_RANKINGS_ENABLED=true ' +
+        'or set BOSS_RANKINGS_ENABLED=false',
+    });
+  }
+
   if (env.RAID_RANKINGS_ENABLED && !env.RAID_CATALOGUE_ENABLED) {
     ctx.addIssue({
       code: 'custom',
@@ -852,8 +874,10 @@ const validatedEnvSchema = envSchema.superRefine((env, ctx) => {
 
   // A pass that cannot finish inside its own interval means each pass is still
   // running when the next is due, so the cadence in the configuration is not
-  // the cadence in reality.
-  const pagesPerPass = env.RAIDERIO_MAX_PAGES * env.RAIDERIO_REGIONS.length;
+  // the cadence in reality. A pass reads every dungeon's board, and how many
+  // dungeons a season lists is not known until the catalogue is read, so this
+  // assumes the usual eight; the pass's own outlook judges the real count.
+  const pagesPerPass = env.RAIDERIO_MAX_PAGES * MPLUS_SEASON_DUNGEONS * env.RAIDERIO_REGIONS.length;
   const passMs = (pagesPerPass / Math.max(1, bucketPerMinute)) * 60_000;
 
   if (env.MPLUS_ENABLED && passMs > env.MPLUS_INTERVAL_MS) {

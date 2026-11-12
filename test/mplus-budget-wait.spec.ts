@@ -136,7 +136,7 @@ describe('Mythic+ budget wait', () => {
 
     const warnings = logger.of('warn', /budget for the current minute is spent/);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0].message).toMatch(/stopping us at page 0/);
+    expect(warnings[0].message).toMatch(/stopping us at temple-of-sethraliss page 0/);
 
     await db.collection(MPLUS_RUNS_COLLECTION).deleteOne({ keystoneRunId: 1 });
   });

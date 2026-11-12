@@ -127,6 +127,11 @@ export class MplusCatalogueRepository {
     await this.seasons.updateOne({ slug }, { $set: { archive: marker } });
   }
 
+  /** The catalogued dungeons among `ids`, in no particular order. */
+  findDungeons(ids: readonly number[]): Promise<MplusDungeonDocument[]> {
+    return this.dungeons.find({ id: { $in: [...ids] } }).toArray();
+  }
+
   findSeason(slug: string): Promise<MplusSeasonDocument | null> {
     return this.seasons.findOne({ slug });
   }

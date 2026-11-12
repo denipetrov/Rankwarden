@@ -1,4 +1,5 @@
 import type { StaticRaid } from '../raiderio/schemas/raid-static-data.schema.js';
+import type { CataloguedBoss } from './boss.repository.js';
 import type { CataloguedRaid } from './raid-catalogue.repository.js';
 
 /** Parses a region-keyed timestamp map, dropping anything that is not a date. */
@@ -35,4 +36,16 @@ export function toRaidDocument(
     })),
     catalogueUpdatedAt,
   };
+}
+
+/** The bosses of a static-data raid, as `bosses` stores them before any board. */
+export function toBossDocuments(raid: StaticRaid, catalogueUpdatedAt: Date): CataloguedBoss[] {
+  return (raid.encounters ?? []).map((encounter) => ({
+    id: encounter.id,
+    raidId: raid.id,
+    raidSlug: raid.slug,
+    name: encounter.name,
+    slug: encounter.slug,
+    catalogueUpdatedAt,
+  }));
 }

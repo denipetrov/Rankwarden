@@ -18,6 +18,10 @@ const SEASON = 'season-mn-2';
 const FULL = MAX_RUNS_PAGE + 1;
 /** A size budget, as `s7-large-ladder.spec.ts` keeps: this file is the suite's heaviest. */
 const BUDGET_MS = 45_000;
+/** The one board with runs on it, and how many of the season's boards are empty. */
+const DEEP_BOARD = 'temple-of-sethraliss';
+const EMPTY_BOARDS = 7;
+const PAGE_BATCH = 50;
 
 /**
  * M2.5 — the real page cap: 1,001 pages, and never page 1001 (L9).
@@ -26,6 +30,9 @@ const BUDGET_MS = 45_000;
  * actually enforces — `page` above 1000 is a 400 — has only ever been met at
  * five. Here a board deeper than the cap is read to the cap and not a page
  * further, and then a board just short of it ends on its own empty page.
+ *
+ * Every run is in one dungeon, so that one dungeon's board is the deep one; the
+ * season's other seven boards hold nothing and end on their first page.
  *
  * A thousand characters shared across twenty thousand runs, rather than three
  * new ones per run, so the fold is exercised at depth without the file being a
@@ -48,7 +55,7 @@ describe('Mythic+ pass at the real page cap', () => {
         region: 'us',
         season: SEASON,
         score: 30_000 - index,
-        dungeon: index % 3,
+        dungeon: 0,
         members: [0, 1, 2, 3, 4].map((slot) => pool[(index * 7 + slot * 131) % pool.length]),
       });
     }
@@ -64,7 +71,7 @@ describe('Mythic+ pass at the real page cap', () => {
       {
         RAIDERIO_REGIONS: 'us',
         RAIDERIO_MAX_PAGES: String(FULL),
-        RAIDERIO_PAGE_BATCH: '50',
+        RAIDERIO_PAGE_BATCH: String(PAGE_BATCH),
         // A thousand requests in one pass: the minute has to hold them, or the
         // budget rather than the cap is what ends it.
         RAIDERIO_MINUTE_LIMIT: '100000',
@@ -84,17 +91,25 @@ describe('Mythic+ pass at the real page cap', () => {
     const startedAt = Date.now();
     const result = await app.app.get(MplusService).sweep();
 
-    const pages = app.raiderIo.requests
-      .filter((request) => request.path === 'mythic-plus/runs')
+    const runsRequests = app.raiderIo.requests.filter(
+      (request) => request.path === 'mythic-plus/runs',
+    );
+    const pages = runsRequests
+      .filter((request) => request.params.dungeon === DEEP_BOARD)
       .map((request) => request.page!);
     expect(pages).toHaveLength(FULL);
     expect(new Set(pages).size, 'each page once').toBe(FULL);
     expect(Math.max(...pages)).toBe(MAX_RUNS_PAGE);
+    // An empty board ends on its first page, but a batch is fetched whole
+    // before any of it is read: each costs one batch of 50.
+    expect(runsRequests, 'and one batch of each empty board').toHaveLength(
+      FULL + EMPTY_BOARDS * PAGE_BATCH,
+    );
 
     const us = result!.regions[0];
     expect(us).toMatchObject({
-      pagesPlanned: FULL,
-      pagesFetched: FULL,
+      pagesPlanned: FULL * (EMPTY_BOARDS + 1),
+      pagesFetched: FULL + EMPTY_BOARDS * PAGE_BATCH,
       pagesFailed: 0,
       stoppedEarly: null,
     });

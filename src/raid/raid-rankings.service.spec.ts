@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RaiderIoApiError } from '../raiderio/http/raiderio-api.error.js';
 import type { RaidingApi } from '../raiderio/raiding.api.js';
 import type { RaidRanking } from '../raiderio/schemas/raid-rankings.schema.js';
+import type { BossRanking } from '../raiderio/schemas/boss-rankings.schema.js';
+import type { BossRepository, BossStamps } from './boss.repository.js';
+import type { BossRankedGuild } from './entities/boss.entity.js';
 import type { GuildDocument } from './entities/guild.entity.js';
 import type { GuildRepository } from './guild.repository.js';
 import type { RaidCatalogueService } from './raid-catalogue.service.js';
@@ -56,6 +59,10 @@ function serviceOver(
     concurrency?: number;
     top?: number;
     pageSize?: number;
+    bosses?: boolean;
+    bossStamps?: Map<number, BossStamps>;
+    serveBoss?: (raid: string, boss: string, region: string, difficulty: string) => BossRanking[];
+    storedBossBoards?: Map<number, BossRankedGuild[]>;
   } = {},
 ) {
   const getRaidRankingsPage = vi.fn<
@@ -88,6 +95,31 @@ function serviceOver(
     (id: number, region: string, difficulty: string, refusedAt: Date) => Promise<void>
   >(async () => undefined);
   const refreshIfDue = vi.fn(async () => ({ refreshed: false }));
+  const getBossRankings = vi.fn<
+    (
+      raid: string,
+      boss: string,
+      region: string,
+      difficulty: string,
+      timeoutMs?: number,
+    ) => Promise<BossRanking[]>
+  >(async (raid, boss, region, difficulty) =>
+    (settings.serveBoss ?? (() => []))(raid, boss, region, difficulty),
+  );
+  const setBossBoard = vi.fn<
+    (
+      boss: { id: number; raidId: number; raidSlug: string; name: string; slug: string },
+      region: string,
+      difficulty: string,
+      board: unknown[],
+      readAt: Date,
+    ) => Promise<void>
+  >(async (...[boss, region, , board]) => {
+    calls.push(`boss:${boss.slug}:${region}:${board.length}`);
+  });
+  const markBossRefused = vi.fn<
+    (id: number, region: string, difficulty: string, refusedAt: Date) => Promise<void>
+  >(async () => undefined);
   const env: Record<string, unknown> = {
     RAID_RANKINGS_REGIONS: regions,
     RAID_RANKINGS_DIFFICULTIES: settings.difficulties ?? ['mythic'],
@@ -95,12 +127,13 @@ function serviceOver(
     RAID_RANKINGS_REQUEST_TIMEOUT_MS: 60_000,
     RAID_RANKINGS_TOP: settings.top ?? 100,
     RAID_RANKINGS_PAGE_SIZE: settings.pageSize ?? 20,
+    BOSS_RANKINGS_ENABLED: settings.bosses ?? false,
   };
 
   return {
     service: new RaidRankingsService(
       { get: (key: string) => env[key] } as unknown as ConfigService<never, true>,
-      { getRaidRankingsPage } as unknown as RaidingApi,
+      { getRaidRankingsPage, getBossRankings } as unknown as RaidingApi,
       { refreshIfDue } as unknown as RaidCatalogueService,
       {
         targets: vi.fn(async () => targets),
@@ -109,7 +142,16 @@ function serviceOver(
         markRefused,
       } as unknown as RaidRankingsRepository,
       { upsertGuilds } as unknown as GuildRepository,
+      {
+        stamps: vi.fn(async () => settings.bossStamps ?? new Map()),
+        board: vi.fn(async (id: number) => settings.storedBossBoards?.get(id) ?? null),
+        setBoard: setBossBoard,
+        markRefused: markBossRefused,
+      } as unknown as BossRepository,
     ),
+    getBossRankings,
+    setBossBoard,
+    markBossRefused,
     getRaidRankingsPage,
     upsertGuilds,
     setBoard,
@@ -829,6 +871,202 @@ describe('RaidRankingsService', () => {
       expect(during).toBe(true);
       expect(service.isRunning).toBe(false);
       expect(service.lastStatus.lastRun).toEqual({ ...result, finishedAt: expect.any(String) });
+    });
+  });
+
+  describe('boss boards', () => {
+    const withBosses = (raid: RaidRankingTarget) => {
+      raid.encounters = [
+        { id: 11, slug: 'first', name: 'First' },
+        { id: 12, slug: 'second', name: 'Second' },
+      ];
+
+      return raid;
+    };
+    const killedBy = (guildId: number, rank: number): BossRanking => ({
+      rank,
+      guild: { id: guildId, name: `Guild ${guildId}` },
+      itemLevelAvg: 327.866,
+      encountersDefeated: [
+        { slug: 'first', firstDefeated: '2026-08-25T10:57:34.000Z', attempts: 0 },
+        { slug: 'first', firstDefeated: '2026-08-26T15:48:43.000Z', attempts: 4 },
+      ],
+    });
+
+    it('reads none while switched off', async () => {
+      quiet();
+      const { service, getBossRankings } = serviceOver([withBosses(target('open', OPEN_END))]);
+
+      await service.refreshDue(NOW);
+
+      expect(getBossRankings).not.toHaveBeenCalled();
+    });
+
+    it("reads each boss of the raid on every board, after the raid's own", async () => {
+      quiet();
+      const { service, getBossRankings, calls } = serviceOver(
+        [withBosses(target('open', OPEN_END))],
+        () => [],
+        ['world', 'eu'],
+        { bosses: true, serveBoss: (_raid, boss) => (boss === 'first' ? [killedBy(7, 1)] : []) },
+      );
+
+      const result = await service.refreshDue(NOW);
+
+      expect(
+        getBossRankings.mock.calls.map(([raid, boss, region, difficulty]) => [
+          raid,
+          boss,
+          region,
+          difficulty,
+        ]),
+      ).toEqual([
+        ['open', 'first', 'world', 'mythic'],
+        ['open', 'first', 'eu', 'mythic'],
+        ['open', 'second', 'world', 'mythic'],
+        ['open', 'second', 'eu', 'mythic'],
+      ]);
+      expect(calls.filter((call) => call.startsWith('board') || call.startsWith('boss'))).toEqual([
+        'board:world:0',
+        'board:eu:0',
+        'boss:first:world:1',
+        'boss:first:eu:1',
+        'boss:second:world:0',
+        'boss:second:eu:0',
+      ]);
+      expect(result).toMatchObject({ boards: 6, bossBoards: 4, raids: 1, failed: 0 });
+    });
+
+    it('stores the guild by id, its rank, item level and its first kill alone', async () => {
+      quiet();
+      const { service, setBossBoard, upsertGuilds } = serviceOver(
+        [withBosses(target('open', OPEN_END))],
+        () => [],
+        ['world'],
+        { bosses: true, serveBoss: (_raid, boss) => (boss === 'first' ? [killedBy(7, 1)] : []) },
+      );
+
+      await service.refreshDue(NOW);
+
+      const [identity, region, difficulty, board, readAt] = setBossBoard.mock.calls[0];
+      expect(identity).toEqual({
+        id: 11,
+        raidId: 4,
+        raidSlug: 'open',
+        name: 'First',
+        slug: 'first',
+      });
+      expect([region, difficulty, readAt]).toEqual(['world', 'mythic', NOW]);
+      expect(board).toEqual([
+        {
+          guildId: 7,
+          rank: 1,
+          itemLevelAvg: 327.866,
+          attempts: 0,
+          firstDefeated: new Date('2026-08-25T10:57:34Z'),
+        },
+      ]);
+      // Guilds before the board, as for a raid's.
+      expect(upsertGuilds.mock.calls.at(-2)![0]).toEqual([
+        expect.objectContaining({ id: 7, name: 'Guild 7' }),
+      ]);
+    });
+
+    it('keeps a guild item level from the stored board when this read has none', async () => {
+      quiet();
+      const served = (guildId: number, itemLevelAvg: number): BossRanking => ({
+        ...killedBy(guildId, guildId),
+        itemLevelAvg,
+      });
+      const stored = (guildId: number, itemLevelAvg: number | null): BossRankedGuild => ({
+        guildId,
+        rank: guildId,
+        itemLevelAvg,
+        attempts: 0,
+        firstDefeated: new Date('2026-08-25T10:57:34Z'),
+      });
+      const { service, setBossBoard } = serviceOver(
+        [withBosses(target('open', OPEN_END))],
+        () => [],
+        ['world'],
+        {
+          bosses: true,
+          // Guild 1 has a value now; 2 had one and now has 0; 3 has never had one.
+          serveBoss: (_raid, boss) =>
+            boss === 'first' ? [served(1, 329.719), served(2, 0), served(3, 0)] : [],
+          storedBossBoards: new Map([[11, [stored(1, null), stored(2, 325.847), stored(3, null)]]]),
+        },
+      );
+
+      await service.refreshDue(NOW);
+
+      const board = setBossBoard.mock.calls[0][3] as BossRankedGuild[];
+      expect(board.map((entry) => entry.itemLevelAvg)).toEqual([329.719, 325.847, null]);
+    });
+
+    it("settles a closed raid's boss board by its own stamps, not its raid's", async () => {
+      quiet();
+      const after = new Date(CLOSED_END.getTime() + 1);
+      const raid = withBosses(target('old', CLOSED_END, { world: after }));
+      const { service, getBossRankings } = serviceOver([raid], () => [], ['world'], {
+        bosses: true,
+        // The first boss read after the raid closed; the second never.
+        bossStamps: new Map([[11, { bossRankingsUpdatedAt: { world: { mythic: after } } }]]),
+      });
+
+      const result = await service.refreshDue(NOW);
+
+      expect(getBossRankings.mock.calls.map(([, boss]) => boss)).toEqual(['second']);
+      expect(result).toMatchObject({ boards: 1, bossBoards: 1, settled: 2 });
+    });
+
+    it('records a refused boss board on the boss, and carries on', async () => {
+      const warn = quiet();
+      const { service, markBossRefused, markRefused } = serviceOver(
+        [withBosses(target('old', CLOSED_END))],
+        () => [],
+        ['world'],
+        {
+          bosses: true,
+          serveBoss: (_raid, boss) => {
+            if (boss === 'second') {
+              throw new RaiderIoApiError(400, 'https://raider.io/x', 'Could not find raid boss');
+            }
+
+            return [];
+          },
+        },
+      );
+
+      const result = await service.refreshDue(NOW);
+
+      expect(markBossRefused.mock.calls).toEqual([[12, 'world', 'mythic', NOW]]);
+      expect(markRefused).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ bossBoards: 1, refused: 1, stopped: null });
+      expect(warn.mock.calls.map(([line]) => line)).toContainEqual(
+        expect.stringMatching(/Raider\.io refused the world mythic ranking of second in old/),
+      );
+    });
+
+    it('reads every boss of a raid asked for by hand, settled or not', async () => {
+      quiet();
+      const after = new Date(CLOSED_END.getTime() + 1);
+      const { service, getBossRankings } = serviceOver(
+        [withBosses(target('old', CLOSED_END, { world: after }))],
+        () => [],
+        ['world'],
+        {
+          bosses: true,
+          bossStamps: new Map([
+            [11, { bossRankingsUpdatedAt: { world: { mythic: after } } }],
+            [12, { bossRankingsUpdatedAt: { world: { mythic: after } } }],
+          ]),
+        },
+      );
+
+      await service.refreshRaid('old', NOW);
+
+      expect(getBossRankings).toHaveBeenCalledTimes(2);
     });
   });
 

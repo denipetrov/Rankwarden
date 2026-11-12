@@ -18,6 +18,7 @@ import {
 } from '../../src/mplus/entities/mplus-character.entity.js';
 import {
   ARCHIVE_ENTRIES_COLLECTION,
+  BOSSES_COLLECTION,
   CHARACTERS_COLLECTION,
   GUILDS_COLLECTION,
   MPLUS_AFFIXES_COLLECTION,
@@ -89,6 +90,7 @@ export async function expectInvariants(
   await expectRaidBoardsWellFormed(db);
   await expectGuildsWhole(db);
   await expectRaidDocumentsWhole(db);
+  await expectBossesWellFormed(db);
   await expectSearchNamesFolded(db);
 
   // Every check above is self-consistency: the data agreeing with itself. Pass
@@ -476,7 +478,8 @@ export async function expectArchiveSelfContained(db: Db): Promise<void> {
 }
 
 /**
- * I12 — a Mythic+ character's score is the sum of the runs stored on it.
+ * I12 — a Mythic+ character's score is the sum of the runs stored on it, and
+ * `isFullyCovered` says whether those runs cover every dungeon of its season.
  *
  * The stat the front end sorts on, recomputed from the document's own
  * `dungeonRuns`. It also catches the subtler error: two entries for the same
@@ -488,10 +491,23 @@ export async function expectMplusScoreMatchesRuns(
   collection: string = MPLUS_CHARACTERS_COLLECTION,
 ): Promise<void> {
   const characters = await db.collection(collection).find({}).toArray();
+  const seasonDungeons = new Map(
+    (await db.collection(MPLUS_SEASONS_COLLECTION).find({}).toArray()).map((season) => [
+      season.slug as string,
+      ((season.dungeonIds ?? []) as number[]).length,
+    ]),
+  );
 
   for (const character of characters) {
     const runs = (character.dungeonRuns ?? []) as { dungeon: { id: number }; score: number }[];
     const label = `I12: ${character.key}`;
+
+    // Complete only against a known dungeon list, and exactly when the runs
+    // cover all of it — the flag the front end filters a complete board by.
+    const listed = seasonDungeons.get(character.season as string) ?? 0;
+    expect(character.isFullyCovered, `${label} isFullyCovered agrees with its runs`).toBe(
+      listed > 0 && runs.length >= listed,
+    );
 
     const dungeonIds = runs.map((run) => run.dungeon.id);
     expect(new Set(dungeonIds).size, `${label} one entry per dungeon`).toBe(dungeonIds.length);
@@ -870,13 +886,20 @@ interface ServedRanking {
  */
 export async function expectMplusStoredMatchesServed(
   db: Db,
-  world: { runsPage(season: string, region: string, page: number): unknown },
+  world: { runsPage(season: string, region: string, page: number, dungeon?: string): unknown },
   scope: {
     season: string;
     region: string;
+    /** Pages read per board. */
     maxPages: number;
     before?: MplusCharacterSnapshot;
     collections?: { runs: string; characters: string };
+    /**
+     * The boards the job read. The live pass reads each dungeon the season
+     * lists, which is the default for the live collections; the archive reads
+     * the all-dungeons board, the default for the archive's.
+     */
+    boards?: string[];
   },
 ): Promise<void> {
   const { season, region, maxPages } = scope;
@@ -885,11 +908,17 @@ export async function expectMplusStoredMatchesServed(
   const charactersCollection = scope.collections?.characters ?? MPLUS_CHARACTERS_COLLECTION;
   const label = `I22: ${season} ${region}`;
 
+  const boards = scope.boards ?? (scope.collections ? ['all'] : await liveBoardsOf(db, season));
+
   const served: ServedRanking[] = [];
-  for (let page = 0; page < maxPages; page += 1) {
-    const { rankings } = world.runsPage(season, region, page) as { rankings: ServedRanking[] };
-    if (rankings.length === 0) break;
-    served.push(...rankings);
+  for (const board of boards) {
+    for (let page = 0; page < maxPages; page += 1) {
+      const { rankings } = world.runsPage(season, region, page, board) as {
+        rankings: ServedRanking[];
+      };
+      if (rankings.length === 0) break;
+      served.push(...rankings);
+    }
   }
 
   // A run one clean pass missed stays for one more (`missedSince`), so it is
@@ -1344,4 +1373,109 @@ export async function expectRaidDocumentsWhole(db: Db): Promise<void> {
       RAID_DOCUMENT_BUDGET_BYTES,
     );
   }
+}
+
+interface StoredBoss {
+  id: number;
+  raidId: number;
+  raidSlug: string;
+  slug: string;
+  bossRankings?: Record<string, Record<string, { rank: number; guildId: number }[]>>;
+  bossRankingsUpdatedAt?: Record<string, Record<string, Date>>;
+}
+
+/**
+ * I32 - a boss belongs to its raid, and its boards are as trustworthy as one.
+ *
+ * Every boss names a stored raid, by id and by that raid's slug, that lists it
+ * among its encounters under the same slug; every board is stamped, best first, no guild twice, at most fifty,
+ * and every guild it names is a document in `guilds`.
+ */
+export async function expectBossesWellFormed(db: Db): Promise<void> {
+  const bosses = await db.collection<StoredBoss>(BOSSES_COLLECTION).find({}).toArray();
+  if (bosses.length === 0) return;
+
+  const raids = new Map(
+    (
+      await db
+        .collection<StoredRaid & { id: number }>(RAIDS_COLLECTION)
+        .find({}, { projection: { id: 1, encounters: 1 } })
+        .toArray()
+    ).map((raid) => [raid.id, raid.encounters]),
+  );
+  const raidSlugs = new Map(
+    (
+      await db
+        .collection<StoredRaid & { id: number }>(RAIDS_COLLECTION)
+        .find({}, { projection: { id: 1, slug: 1 } })
+        .toArray()
+    ).map((raid) => [raid.id, raid.slug]),
+  );
+  const known = new Set(
+    (
+      await db
+        .collection(GUILDS_COLLECTION)
+        .find({}, { projection: { id: 1 } })
+        .toArray()
+    ).map((guild) => guild.id as number),
+  );
+
+  for (const boss of bosses) {
+    const label = `I32: boss ${boss.id} (${boss.slug})`;
+    const encounters = raids.get(boss.raidId);
+
+    expect(encounters, `${label} names a stored raid`).toBeDefined();
+    expect(boss.raidSlug, `${label} carries its raid's slug`).toBe(raidSlugs.get(boss.raidId));
+    expect(
+      encounters!.find((encounter) => encounter.id === boss.id)?.slug,
+      `${label} is one of its raid's encounters, by id and slug`,
+    ).toBe(boss.slug);
+
+    const stamped = Object.entries(boss.bossRankingsUpdatedAt ?? {}).flatMap(
+      ([region, byDifficulty]) => Object.keys(byDifficulty).map((d) => `${region}/${d}`),
+    );
+    const boards = Object.entries(boss.bossRankings ?? {}).flatMap(([region, byDifficulty]) =>
+      Object.entries(byDifficulty).map(
+        ([difficulty, board]): [string, { rank: number; guildId: number }[]] => [
+          `${region}/${difficulty}`,
+          board,
+        ],
+      ),
+    );
+    expect(stamped.sort(), `${label} stamps exactly the boards it stores`).toEqual(
+      boards.map(([name]) => name).sort(),
+    );
+
+    for (const [name, board] of boards) {
+      const ranks = board.map((entry) => entry.rank);
+
+      expect(board.length, `${label} ${name} is at most fifty`).toBeLessThanOrEqual(50);
+      expect(ranks, `${label} ${name} is best first`).toEqual([...ranks].sort((a, b) => a - b));
+      expect(new Set(board.map((entry) => entry.guildId)).size, `${label} ${name}`).toBe(
+        board.length,
+      );
+      expect(
+        board.filter((entry) => !known.has(entry.guildId)).map((entry) => entry.guildId),
+        `${label} ${name}: every guildId is a guild document`,
+      ).toEqual([]);
+    }
+  }
+}
+
+/** The dungeon boards the live pass reads for a season: each dungeon it lists, by slug. */
+async function liveBoardsOf(db: Db, season: string): Promise<string[]> {
+  const entry = await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: season });
+  const ids = (entry?.dungeonIds ?? []) as number[];
+  const slugs = new Map(
+    (
+      await db
+        .collection(MPLUS_DUNGEONS_COLLECTION)
+        .find({ id: { $in: ids } })
+        .toArray()
+    ).map((dungeon) => [dungeon.id as number, dungeon.slug as string]),
+  );
+
+  return ids.length > 0 && ids.every((id) => slugs.has(id))
+    ? ids.map((id) => slugs.get(id)!)
+    : ['all'];
 }

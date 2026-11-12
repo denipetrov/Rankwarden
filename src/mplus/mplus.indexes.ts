@@ -27,6 +27,31 @@ export const MPLUS_CHARACTERS_INDEXES: IndexDescription[] = [
   // Name search: an anchored prefix on the folded name, answered as an index
   // range — find({ searchName: { $regex: '^biba' } }).limit(100).
   { key: { searchName: 1 }, name: 'mplus_character_search' },
+  // The board filtered to one class, spec or role, still index-ordered by
+  // score: across every region, and within one. Without them a filtered page
+  // reads the whole board and discards what does not match.
+  { key: { season: 1, 'profile.classId': 1, mythicScore: -1 }, name: 'mplus_class_board' },
+  { key: { season: 1, 'profile.specId': 1, mythicScore: -1 }, name: 'mplus_spec_board' },
+  { key: { season: 1, 'profile.role': 1, mythicScore: -1 }, name: 'mplus_role_board' },
+  {
+    key: { season: 1, region: 1, 'profile.classId': 1, mythicScore: -1 },
+    name: 'mplus_class_region_board',
+  },
+  {
+    key: { season: 1, region: 1, 'profile.specId': 1, mythicScore: -1 },
+    name: 'mplus_spec_region_board',
+  },
+  {
+    key: { season: 1, region: 1, 'profile.role': 1, mythicScore: -1 },
+    name: 'mplus_role_region_board',
+  },
+  // The board restricted to characters whose runs cover every dungeon of the
+  // season, so their score is complete: across every region, and within one.
+  { key: { season: 1, isFullyCovered: 1, mythicScore: -1 }, name: 'mplus_covered_board' },
+  {
+    key: { season: 1, region: 1, isFullyCovered: 1, mythicScore: -1 },
+    name: 'mplus_covered_region_board',
+  },
 ];
 
 /** Indexes on `mplus_affixes`. */

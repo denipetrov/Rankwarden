@@ -42,9 +42,9 @@ const profile = z.object({
 /**
  * A Mythic+ character record as this service stores it.
  *
- * `mythicScore` and `dungeonsCovered` are deliberately **not accepted**: they are
- * derived from `dungeonRuns`, and recomputing them here is the only way the
- * three cannot drift — exactly the rule `ratings` follows on the PvP side. Nor
+ * `mythicScore`, `dungeonsCovered` and `isFullyCovered` are deliberately **not
+ * accepted**: they are derived from `dungeonRuns` (the last against the season's
+ * dungeon list), and recomputing them here is the only way they cannot drift — exactly the rule `ratings` follows on the PvP side. Nor
  * is `key`, which is built from the identity fields. Unknown keys are dropped,
  * so a caller can round-trip a document it read straight back in.
  */

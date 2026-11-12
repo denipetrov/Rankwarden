@@ -27,7 +27,10 @@ const passWith = (env: Env, coordinator = new IngestionCoordinator()) => {
   const config = { get: (key: keyof Env) => env[key] } as unknown as ConfigService<Env, true>;
   const budget = new RaiderIoBudget(config);
   const regions = new Map(
-    env.RAIDERIO_REGIONS.map((region) => [region, { slug: 'season-mn-2', seasonId: 18 }]),
+    env.RAIDERIO_REGIONS.map((region) => [
+      region,
+      { slug: 'season-mn-2', seasonId: 18, dungeons: 8, dungeonIds: [1, 2, 3, 4, 5, 6, 7, 8] },
+    ]),
   );
   const getRunsPage = vi.fn(async () => ({ rankings: [] }));
   const service = new MplusService(
@@ -36,6 +39,7 @@ const passWith = (env: Env, coordinator = new IngestionCoordinator()) => {
     {
       ensureCatalogue: vi.fn(async () => undefined),
       observe: vi.fn(async () => regions),
+      dungeonSlugs: vi.fn(async () => Array.from({ length: 8 }, (_unused, i) => `dungeon-${i}`)),
     } as unknown as MplusSeasonService,
     {
       upsertAffixes: vi.fn(async () => 0),
@@ -43,6 +47,7 @@ const passWith = (env: Env, coordinator = new IngestionCoordinator()) => {
       upsertCharacters: vi.fn(async () => ({ written: 0, merged: 0 })),
       countRuns: vi.fn(async () => 0),
       pruneStale: vi.fn(async () => ({ runs: 0, missed: 0, characters: 0 })),
+      refreshCoverage: vi.fn(async () => 0),
     } as unknown as MplusRepository,
     coordinator,
     budget,
@@ -95,7 +100,8 @@ describe('F1: the Mythic+ pass against the enrichment cadence', () => {
     const result = (await pass)!;
 
     expect(result.stoppedEarly).toBeNull();
-    expect(result.regions.map((region) => region.region)).toEqual(env.RAIDERIO_REGIONS);
+    // Most wanted first, whatever order they were configured in.
+    expect(result.regions.map((region) => region.region)).toEqual(['us', 'eu', 'cn', 'kr', 'tw']);
     expect(result.pausedMs).toBeGreaterThanOrEqual(50);
   });
 
@@ -119,10 +125,12 @@ describe('F1: the Mythic+ pass against the enrichment cadence', () => {
     await service.sweep();
 
     const outlook = budget.mplusOutlook!;
-    expect(outlook.pagesPlanned).toBe(5_005);
+    // 1,001 pages of each of eight dungeon boards, in five regions.
+    expect(outlook.pagesPlanned).toBe(40_040);
     expect(outlook.pausedMs).toBe(0);
-    // Judged against MPLUS_INTERVAL_MS: 5,005 pages at 900 a minute is under
-    // six minutes. Enrichment no longer bears on it — the pass waits it out.
+    // Judged against MPLUS_INTERVAL_MS: 40,040 pages at 900 a minute is about
+    // 45 minutes, inside six hours. Enrichment no longer bears on it — the pass
+    // waits it out.
     expect(outlook.feasible).toBe(true);
   });
 });

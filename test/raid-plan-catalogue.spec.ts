@@ -168,6 +168,13 @@ describe('Raid plan R1 — the catalogue under the boards', () => {
     expect(after.slug).toBe('manaforge-omega-remastered');
     expect(after.guilds, 'identity is the id: the boards stay').toEqual(before.guilds);
     expect(after.guilds.world.mythic).toHaveLength(2);
+    // Its bosses follow the rename: raidSlug is what a reader searches them by.
+    const bosses = await db.collection('bosses').find({ raidId: 16_178 }).toArray();
+    expect(bosses.map((boss) => boss.raidSlug)).toEqual([
+      'manaforge-omega-remastered',
+      'manaforge-omega-remastered',
+    ]);
+    expect(await db.collection('bosses').countDocuments({ raidSlug: 'manaforge-omega' })).toBe(0);
 
     expect(await rankings.refreshRaid('manaforge-omega')).toBeNull();
     expect(await rankings.refreshRaid('manaforge-omega-remastered')).toMatchObject({ boards: 5 });

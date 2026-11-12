@@ -8,7 +8,7 @@ import { z } from 'zod';
  * guild that never uploaded one carries a default faction icon — but nothing
  * here depends on that.
  */
-const rankedGuildSchema = z.object({
+export const rankedGuildSchema = z.object({
   id: z.number().int(),
   name: z.string(),
   faction: z.string().nullish(),
@@ -74,4 +74,5 @@ export const raidRankingsSchema = z.object({
 });
 
 export type RaidRanking = z.infer<typeof raidRankingSchema>;
+export type RankedGuild = z.infer<typeof rankedGuildSchema>;
 export type RaidRankings = z.infer<typeof raidRankingsSchema>;

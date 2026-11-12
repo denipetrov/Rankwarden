@@ -134,6 +134,16 @@ export interface MplusCharacterDocument {
   /** How many of the season's dungeons `mythicScore` is summed over, 1-8. */
   dungeonsCovered: number;
   /**
+   * Whether `dungeonRuns` covers every dungeon the season lists, so that
+   * `mythicScore` is the character's whole score rather than a partial sum.
+   *
+   * Derived from `dungeonsCovered` and the season's dungeon list wherever the
+   * runs are written (`withDungeonRuns`), and re-derived for stored characters
+   * a write did not reach (`refreshCoverage`). False when the season's list is
+   * unknown. Indexed with `mythicScore`, for a board of complete scores only.
+   */
+  isFullyCovered: boolean;
+  /**
    * Best run per dungeon, highest score first.
    *
    * Because a dungeon's entry is kept once earned, `keystoneRunId` may point at

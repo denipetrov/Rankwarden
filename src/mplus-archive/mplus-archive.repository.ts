@@ -11,6 +11,7 @@ import {
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
 } from '../database/collections.js';
+import { refreshCoverage } from '../mplus/mplus-coverage.js';
 
 const BULK_CHUNK_SIZE = 1_000;
 
@@ -86,6 +87,11 @@ export class MplusArchiveRepository {
     }
 
     return written;
+  }
+
+  /** Re-derives `isFullyCovered` for a season's archived characters where it is off. */
+  refreshCoverage(season: string, seasonDungeons: number): Promise<number> {
+    return refreshCoverage(this.characters, season, seasonDungeons);
   }
 
   /** What is stored for a season in one region, for adopting a region whose marker was lost. */

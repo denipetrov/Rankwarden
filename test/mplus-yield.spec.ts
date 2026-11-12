@@ -11,11 +11,12 @@ import {
   expectMplusStoredMatchesServed,
   snapshotMplusCharacters,
 } from './support/invariants.js';
-import { MplusWorld } from './support/mplus-world.js';
+import { MplusWorld, WORLD_DUNGEONS } from './support/mplus-world.js';
 import { World } from './support/world.js';
 import {
   MPLUS_CHARACTERS_COLLECTION,
   MPLUS_RUNS_COLLECTION,
+  MPLUS_SEASONS_COLLECTION,
   MPLUS_SPEC_REPRESENTATION_COLLECTION,
 } from '../src/database/collections.js';
 
@@ -31,8 +32,9 @@ const PAGES = 10;
  * on for minutes at a time are the ones exercised: before each batch inside a
  * region, and between regions.
  *
- * Two batches a region (ten pages, five a batch), because with one batch the
- * inside-a-region check is never reached.
+ * Every run is in one dungeon, so each region has one board of two batches
+ * (ten pages, five a batch) — with one batch the inside-a-board check is never
+ * reached — and seven empty boards after it.
  *
  * With the harness's `MPLUS_YIELD_WAIT_MS=0` a pass stops at those checks, which
  * is what these pin; pausing and resuming is `mplus-resume.spec.ts`.
@@ -49,8 +51,8 @@ describe('Mythic+ pass yielding mid-pass', () => {
         request.path === 'mythic-plus/runs' && (region === undefined || request.region === region),
     );
 
-  /** Holds a sweep active from the moment `region`'s page `page` is served. */
-  const sweepFrom = (region: string, page: number) => {
+  /** Holds a sweep active from the moment `region`'s `board` page `page` is served. */
+  const sweepFrom = (region: string, page: number, board: string = WORLD_DUNGEONS[0].slug) => {
     let release: (() => Promise<void>) | null = null;
 
     app.raiderIo.beforeServe = (request) => {
@@ -58,6 +60,7 @@ describe('Mythic+ pass yielding mid-pass', () => {
         !release &&
         request.path === 'mythic-plus/runs' &&
         request.region === region &&
+        request.params.dungeon === board &&
         request.page === page
       ) {
         release = holdActive(app.app, 'sweep');
@@ -69,9 +72,9 @@ describe('Mythic+ pass yielding mid-pass', () => {
 
   beforeAll(async () => {
     world
-      .seed('us', PAGES * 20, 900, SEASON)
-      .seed('eu', PAGES * 20, 880, SEASON)
-      .seed('kr', PAGES * 20, 860, SEASON);
+      .seed('us', PAGES * 20, 900, SEASON, 0)
+      .seed('eu', PAGES * 20, 880, SEASON, 0)
+      .seed('kr', PAGES * 20, 860, SEASON, 0);
 
     app = await bootTestApp(
       World.seed({ regions: ['us'], players: 5 }),
@@ -142,12 +145,16 @@ describe('Mythic+ pass yielding mid-pass', () => {
     await db.collection(MPLUS_RUNS_COLLECTION).insertOne(stale);
     const before = await snapshotMplusCharacters(db, SEASON, 'us');
 
-    sweepFrom('us', PAGES - 1);
+    // During the batch of the region's last board, so the region finishes.
+    const season = (await db.collection(MPLUS_SEASONS_COLLECTION).findOne({ slug: SEASON }))!;
+    sweepFrom('us', 0, `dungeon-${season.dungeonIds.length - 1}`);
     const result = await mplus.sweep();
 
     const us = result!.regions.find((region) => region.region === 'us')!;
     expect(us.stoppedEarly).toBeNull();
-    expect(us.pagesFetched).toBe(PAGES);
+    expect(us.boards).toHaveLength(season.dungeonIds.length);
+    // The deep board's ten pages, and one batch of each empty one.
+    expect(us.pagesFetched).toBe(PAGES + (season.dungeonIds.length - 1) * 5);
     expect(us.prunedRuns).toBe(1);
 
     expect(result!.stoppedEarly).toBe('live PvP ingestion started');

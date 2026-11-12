@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { raidRankingsSchema } from '../raiderio/schemas/raid-rankings.schema.js';
-import { toGuildDocument, toRankedGuild } from './raid-rankings.mapper.js';
+import { bossRankingsSchema } from '../raiderio/schemas/boss-rankings.schema.js';
+import {
+  keepKnownItemLevels,
+  toBossRankedGuild,
+  toGuildDocument,
+  toRankedGuild,
+} from './raid-rankings.mapper.js';
 
 /** Trimmed from a real `/raiding/raid-rankings` answer (checked live, 2026-10-02). */
 const ECHO = {
@@ -240,5 +246,143 @@ describe('toRankedGuild', () => {
       encountersPulled: [],
       encountersDefeated: [],
     });
+  });
+});
+
+describe('toBossRankedGuild', () => {
+  const entry = (encountersDefeated: unknown[], extra: Record<string, unknown> = {}) =>
+    bossRankingsSchema.parse({
+      bossRankings: [
+        {
+          rank: 3,
+          regionRank: 1,
+          guild: { id: 316123, name: 'Method', faction: 'horde', region: { slug: 'eu' } },
+          encountersDefeated,
+          doesVideoExist: false,
+          streamers: { count: 0 },
+          recruitmentProfiles: [],
+          itemLevelAvg: 327.866,
+          ...extra,
+        },
+      ],
+    }).bossRankings[0];
+
+  it('keeps the guild by id, its rank and item level, and its first kill', () => {
+    // Trimmed from a real `/raiding/boss-rankings` answer (checked live, 2026-11-02).
+    const ranked = toBossRankedGuild(
+      entry([
+        {
+          slug: 'sszorak',
+          firstDefeated: '2026-08-25T10:57:34.000Z',
+          lastDefeated: '2026-08-25T10:57:34.000Z',
+          attempts: 0,
+        },
+        {
+          slug: 'sszorak',
+          firstDefeated: '2026-08-26T15:48:43.000Z',
+          lastDefeated: '2026-08-26T15:48:43.000Z',
+          attempts: 0,
+        },
+        {
+          slug: 'sszorak',
+          firstDefeated: '2026-09-21T17:56:17.000Z',
+          lastDefeated: '2026-09-21T17:56:17.000Z',
+          attempts: 8,
+        },
+      ]),
+    );
+
+    expect(ranked).toEqual({
+      guildId: 316123,
+      rank: 3,
+      itemLevelAvg: 327.866,
+      attempts: 0,
+      firstDefeated: new Date('2026-08-25T10:57:34Z'),
+    });
+  });
+
+  it('takes the earliest kill even if the list were not oldest first', () => {
+    const ranked = toBossRankedGuild(
+      entry([
+        { slug: 'x', firstDefeated: '2026-09-02T10:00:00Z', attempts: 5 },
+        { slug: 'x', firstDefeated: '2026-08-30T10:00:00Z', attempts: 31 },
+      ]),
+    );
+
+    expect(ranked).toMatchObject({ attempts: 31, firstDefeated: new Date('2026-08-30T10:00:00Z') });
+  });
+
+  it('keeps a null attempts as null, as upstream sends for every old raid', () => {
+    expect(
+      toBossRankedGuild(
+        entry([{ slug: 'x', firstDefeated: '2017-01-20T00:00:00Z', attempts: null }]),
+      ).attempts,
+    ).toBeNull();
+  });
+
+  it('gives a guild still progressing no kill, and no item level when none is served', () => {
+    const ranked = toBossRankedGuild(
+      entry([], { isAttemptOnly: true, bestPercent: 12.5, pullCount: 80, itemLevelAvg: undefined }),
+    );
+
+    expect(ranked).toEqual({
+      guildId: 316123,
+      rank: 3,
+      itemLevelAvg: null,
+      attempts: null,
+      firstDefeated: null,
+    });
+  });
+
+  it('refuses an entry with no guild id or no rank', () => {
+    expect(() =>
+      bossRankingsSchema.parse({ bossRankings: [{ rank: 1, guild: { name: 'No id' } }] }),
+    ).toThrow();
+    expect(() =>
+      bossRankingsSchema.parse({ bossRankings: [{ guild: { id: 1, name: 'No rank' } }] }),
+    ).toThrow();
+  });
+});
+
+describe('bossRankingsSchema', () => {
+  it('drops a rank served as null, and keeps the ranks around it as served', () => {
+    const entry = (rank: number) => ({ rank, guild: { id: rank, name: `Guild ${rank}` } });
+
+    const { bossRankings } = bossRankingsSchema.parse({
+      bossRankings: [entry(17), null, entry(19)],
+    });
+
+    expect(bossRankings.map((ranked) => ranked.rank)).toEqual([17, 19]);
+  });
+});
+
+describe('item levels on a boss board', () => {
+  const ranked = (guildId: number, itemLevelAvg: number | null) => ({
+    guildId,
+    rank: guildId,
+    itemLevelAvg,
+    attempts: null,
+    firstDefeated: null,
+  });
+
+  it('reads a 0 from upstream as no item level, never as one', () => {
+    const [entry] = bossRankingsSchema.parse({
+      bossRankings: [{ rank: 2, guild: { id: 1047044, name: 'Echo' }, itemLevelAvg: 0 }],
+    }).bossRankings;
+
+    expect(toBossRankedGuild(entry).itemLevelAvg).toBeNull();
+  });
+
+  it('keeps the last known item level where a read has none, and takes a new one over it', () => {
+    expect(
+      keepKnownItemLevels(
+        [ranked(1, 329.719), ranked(2, null), ranked(3, null), ranked(4, null)],
+        [ranked(1, 320), ranked(2, 325.847), ranked(3, null)],
+      ).map((entry) => entry.itemLevelAvg),
+    ).toEqual([329.719, 325.847, null, null]);
+  });
+
+  it('keeps nothing when the board was never read', () => {
+    expect(keepKnownItemLevels([ranked(1, null)], null)).toEqual([ranked(1, null)]);
   });
 });

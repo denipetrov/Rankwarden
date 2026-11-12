@@ -281,11 +281,12 @@ describe('validateEnv — Mythic+', () => {
   });
 
   it('rejects a pass longer than its interval, but only while the pass is on', () => {
-    // 5,005 pages at 14 a second is about six minutes.
+    // 1,001 pages of each of eight dungeon boards in five regions is 40,040
+    // pages, at 14 a second about 48 minutes.
     const tooShort = { ...key, MPLUS_INTERVAL_MS: '60000' };
 
     expect(issues({ ...tooShort, MPLUS_ENABLED: 'true' })).toEqual([
-      expect.stringMatching(/MPLUS_INTERVAL_MS: a pass is 5005 pages, .* about 6 minutes/),
+      expect.stringMatching(/MPLUS_INTERVAL_MS: a pass is 40040 pages, .* about 48 minutes/),
     ]);
     expect(issues(tooShort), 'nothing to keep a cadence for').toEqual([]);
   });
@@ -437,5 +438,35 @@ describe('validateEnv — paging that used to be compiled in', () => {
     ]) {
       expect(() => validateEnv({ ...base, [setting]: '0' })).toThrow(new RegExp(setting));
     }
+  });
+});
+
+describe('validateEnv — boss rankings', () => {
+  const withRankings = {
+    ...base,
+    RAIDER_IO_API_KEY: 'key',
+    RAID_CATALOGUE_ENABLED: 'true',
+    RAID_RANKINGS_ENABLED: 'true',
+  };
+
+  it('is off by default, and asks for the boss endpoint by its usual path', () => {
+    const env = validateEnv({ ...base });
+
+    expect(env.BOSS_RANKINGS_ENABLED).toBe(false);
+    expect(env.RAIDERIO_PATH_BOSS_RANKINGS).toBe('raiding/boss-rankings');
+  });
+
+  it('refuses to run without the raid rankings job that reads it', () => {
+    expect(() =>
+      validateEnv({
+        ...base,
+        RAIDER_IO_API_KEY: 'key',
+        RAID_CATALOGUE_ENABLED: 'true',
+        BOSS_RANKINGS_ENABLED: 'true',
+      }),
+    ).toThrow(/BOSS_RANKINGS_ENABLED: is read by the raid rankings job/);
+    expect(
+      validateEnv({ ...withRankings, BOSS_RANKINGS_ENABLED: 'true' }).BOSS_RANKINGS_ENABLED,
+    ).toBe(true);
   });
 });
