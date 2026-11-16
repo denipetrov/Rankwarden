@@ -40,9 +40,10 @@ wiredTigerCacheSizeGB: 1
 
 # Who may open a connection, besides pods in this namespace that carry the
 # label `rankwarden.io/mongodb-client: "true"` (the service, its schema Job,
-# and this chart's own Jobs). Each entry is a whole namespace, by name.
+# and this chart's own Jobs). Each entry is a whole namespace, by name:
+# `soulseeker` is the backend, which reads as `rankwarden_backend`.
 allowedNamespaces:
-  - backend
+  - soulseeker
 
 backup:
   enabled: true

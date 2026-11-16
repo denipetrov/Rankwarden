@@ -64,11 +64,12 @@ schemaJob:
 
 # Who may call the service. It has no authentication of its own — the sync and
 # health endpoints are open to anything that can reach them — so this policy is
-# the only thing standing in front of it. Each entry is a whole namespace.
+# the only thing standing in front of it. Each entry is a whole namespace:
+# `soulseeker` is the backend, which calls the sync endpoints.
 networkPolicy:
   enabled: true
   allowedNamespaces:
-    - backend
+    - soulseeker
 
 # Extra environment for the service container, as a name/value list. For local
 # clusters; production needs none.

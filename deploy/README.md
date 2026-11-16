@@ -251,8 +251,8 @@ kubectl -n rankwarden patch secret mongodb-auth --type=json \n  -p '[{"op": "rem
 the PersistentVolumeClaim to match (`kubectl -n rankwarden edit pvc data-mongodb-0`).
 DigitalOcean volumes grow online; they cannot shrink.
 
-**Connecting the backend, later.** It runs in the `backend` namespace, which both network
-policies already admit.
+**Connecting the backend (Soulseeker).** It runs in the `soulseeker` namespace, which both
+network policies admit.
 
 - Service: `http://rankwarden.rankwarden.svc.cluster.local:3000`
 - Database: `create-secrets.sh` prints how to read the read-only connection string.
@@ -282,7 +282,7 @@ Verified on a local Kubernetes cluster (kind), with these charts and scripts unc
 - `rankwarden_app` denied index creation, index drops and collection drops; the backend
   user denied every write;
 - both network policies: blocked from other namespaces and from unlabelled pods, open from
-  `backend`;
+  the backend's namespace;
 - never more than one running service container during a rollout;
 - a failing schema Job stopping the release with the running pod untouched;
 - an unchanged redeploy leaving the pod alone; `create-secrets.sh` keeping passwords;
