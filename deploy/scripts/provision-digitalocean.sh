@@ -46,10 +46,10 @@ fi
 
 doctl kubernetes cluster kubeconfig save "$CLUSTER"
 
-# `rankwarden` holds the service and its database. `backend` is where the
-# future backend will run; it exists now only so the network policies that
-# admit it have something to name.
-for namespace in rankwarden backend; do
+# `rankwarden` holds the service and its database. `soulseeker` is where the
+# backend runs; it is created here so the network policies that admit it have
+# something to name before the backend is first deployed.
+for namespace in rankwarden soulseeker; do
   kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
 done
 

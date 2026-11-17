@@ -2856,17 +2856,17 @@ afterwards.
 
 The procedure is in [deploy/README.md](deploy/README.md). The decisions behind it:
 
-| Decision     | Choice                                                                                  |
-| ------------ | --------------------------------------------------------------------------------------- |
-| Hosting      | DigitalOcean Kubernetes (DOKS), Frankfurt (FRA1), 2 × s-2vcpu-4gb nodes, ~$55 a month   |
-| Database     | MongoDB 8.3.8 self-hosted in the cluster: one StatefulSet, standalone, 20 GiB volume    |
-| Backups      | Daily `mongodump` (03:17 UTC) to a DigitalOcean Spaces bucket, kept 14 days             |
-| Images       | GitHub Container Registry, one tag per release, never `latest`                          |
-| Logs         | Grafana Cloud Logs (free plan) through an in-cluster Grafana Alloy collector            |
-| Public entry | None for this service. The future front end gets one through a Gateway API controller   |
-|              | (ingress-nginx was retired in March 2026)                                               |
-| Future apps  | A backend in namespace `backend` reads MongoDB as `rankwarden_backend` and may call the |
-|              | sync endpoints; a front end calls the backend                                           |
+| Decision     | Choice                                                                                 |
+| ------------ | -------------------------------------------------------------------------------------- |
+| Hosting      | DigitalOcean Kubernetes (DOKS), Frankfurt (FRA1), 2 × s-2vcpu-4gb nodes, ~$55 a month  |
+| Database     | MongoDB 8.3.8 self-hosted in the cluster: one StatefulSet, standalone, 20 GiB volume   |
+| Backups      | Daily `mongodump` (03:17 UTC) to a DigitalOcean Spaces bucket, kept 14 days            |
+| Images       | GitHub Container Registry, one tag per release, never `latest`                         |
+| Logs         | Grafana Cloud Logs (free plan) through an in-cluster Grafana Alloy collector           |
+| Public entry | None for this service. The future front end gets one through a Gateway API controller  |
+|              | (ingress-nginx was retired in March 2026)                                              |
+| Backend      | Soulseeker, in namespace `soulseeker`: reads MongoDB as `rankwarden_backend` and calls |
+|              | the sync endpoints; a front end calls it                                               |
 
 What an agent changing this service has to keep true:
 
@@ -2884,7 +2884,7 @@ What an agent changing this service has to keep true:
   variable in `env.schema.ts` must be added there too; `production-env.spec.ts` fails until
   it is. The four credentials never go in that file.
 - **No public entry.** The service is `ClusterIP` only, and a NetworkPolicy admits just the
-  `backend` namespace, because its endpoints have no authentication.
+  `soulseeker` namespace (the backend), because its endpoints have no authentication.
 - **Logs leave the cluster through a separate release.** The service only writes to
   standard output. `deploy/helm/log-collector` (Grafana Alloy) reads every pod's output
   through the Kubernetes API and forwards it to Grafana Cloud Logs; it is installed only
