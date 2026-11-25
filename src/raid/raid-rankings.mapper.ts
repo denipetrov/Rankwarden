@@ -19,7 +19,10 @@ function toDate(value: string | null | undefined): Date | null {
 }
 
 /** The guild a ranking entry describes, as the `guilds` collection stores it. */
-export function toGuildDocument(entry: { guild: RankedGuild }, updatedAt: Date): GuildDocument {
+export function toGuildDocument(
+  entry: { guild: RankedGuild },
+  updatedAt: Date,
+): Omit<GuildDocument, 'hidden'> {
   const { guild } = entry;
 
   return {

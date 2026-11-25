@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MongoBulkWriteError } from 'mongodb';
 
 import { CharacterRepository } from './character.repository.js';
+import type { HiddenRegistry } from '../hidden/hidden.registry.js';
 import type { MongoService } from '../database/mongo.service.js';
 import type { CharacterBracketUpdate } from './leaderboard.mapper.js';
 
@@ -47,7 +48,10 @@ describe('CharacterRepository — upsert races on identity', () => {
   const repositoryOver = (bulkWrite: ReturnType<typeof vi.fn>) => {
     const collection = { bulkWrite };
 
-    return new CharacterRepository({ collection: () => collection } as unknown as MongoService);
+    return new CharacterRepository(
+      { collection: () => collection } as unknown as MongoService,
+      { isCharacterHidden: () => false } as unknown as HiddenRegistry,
+    );
   };
 
   it('replays only the operations that lost the race', async () => {

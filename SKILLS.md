@@ -25,11 +25,12 @@ reference, and it wins where the two differ in detail.
 - Ingesting, normalising and storing PvP ladders, character profiles, PvP season archives
   and title cutoffs (Blizzard); Mythic+ runs, characters, seasons, dungeons, affixes, cutoffs
   and archives, and raid catalogues and guild rankings (Raider.io).
-- The MongoDB structure all of that lives in: 25 collections and their indexes, created by
+- The MongoDB structure all of that lives in: 27 collections and their indexes, created by
   the deploy's schema step.
 - Retiring finished seasons from the live collections once they are archived.
-- Two write endpoints for a trusted caller (`POST /characters/sync`,
-  `POST /mplus/characters/sync`), the health endpoints, and dev-only job triggers.
+- Three write endpoints for a trusted caller (`POST /characters/sync`,
+  `POST /mplus/characters/sync`, `POST /hidden`), the health endpoints, and dev-only job
+  triggers.
 - Its own deployment: Dockerfile, Helm charts, scripts, CI.
 
 **Out of scope — belongs elsewhere:**
@@ -106,6 +107,8 @@ this file updated in the same change.
   archived. A running season is never archived.
 - Every write of a character or guild name writes its `searchName` too, through
   `searchNameOf` and nothing else (§5.13).
+- Every write of a `characters`, `mplus_characters` or `guilds` document sets `hidden`
+  from `HiddenRegistry`, never leaves it alone and never hard-codes it (§5.15).
 
 **Code conventions**
 
@@ -262,6 +265,8 @@ src/
   rewards/                      season titles + cutoffs: the mapper and SeasonRewardsService,
                                 shared by the archive and the current season
   sync/                         POST /characters/sync, POST /mplus/characters/sync
+  hidden/                       POST /hidden, and HiddenRegistry: the hidden list every
+                                character and guild write consults
   health/                       GET /health, /health/ready, /health/seasons
   admin/                        POST /admin/* job triggers (404 in production)
   database/
@@ -1051,8 +1056,8 @@ duplicates and reports success.
 
 Indexes: `character_identity` (unique `seasonId+region+characterId`), `character_lookup`
 (`characterName+realmSlug`), `enrichment_specs_staleness` and `enrichment_profile_staleness`
-(`characterType` then the timestamp), and **`bracket_ratings`** — a compound wildcard
-`{ seasonId: 1, region: 1, 'ratings.$**': 1 }`.
+(`characterType` then the timestamp), `character_search` (§5.13), `character_hidden` (§5.15),
+and **`bracket_ratings`** — a compound wildcard `{ seasonId: 1, region: 1, 'ratings.$**': 1 }`.
 
 **`characterType`** says where a character came from: `PvP` from the ladder sweep, `M+`
 from the Mythic+ ingestion. It decides whether enrichment owes the character a profile
@@ -1358,7 +1363,8 @@ Indexes — `mplus_runs`: `run_identity` (unique `season+region+keystoneRunId`),
 `run_freshness` (drives stage 1 of the cleanup). `mplus_characters`:
 `mplus_character_identity` (unique `season+key`, and what the merge read `$in`s on),
 `mplus_score_board` (`season+region+mythicScore` desc — the front end's sort),
-`mplus_character_lookup`, and the filtered boards: `mplus_class_board`, `mplus_spec_board`,
+`mplus_character_lookup`, `mplus_character_search` (§5.13), `mplus_character_hidden` (§5.15),
+and the filtered boards: `mplus_class_board`, `mplus_spec_board`,
 `mplus_role_board` (`season` + `profile.classId` / `profile.specId` / `profile.role` +
 `mythicScore` desc, across regions) and their `…_region_board` twins with `region` after
 `season`. A page filtered to one class, spec or role is then an index range in score order:
@@ -1933,6 +1939,36 @@ Rules for writers:
 - Requests are charged to the `raidRankings` consumer (the same run), and counted in the
   run's result as `bossBoards`, a part of `boards`.
 
+### 5.15 Hidden players and guilds — `hidden` and `hidden_entries`
+
+`characters`, `mplus_characters` and `guilds` carry `hidden: boolean`: `false` unless the
+player or guild was hidden through `POST /hidden` (§7). It is for the backend, which leaves
+hidden ones off its boards and searches. Rankwarden still collects them like anyone else.
+
+- **A player is one name on one realm in one region**, across both games and every
+  season. The key is `region/realmSlug/lowercased-NFC-name` (`mplusCharacterKey`), so one
+  call hides the character's `characters` documents and their `mplus_characters` documents
+  alike. A guild is its Raider.io `id`.
+- **The list is `hidden_entries`**, `{ kind: 'character' | 'guild', key, hiddenAt }`, unique
+  on `{ kind, key }`. An entry exists while hidden and is deleted when shown again.
+  `HiddenRegistry` loads it in `onModuleInit` (before any scheduler starts) and keeps it in
+  memory, which is safe only because the service runs as exactly one instance (§12).
+- **Every write sets `hidden` from the list**: the sweep's upsert, the PvP sync, the
+  Mythic+ fold's write and the guild upsert. So a document created after the call — the next
+  season's, or one a character re-earns after dropping off a ladder — is hidden from its
+  first write. The endpoint also updates the documents that exist at once.
+- **It follows the name.** A renamed or transferred character no longer matches the entry
+  and shows again on its next write; hide the new name. A guild keeps its id through renames.
+- **A write already running when the endpoint is called** can land the old value on the
+  documents it was writing; the next write of each puts it right.
+- **Indexes**: `character_hidden`, `mplus_character_hidden`, `guild_hidden`, all
+  `{ hidden: 1 }`. They answer "who is hidden"; a board query keeps using its own index and
+  applies `hidden: false` as a filter, which costs nothing while almost everyone is visible.
+- **Documents from before the field existed** are set to `false` at boot: one
+  `updateMany({ hidden: { $exists: false } })` per collection, an empty index range once done.
+- **Not carried**: the `*_ratings` rows, the PvP archive and `mplus_archive_characters`. A
+  reader of those checks the character. Invariant **I34** holds every stored value to the list.
+
 ---
 
 ## 6. Blizzard API surface
@@ -2243,6 +2279,33 @@ exactly one, which a caller has to know:
 
 > **To lower a score there is no endpoint.** Delete the character and let the next pass
 > rebuild it from the board. That is deliberate — see §5.6.
+
+**No authentication**, exactly as above.
+
+### `POST /hidden`
+
+Hides or shows a player or a guild, for the backend to leave off its boards (§5.15).
+
+```http
+{ "kind": "character", "region": "eu", "realmSlug": "tarren-mill", "name": "Grøäx", "hidden": true }
+→ 200 { "kind": "character", "region": "eu", "realmSlug": "tarren-mill", "name": "Grøäx",
+        "hidden": true, "updated": { "characters": 2, "mplusCharacters": 1 } }
+
+{ "kind": "guild", "guildId": 1047044, "hidden": true }
+→ 200 { "kind": "guild", "guildId": 1047044, "hidden": true, "updated": { "guilds": 1 } }
+```
+
+| Response | Meaning                                                                            |
+| -------- | ---------------------------------------------------------------------------------- |
+| 200      | Recorded; `updated` counts the stored documents it reached (one per season)        |
+| 400      | Invalid payload: unknown `kind`, a missing field, a region not in `us eu kr tw cn` |
+
+- **A player is hidden in PvP and Mythic+ at once**, in every season, and stays hidden in
+  documents created later. The name matches whatever its case or Unicode composition.
+- **Never a 404.** A player or guild not stored yet is recorded all the same, and comes in
+  hidden when a ladder or board first lists them; `updated` then reads 0.
+- **Idempotent**, and not blocked by a running job, unlike the sync endpoints.
+- `hidden: false` shows them again and removes the entry.
 
 **No authentication**, exactly as above.
 

@@ -1,5 +1,7 @@
 import type { IndexDescription } from 'mongodb';
 
+import { hiddenIndex } from '../hidden/hidden.indexes.js';
+
 /** Indexes on `mplus_runs`. */
 export const MPLUS_RUNS_INDEXES: IndexDescription[] = [
   { key: { season: 1, region: 1, keystoneRunId: 1 }, name: 'run_identity', unique: true },
@@ -27,6 +29,7 @@ export const MPLUS_CHARACTERS_INDEXES: IndexDescription[] = [
   // Name search: an anchored prefix on the folded name, answered as an index
   // range — find({ searchName: { $regex: '^biba' } }).limit(100).
   { key: { searchName: 1 }, name: 'mplus_character_search' },
+  hiddenIndex('mplus_character_hidden'),
   // The board filtered to one class, spec or role, still index-ordered by
   // score: across every region, and within one. Without them a filtered page
   // reads the whole board and discards what does not match.

@@ -1,5 +1,7 @@
 import type { IndexDescription } from 'mongodb';
 
+import { hiddenIndex } from '../hidden/hidden.indexes.js';
+
 /** Indexes on `raids`. */
 export const RAIDS_INDEXES: IndexDescription[] = [
   // The identity. Raider.io's raid id is unique across every expansion.
@@ -30,4 +32,5 @@ export const GUILDS_INDEXES: IndexDescription[] = [
   // Name search: an anchored prefix on the folded name, answered as an index
   // range — find({ searchName: { $regex: '^biba' } }).limit(100).
   { key: { searchName: 1 }, name: 'guild_search' },
+  hiddenIndex('guild_hidden'),
 ];

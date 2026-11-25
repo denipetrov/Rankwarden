@@ -102,6 +102,9 @@ export const BOSSES_COLLECTION = 'bosses';
  */
 export const QUOTA_WINDOWS_COLLECTION = 'quota_windows';
 
+/** The players and guilds hidden from readers, which every write consults. */
+export const HIDDEN_ENTRIES_COLLECTION = 'hidden_entries';
+
 /**
  * Every collection above, for anything that has to work over all of them —
  * diagnostics, a document census, a test that holds every collection to the
@@ -131,4 +134,5 @@ export const ALL_COLLECTIONS: readonly string[] = [
   GUILDS_COLLECTION,
   BOSSES_COLLECTION,
   QUOTA_WINDOWS_COLLECTION,
+  HIDDEN_ENTRIES_COLLECTION,
 ];

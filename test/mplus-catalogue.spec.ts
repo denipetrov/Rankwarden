@@ -121,6 +121,7 @@ describe('Mythic+ catalogue walk and indexes', () => {
       mplus_score_board: plain({ season: 1, region: 1, mythicScore: -1 }),
       mplus_character_lookup: plain({ nameKey: 1, realmSlug: 1 }),
       mplus_character_search: plain({ searchName: 1 }),
+      mplus_character_hidden: plain({ hidden: 1 }),
       mplus_class_board: plain({ season: 1, 'profile.classId': 1, mythicScore: -1 }),
       mplus_spec_board: plain({ season: 1, 'profile.specId': 1, mythicScore: -1 }),
       mplus_role_board: plain({ season: 1, 'profile.role': 1, mythicScore: -1 }),

@@ -287,6 +287,7 @@ describe('Raid rankings', () => {
       logo: 'https://cdn.example/echo.png',
       region: 'eu',
       realm: { slug: 'tarren-mill', name: 'Tarren Mill' },
+      hidden: false,
       updatedAt: expect.any(Date),
     });
     // No logo of its own: the default one upstream serves in its place.
@@ -305,6 +306,7 @@ describe('Raid rankings', () => {
       guild_identity: { key: { id: 1 }, unique: true },
       guild_region_realm_name: { key: { region: 1, 'realm.slug': 1, name: 1 }, unique: false },
       guild_search: { key: { searchName: 1 }, unique: false },
+      guild_hidden: { key: { hidden: 1 }, unique: false },
     });
     await expect(
       db.collection(GUILDS_COLLECTION).insertOne({ id: 1047044, name: 'Echo again' }),

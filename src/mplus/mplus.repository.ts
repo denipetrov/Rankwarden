@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { AnyBulkWriteOperation } from 'mongodb';
 
 import { MongoService } from '../database/mongo.service.js';
+import { HiddenRegistry } from '../hidden/hidden.registry.js';
 import type { RaiderIoRegion } from '../raiderio/raiderio.constants.js';
 import { type MplusAffixDocument } from './entities/mplus-affix.entity.js';
 import {
@@ -32,7 +33,10 @@ const BULK_CHUNK_SIZE = 1_000;
 export class MplusRepository {
   private readonly logger = new Logger(MplusRepository.name);
 
-  constructor(private readonly mongo: MongoService) {}
+  constructor(
+    private readonly mongo: MongoService,
+    private readonly hidden: HiddenRegistry,
+  ) {}
 
   private get runs() {
     return this.mongo.collection<MplusRunDocument>(MPLUS_RUNS_COLLECTION);
@@ -139,6 +143,11 @@ export class MplusRepository {
               $set: {
                 ...withDungeonRuns(character, dungeonRuns, seasonDungeons),
                 previousMythicScore: held?.mythicScore ?? null,
+                hidden: this.hidden.isCharacterHidden(
+                  character.region,
+                  character.realmSlug,
+                  character.characterName,
+                ),
               },
             },
             upsert: true,

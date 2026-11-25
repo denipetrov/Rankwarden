@@ -4,6 +4,7 @@ import { searchNameOf } from '@denipetrov/spirit-link/search';
 
 import { type Bracket, type Region } from '../blizzard/blizzard.constants.js';
 import { MongoService } from '../database/mongo.service.js';
+import { HiddenRegistry } from '../hidden/hidden.registry.js';
 import { type CharacterDocument, type CharacterProfile } from './entities/character.entity.js';
 
 /** Profile fields owned by the character summary endpoint. */
@@ -69,7 +70,10 @@ export function enrichmentFilter(
 export class CharacterRepository {
   private readonly logger = new Logger(CharacterRepository.name);
 
-  constructor(private readonly mongo: MongoService) {}
+  constructor(
+    private readonly mongo: MongoService,
+    private readonly hidden: HiddenRegistry,
+  ) {}
 
   private get collection() {
     return this.mongo.collection<CharacterDocument>(CHARACTERS_COLLECTION);
@@ -112,6 +116,13 @@ export class CharacterRepository {
                 realmId: { $literal: update.realmId },
                 realmSlug: { $literal: update.realmSlug },
                 faction: { $literal: update.faction },
+                hidden: {
+                  $literal: this.hidden.isCharacterHidden(
+                    update.region,
+                    update.realmSlug,
+                    update.characterName,
+                  ),
+                },
                 updatedAt: { $literal: update.stats.fetchedAt },
                 characterType: { $ifNull: ['$characterType', 'PvP'] },
                 [`brackets.${update.bracket}`]: {
@@ -405,14 +416,23 @@ export class CharacterRepository {
   async updateCharacter(
     // No `characterType`: this never inserts, so the type is whatever the
     // document was created with.
+    // No `hidden` either: it follows the name and realm, from the hidden list.
     document: Omit<
       CharacterDocument,
-      'characterType' | 'profile' | 'profileStatus' | 'profileFetchedAt' | 'specsFetchedAt'
+      | 'characterType'
+      | 'profile'
+      | 'profileStatus'
+      | 'profileFetchedAt'
+      | 'specsFetchedAt'
+      | 'hidden'
     >,
     profile?: Partial<CharacterProfile>,
   ): Promise<{ matched: boolean }> {
     const { seasonId, region, characterId, ...fields } = document;
-    const update: Record<string, unknown> = { ...fields };
+    const update: Record<string, unknown> = {
+      ...fields,
+      hidden: this.hidden.isCharacterHidden(region, fields.realmSlug, fields.characterName),
+    };
 
     if (profile) {
       const supplied = (keys: readonly (keyof CharacterProfile)[]) =>

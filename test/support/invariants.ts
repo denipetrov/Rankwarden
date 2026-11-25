@@ -21,6 +21,7 @@ import {
   BOSSES_COLLECTION,
   CHARACTERS_COLLECTION,
   GUILDS_COLLECTION,
+  HIDDEN_ENTRIES_COLLECTION,
   MPLUS_AFFIXES_COLLECTION,
   MPLUS_ARCHIVE_CHARACTERS_COLLECTION,
   MPLUS_ARCHIVE_RUNS_COLLECTION,
@@ -34,12 +35,13 @@ import {
   SPEC_REPRESENTATION_COLLECTION,
 } from '../../src/database/collections.js';
 
-/** The seven indexes `characters` must carry, whatever the bracket count. */
+/** The eight indexes `characters` must carry, whatever the bracket count. */
 export const CHARACTER_INDEXES = [
   '_id_',
   'character_identity',
   'character_lookup',
   'character_search',
+  'character_hidden',
   'bracket_ratings',
   'enrichment_specs_staleness',
   'enrichment_profile_staleness',
@@ -63,6 +65,7 @@ export async function expectInvariants(
   await expectRowsInCorrectFamily(db);
   await expectRatingRowsLabelled(db);
   await expectPreviousValuesKept(db);
+  await expectHiddenFollowsList(db);
   await expectIdentityUniqueness(db);
   await expectIndexInventory(db);
   await expectRepresentationCoherent(db);
@@ -294,6 +297,49 @@ export async function expectPreviousValuesKept(db: Db): Promise<void> {
   }
 }
 
+/**
+ * I34 — every character, Mythic+ character and guild says whether it is
+ * hidden, and says what the hidden list says: hidden exactly when the list
+ * names its player or guild. A document the list names but that reads visible
+ * is a hidden player on a public board.
+ */
+export async function expectHiddenFollowsList(db: Db): Promise<void> {
+  const entries = await db.collection(HIDDEN_ENTRIES_COLLECTION).find({}).toArray();
+  const players = new Set(entries.filter((e) => e.kind === 'character').map((e) => e.key));
+  const guilds = new Set(entries.filter((e) => e.kind === 'guild').map((e) => Number(e.key)));
+
+  const characters = await db
+    .collection(CHARACTERS_COLLECTION)
+    .find({}, { projection: { region: 1, realmSlug: 1, characterName: 1, hidden: 1 } })
+    .toArray();
+  const mplus = await db
+    .collection(MPLUS_CHARACTERS_COLLECTION)
+    .find({}, { projection: { key: 1, hidden: 1 } })
+    .toArray();
+  const guildDocs = await db
+    .collection(GUILDS_COLLECTION)
+    .find({}, { projection: { id: 1, hidden: 1 } })
+    .toArray();
+
+  const wrong = [
+    ...characters
+      .map((doc) => ({
+        id: mplusCharacterKey(doc.region, doc.realmSlug, doc.characterName),
+        hidden: doc.hidden,
+      }))
+      .filter(({ id, hidden }) => hidden !== players.has(id))
+      .map(({ id, hidden }) => `characters ${id}: ${hidden}`),
+    ...mplus
+      .filter((doc) => doc.hidden !== players.has(doc.key))
+      .map((doc) => `mplus_characters ${doc.key}: ${doc.hidden}`),
+    ...guildDocs
+      .filter((doc) => doc.hidden !== guilds.has(doc.id))
+      .map((doc) => `guilds ${doc.id}: ${doc.hidden}`),
+  ];
+
+  expect(wrong.slice(0, 5), 'I34: hidden follows the hidden list').toEqual([]);
+}
+
 /** I6 — identity uniqueness, verified rather than trusted to the index. */
 export async function expectIdentityUniqueness(db: Db): Promise<void> {
   const duplicateCharacters = await db
@@ -400,7 +446,7 @@ export async function expectIndexInventory(db: Db): Promise<void> {
     .map((index) => index.name)
     .sort();
 
-  expect(names, 'I8: characters must hold exactly seven indexes').toEqual(
+  expect(names, 'I8: characters must hold exactly eight indexes').toEqual(
     [...CHARACTER_INDEXES].sort(),
   );
 }
