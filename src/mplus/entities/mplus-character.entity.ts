@@ -152,6 +152,13 @@ export interface MplusCharacterDocument {
    * so a reader must treat the join as optional rather than assume it resolves.
    */
   dungeonRuns: MplusDungeonRun[];
+  /**
+   * Whether the player is hidden from readers: false unless the hidden list
+   * (`hidden_entries`) names them. On `mplus_characters` it is always
+   * present, set on every write from that list. Optional only because the
+   * archive (`mplus_archive_characters`) shares this shape and carries none.
+   */
+  hidden?: boolean;
   updatedAt: Date;
 }
 

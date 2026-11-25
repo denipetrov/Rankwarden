@@ -54,6 +54,12 @@ export interface CharacterDocument {
   realmId: number;
   realmSlug: string;
   faction: string | null;
+  /**
+   * Whether the player is hidden from readers: false unless the hidden list
+   * (`hidden_entries`) names it. Set on every write from that list, never
+   * left alone, so a document a write creates is hidden from the start.
+   */
+  hidden: boolean;
   /** Full per-bracket payload. Never indexed — read, not searched. */
   brackets: Partial<Record<Bracket, BracketStats>>;
   /**

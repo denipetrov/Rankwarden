@@ -428,7 +428,7 @@ export class RaidRankingsService {
     const { raid, region, difficulty } = target;
     const entries = await this.readPages(raid.slug, region, difficulty);
 
-    const guilds = new Map<number, GuildDocument>();
+    const guilds = new Map<number, Omit<GuildDocument, 'hidden'>>();
     for (const entry of entries) guilds.set(entry.guild.id, toGuildDocument(entry, now));
 
     const board = entries.map((entry) => toRankedGuild(entry, raid.encounters));
@@ -472,7 +472,7 @@ export class RaidRankingsService {
       this.timeoutMs,
     );
 
-    const guilds = new Map<number, GuildDocument>();
+    const guilds = new Map<number, Omit<GuildDocument, 'hidden'>>();
     for (const entry of entries) guilds.set(entry.guild.id, toGuildDocument(entry, now));
 
     const written = await this.guilds.upsertGuilds([...guilds.values()]);

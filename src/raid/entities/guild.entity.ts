@@ -29,6 +29,12 @@ export interface GuildDocument {
   region: string | null;
   /** Guild names are unique only within a realm. */
   realm: { slug: string; name: string | null } | null;
+  /**
+   * Whether the guild is hidden from readers: false unless the hidden list
+   * (`hidden_entries`) names it. Set on every write from that list, never
+   * left alone, so a document a write creates is hidden from the start.
+   */
+  hidden: boolean;
   /** When a board last listed the guild. */
   updatedAt: Date;
 }

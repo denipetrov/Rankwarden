@@ -34,6 +34,7 @@ import {
 import { GUILDS_INDEXES, RAIDS_INDEXES, BOSSES_INDEXES } from '../../raid/raid.indexes.js';
 import { SPEC_REPRESENTATION_INDEXES } from '../../representation/representation.indexes.js';
 import { SEASON_STATE_INDEXES, SEASON_TRANSITIONS_INDEXES } from '../../season/season.indexes.js';
+import { HIDDEN_ENTRIES_INDEXES } from '../../hidden/hidden.indexes.js';
 import {
   ARCHIVE_BRACKETS_COLLECTION,
   ARCHIVE_ENTRIES_COLLECTION,
@@ -52,6 +53,7 @@ import {
   MPLUS_SEASON_TRANSITIONS_COLLECTION,
   MPLUS_SPEC_REPRESENTATION_COLLECTION,
   QUOTA_WINDOWS_COLLECTION,
+  HIDDEN_ENTRIES_COLLECTION,
   RAIDS_COLLECTION,
   RATING_COLLECTIONS,
   SEASON_STATE_COLLECTION,
@@ -127,4 +129,5 @@ export const DATABASE_SCHEMA: readonly CollectionSchema[] = [
   // Keyed by `_id` alone, so it has no index of its own. Declared all the same,
   // so that every collection the service writes to is one the schema step made.
   { collection: QUOTA_WINDOWS_COLLECTION, indexes: [] },
+  { collection: HIDDEN_ENTRIES_COLLECTION, indexes: HIDDEN_ENTRIES_INDEXES },
 ];

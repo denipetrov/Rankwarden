@@ -74,6 +74,7 @@ describe('characterType', () => {
           realmId: 9_999,
           realmSlug: MYTHIC_PLUS_REALM,
           faction: 'ALLIANCE',
+          hidden: false,
           updatedAt: new Date(),
         })),
       );

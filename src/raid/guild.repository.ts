@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import { MongoService } from '../database/mongo.service.js';
+import { HiddenRegistry } from '../hidden/hidden.registry.js';
 import { type GuildDocument } from './entities/guild.entity.js';
 import { GUILDS_COLLECTION } from '../database/collections.js';
 
@@ -21,7 +22,10 @@ function unknown(guild: GuildDocument): GuildFields {
 /** Storage for guilds: one document per guild. */
 @Injectable()
 export class GuildRepository {
-  constructor(private readonly mongo: MongoService) {}
+  constructor(
+    private readonly mongo: MongoService,
+    private readonly hidden: HiddenRegistry,
+  ) {}
 
   private get guilds() {
     return this.mongo.collection<GuildDocument>(GUILDS_COLLECTION);
@@ -34,8 +38,14 @@ export class GuildRepository {
    * earlier one gave: upstream ceasing to send a realm is not the guild
    * ceasing to have one.
    */
-  async upsertGuilds(guilds: readonly GuildDocument[]): Promise<number> {
-    if (guilds.length === 0) return 0;
+  async upsertGuilds(described: readonly Omit<GuildDocument, 'hidden'>[]): Promise<number> {
+    if (described.length === 0) return 0;
+
+    // Whether a guild is hidden is the hidden list's to say, on every write.
+    const guilds: GuildDocument[] = described.map((guild) => ({
+      ...guild,
+      hidden: this.hidden.isGuildHidden(guild.id),
+    }));
 
     const write = () =>
       this.guilds.bulkWrite(

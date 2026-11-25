@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MongoService } from '../database/mongo.service.js';
+import type { HiddenRegistry } from '../hidden/hidden.registry.js';
 import type { GuildDocument } from './entities/guild.entity.js';
 import { GuildRepository } from './guild.repository.js';
 
-const guild = (id: number): GuildDocument => ({
+const guild = (id: number): Omit<GuildDocument, 'hidden'> => ({
   id,
   name: `Guild ${id}`,
   searchName: `guild ${id}`,
@@ -16,15 +17,19 @@ const guild = (id: number): GuildDocument => ({
 });
 
 /** What is known is set; what is not is written only for a guild that is new. */
-const split = ({ logo, realm, ...known }: GuildDocument) => ({
-  $set: known,
+const split = ({ logo, realm, ...known }: Omit<GuildDocument, 'hidden'>) => ({
+  $set: { ...known, hidden: false },
   $setOnInsert: { logo, realm },
 });
 
+/** Guild 7 is on the hidden list; every other guild is visible. */
+const hiddenList = { isGuildHidden: (id: number) => id === 7 } as unknown as HiddenRegistry;
+
 function repositoryOver(bulkWrite: ReturnType<typeof vi.fn>) {
-  return new GuildRepository({
-    collection: () => ({ bulkWrite }),
-  } as unknown as MongoService);
+  return new GuildRepository(
+    { collection: () => ({ bulkWrite }) } as unknown as MongoService,
+    hiddenList,
+  );
 }
 
 describe('GuildRepository.upsertGuilds', () => {
@@ -56,10 +61,25 @@ describe('GuildRepository.upsertGuilds', () => {
         name: 'Guild 1',
         searchName: 'guild 1',
         logo: 'https://cdn/logo.png',
+        hidden: false,
         updatedAt: sparse.updatedAt,
       },
       $setOnInsert: { faction: null, region: null, realm: null },
     });
+  });
+
+  it('marks a guild hidden on every write when the hidden list names it', async () => {
+    const bulkWrite = vi.fn(async () => ({ upsertedCount: 1, modifiedCount: 1 }));
+
+    await repositoryOver(bulkWrite).upsertGuilds([guild(7), guild(8)]);
+
+    const [[operations]] = bulkWrite.mock.calls as unknown as [
+      [{ updateOne: { update: { $set: { hidden: boolean } } } }[]],
+    ];
+    expect(operations.map((operation) => operation.updateOne.update.$set.hidden)).toEqual([
+      true,
+      false,
+    ]);
   });
 
   it('makes no write for no guilds', async () => {

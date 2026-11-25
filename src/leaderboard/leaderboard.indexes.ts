@@ -1,5 +1,7 @@
 import type { IndexDescription } from 'mongodb';
 
+import { hiddenIndex } from '../hidden/hidden.indexes.js';
+
 /** Indexes on `characters`. */
 export const CHARACTERS_INDEXES: IndexDescription[] = [
   { key: { seasonId: 1, region: 1, characterId: 1 }, name: 'character_identity', unique: true },
@@ -7,6 +9,7 @@ export const CHARACTERS_INDEXES: IndexDescription[] = [
   // Name search: an anchored prefix on the folded name, answered as an index
   // range — find({ searchName: { $regex: '^biba' } }).limit(100).
   { key: { searchName: 1 }, name: 'character_search' },
+  hiddenIndex('character_hidden'),
   // One compound wildcard index serves ordered queries for every bracket:
   //   find({ seasonId, region, 'ratings.3v3': { $gt: 0 } }).sort({ 'ratings.3v3': -1 })
   // Measured index-ordered (no blocking sort) and 4.6x smaller than the five

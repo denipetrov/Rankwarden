@@ -101,7 +101,7 @@ an address change upstream can be fixed without a new release. Production values
 
 ## The data
 
-All data lives in one MongoDB database, `rankwarden`, in 25 collections:
+All data lives in one MongoDB database, `rankwarden`, in 27 collections:
 
 | Group             | Collections                                                                                   |
 | ----------------- | --------------------------------------------------------------------------------------------- |
@@ -111,7 +111,7 @@ All data lives in one MongoDB database, `rankwarden`, in 25 collections:
 | Mythic+, seasons  | `mplus_seasons`, `mplus_dungeons`, `mplus_season_state`, `mplus_season_transitions`           |
 | Mythic+, history  | `mplus_archive_runs`, `mplus_archive_characters`                                              |
 | Raids             | `raids`, `guilds`, `bosses`                                                                    |
-| Internal          | `quota_windows`                                                                               |
+| Internal          | `quota_windows`, `hidden_entries`                                                             |
 
 A few things to know before reading it:
 
@@ -132,6 +132,10 @@ A few things to know before reading it:
   search text the same way (`searchNameOf` from `@denipetrov/spirit-link/search`) and match it
   as a prefix:
   `{ searchName: { $regex: '^biba' } }`.
+- **Leave out hidden players and guilds.** `characters`, `mplus_characters` and `guilds` carry
+  `hidden` (indexed): `false` unless the player or guild was hidden through `POST /hidden`.
+  A hidden player stays hidden in later seasons too. Filter on `{ hidden: false }`. The
+  `*_ratings` rows do not carry it: check the character before showing a row.
 
 The field-by-field description of every collection is in [`SKILLS.md`](SKILLS.md) §5.
 
@@ -150,6 +154,7 @@ The service listens on port 3000. None of the endpoints are public in production
 | `GET /health/seasons`             | Current seasons and what the next purge would remove                                |
 | `POST /characters/sync`           | Replace a tracked PvP character's ladders and profile                               |
 | `POST /mplus/characters/sync`     | Merge runs and profile into a tracked Mythic+ character                             |
+| `POST /hidden`                    | Hide or show a player (PvP and Mythic+, by region, realm and name) or a guild (by id) |
 | `POST /admin/<job>`               | Run one cycle of a job now. Development only: every admin route answers 404 in production |
 
 The sync endpoints never create characters, and answer 409 while the job that owns those
