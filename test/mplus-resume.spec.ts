@@ -6,6 +6,7 @@ import { MplusService } from '../src/mplus/mplus.service.js';
 import { bootTestApp, type TestApp } from './support/app.js';
 import { holdActive, releaseAllHolds } from './support/hold.js';
 import { expectInvariants, expectMplusStoredMatchesServed } from './support/invariants.js';
+import { CapturingLogger } from './support/logger.js';
 import { MplusWorld, WORLD_DUNGEONS } from './support/mplus-world.js';
 import { World } from './support/world.js';
 import { MPLUS_RUNS_COLLECTION } from '../src/database/collections.js';
@@ -26,6 +27,7 @@ describe('Mythic+ pass pausing for live ingestion', () => {
   let app: TestApp;
   let db: Db;
   const world = new MplusWorld();
+  const logger = new CapturingLogger();
 
   /** Pages read of a region's one deep board; the season's other boards are empty. */
   const pagesOf = (region: string) =>
@@ -54,7 +56,7 @@ describe('Mythic+ pass pausing for live ingestion', () => {
         MPLUS_YIELD_WAIT_MS: '5000',
       },
       undefined,
-      undefined,
+      logger,
       world,
     );
     db = app.app.get(MongoService).db;
@@ -63,6 +65,7 @@ describe('Mythic+ pass pausing for live ingestion', () => {
   afterEach(async () => {
     await releaseAllHolds();
     app.raiderIo.reset();
+    logger.clear();
   });
 
   afterAll(async () => {
@@ -80,8 +83,18 @@ describe('Mythic+ pass pausing for live ingestion', () => {
         request.page === 2
       ) {
         release = holdActive(app.app, 'enrichment');
-        // Enrichment finishes a while later, on its own.
-        void sleep(200).then(() => release!());
+        // Enrichment finishes on its own, 200 ms after the pass has paused for
+        // it. Timed from the pause rather than from this request: the pass
+        // pauses only at its next batch boundary, and how long the rest of the
+        // batch takes depends on how busy the machine is.
+        void (async () => {
+          const deadline = Date.now() + 5_000;
+          while (!logger.matching(/pausing the Mythic\+ pass/).length && Date.now() < deadline) {
+            await sleep(5);
+          }
+          await sleep(200);
+          await release!();
+        })();
       }
     };
 
