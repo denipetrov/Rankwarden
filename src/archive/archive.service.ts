@@ -37,11 +37,20 @@ export interface ArchiveRewardsResult {
 }
 
 /**
- * Statuses that mean Blizzard will not serve a season's rewards, as opposed to
- * failing to right now. Seasons 22–26 answer 403 and 20–21 answer 404, for the
- * ladders and the rewards alike.
+ * Statuses that mean Blizzard will not serve a season, as opposed to failing to
+ * right now. Seasons 22–26 answer 403 and 20–21 answer 404, for the ladders and
+ * the rewards alike, and have for as long as this service has asked.
  */
 const REFUSED = new Set([403, 404]);
+
+/**
+ * Whether an error is Blizzard refusing a season for good, so it is recorded
+ * once and never asked for again. Shared by the ladder archive and the rewards,
+ * which must not disagree about what "for good" means.
+ */
+export function isRefusedSeason(error: unknown): error is BlizzardApiError {
+  return error instanceof BlizzardApiError && REFUSED.has(error.statusCode);
+}
 
 /**
  * Stores finished seasons in their own collections.
@@ -363,7 +372,7 @@ export class ArchiveService {
         this.limiter.acquire(),
       );
     } catch (error) {
-      if (error instanceof BlizzardApiError && REFUSED.has(error.statusCode)) {
+      if (isRefusedSeason(error)) {
         const reason = describeError(error);
         this.logger.warn(
           `Blizzard refused the rewards for season ${seasonId} ${region} (${reason}); ` +

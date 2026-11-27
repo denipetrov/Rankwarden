@@ -35,6 +35,16 @@ const profile = z.object({
         spec: namedRef,
         talentLoadoutCode: z.string().nullable().default(null),
         heroTalentTree: namedRef.nullable().default(null),
+        pvpTalents: z
+          .array(
+            z.object({
+              slot: z.number().int(),
+              id: z.number().int(),
+              name: z.string(),
+              spellId: z.number().int().nullable().default(null),
+            }),
+          )
+          .default([]),
       }),
     )
     .optional(),

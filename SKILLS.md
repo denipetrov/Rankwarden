@@ -860,8 +860,10 @@ it. The retry is cheap regardless, because `archiveSeason` fetches only what is 
 outstanding.
 
 The scheduler takes one season per pass and comes straight back while work remains, pausing
-`ARCHIVE_SEASON_PAUSE_MS` between seasons. A season that 404s is marked `unarchivable` and
-skipped permanently, so one dead season cannot block the backlog behind it. Any other
+`ARCHIVE_SEASON_PAUSE_MS` between seasons. A season Blizzard refuses (403 or 404: seasons
+22–26 answer 403, 20–21 answer 404) is marked `unarchivable` and skipped permanently, so one
+dead season cannot block the backlog behind it or be asked for again every tick. The ladder
+archive and the rewards share that rule through `isRefusedSeason`. Any other
 failure, and any season that comes back **incomplete** (a failed bracket), is skipped for
 the rest of that tick only. The incomplete case matters because `nextPending` would hand the
 same season straight back: before it was skipped, one bracket that kept failing was retried
@@ -871,7 +873,7 @@ every pause until the archive's share of the quota ran out.
 tick once the backlog is done, and from `POST /admin/archive-rewards`. It is **driven by
 `archive_seasons` alone**. It asks only about seasons whose standings are archived in full:
 `failedBrackets` empty, not `unarchivable`, in a configured region, with no rewards yet. A
-season Blizzard will not serve (22–26 answer 403) never gets a marker, so it never costs a
+season Blizzard will not serve (22–26 answer 403) is `unarchivable`, so it never costs a
 rewards request. A season still missing brackets waits until they land. A season finished
 in a tick gets its rewards in the same tick.
 
@@ -1044,7 +1046,8 @@ duplicates and reports success.
     race: { id, name }, class: { id, name }, spec: { id, name },
     heroTalentTree: { id, name } | null,
     talentLoadouts: [{ spec: {id,name}, talentLoadoutCode: string|null,
-                       heroTalentTree: {id,name}|null }],
+                       heroTalentTree: {id,name}|null,
+                       pvpTalents: [{ slot, id, name, spellId: number|null }] }],
     realmName, title, level, gender, guild,
     averageItemLevel, equippedItemLevel, lastLoginAt,
   },
@@ -2450,6 +2453,20 @@ Always read the tree from `profile.talentLoadouts`, matching the ladder's spec. 
 
 The same applies to talent codes: every spec has its own `is_active` loadout, so a flat scan
 of the payload mixes builds.
+
+And to PvP talents. Blizzard sends them per spec (`specializations[].pvp_talent_slots`, a
+sibling of the loadouts), and they are stored on that spec's `talentLoadouts` entry as
+`pvpTalents`: slot, PvP talent id and name, and the spell id. They are kept in slot order, with
+empty slots left out and the tooltip text dropped, since that text is static game data.
+
+- **The PvP talent id differs by spec for the same talent.** Smoke Bomb is `1209` for
+  Subtlety, `3480` for Assassination and `3483` for Outlaw, but always spell `212182`. Group a
+  talent across specs by `spellId`, not by `id`.
+- **They come with the specs half** of enrichment: the same request, no extra quota. A
+  document whose specs were last fetched before the field existed has no `pvpTalents` until
+  its next specs refresh, so readers treat the field as absent-or-empty.
+- **Specs with no active loadout have no entry**, so their PvP talents are not stored
+  either. That is the same rule as for the code and the hero tree.
 
 ### 9.3 `$gt: 0` is required on every rating query
 

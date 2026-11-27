@@ -127,6 +127,24 @@ export interface SpecLoadout {
    * ladder yields combinations the game does not permit.
    */
   heroTalentTree: NamedRef | null;
+  /**
+   * The PvP talents this spec has chosen, in slot order; empty when none are.
+   * They belong to the spec rather than to a loadout, and follow it whichever
+   * loadout is active. Absent on a document whose specs were last fetched
+   * before the field existed, until its next specs refresh.
+   */
+  pvpTalents: PvpTalent[];
+}
+
+/** One chosen PvP talent, as `pvp_talent_slots` reports it. */
+export interface PvpTalent {
+  /** Blizzard's slot number for it. */
+  slot: number;
+  /** The PvP talent: `/data/wow/pvp-talent/{id}`. */
+  id: number;
+  name: string;
+  /** The spell it grants: `/data/wow/spell/{spellId}`. Null if Blizzard leaves it out. */
+  spellId: number | null;
 }
 
 /**

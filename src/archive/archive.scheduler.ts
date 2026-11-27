@@ -4,14 +4,13 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { withRunId } from '@denipetrov/spirit-link/logging';
 
 import type { Region } from '../blizzard/blizzard.constants.js';
-import { BlizzardApiError } from '../blizzard/http/blizzard-api.error.js';
 import { IngestionCoordinator } from '../common/ingestion-coordinator.service.js';
 import { RunKind } from '../common/logging/run-kind.js';
 import { QuotaBudget, QuotaConsumer } from '../common/quota/quota-budget.service.js';
 import { PendingWork } from '../common/pending-work.js';
 import { describeError, errorStack } from '../common/utils/errors.js';
 import type { Env } from '../config/env.schema.js';
-import { ArchiveService } from './archive.service.js';
+import { ArchiveService, isRefusedSeason } from './archive.service.js';
 import type { Subscription } from 'rxjs';
 
 const INTERVAL_NAME = 'season-archive';
@@ -177,14 +176,15 @@ export class ArchiveScheduler implements OnApplicationBootstrap, OnModuleDestroy
   }
 
   /**
-   * A 404 is permanent — Blizzard stops serving old seasons and never resumes —
-   * so it is recorded and never attempted again. Anything else could be
-   * transient, so it is only skipped for the rest of this tick.
+   * A 403 or 404 is permanent — Blizzard stops serving old seasons and never
+   * resumes: seasons 22–26 answer 403, 20–21 answer 404 — so it is recorded and
+   * never attempted again. Anything else could be transient, so it is only
+   * skipped for the rest of this tick.
    */
   private async recordFailure(seasonId: number, region: Region, error: unknown): Promise<void> {
     const reason = describeError(error);
 
-    if (error instanceof BlizzardApiError && error.isNotFound) {
+    if (isRefusedSeason(error)) {
       this.logger.warn(
         `Season ${seasonId} ${region} is no longer served by Blizzard (${reason}); ` +
           'marking it unarchivable and moving on',

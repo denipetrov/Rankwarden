@@ -23,6 +23,11 @@ const REALMS: Record<WorldRegion, [number, string][]> = {
   tw: [[963, 'shadowmoon']],
 };
 
+/** The PvP talent the world gives a spec in a slot: distinct for every spec and slot. */
+export function pvpTalentId(specId: number, slot: number): number {
+  return specId * 10 + slot;
+}
+
 export interface WorldPlayer {
   id: number;
   region: WorldRegion;
@@ -371,6 +376,28 @@ export class World {
 
         return {
           specialization: { id: spec.specId, name: spec.specName },
+          // Three chosen talents per spec, numbered from the spec so every spec's
+          // differ, listed out of slot order, with an empty slot among them.
+          pvp_talent_slots: [
+            ...[3, 2, 4].map((slot) => ({
+              slot_number: slot,
+              selected: {
+                talent: {
+                  id: pvpTalentId(spec.specId, slot),
+                  name: `${spec.specName} PvP ${slot}`,
+                },
+                spell_tooltip: {
+                  spell: {
+                    id: pvpTalentId(spec.specId, slot) + 100_000,
+                    name: `${spec.specName} PvP ${slot}`,
+                  },
+                  description: 'Static tooltip text, not stored.',
+                  cast_time: 'Passive',
+                },
+              },
+            })),
+            { slot_number: 5 },
+          ],
           loadouts: [
             // An inactive loadout listed first, so "take the active one" is
             // actually exercised rather than "take the first one".
