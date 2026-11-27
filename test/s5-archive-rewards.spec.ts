@@ -140,8 +140,12 @@ describe('S5 — season rewards', () => {
       expect(stored(complete!.rewards)).toEqual(expectedRewards(COMPLETE));
     });
 
-    it('never asks about a season that is not in the archive at all', async () => {
-      expect(await marker(REFUSED), 'no marker: Blizzard refused its ladders').toBeNull();
+    it('never asks about a season Blizzard refused the ladders of', async () => {
+      // Recorded as unarchivable, once, rather than retried every tick: it is
+      // not in the archive, so it has no rewards to look up either.
+      const refused = await marker(REFUSED);
+      expect(refused, 'the refusal is recorded').toMatchObject({ unarchivable: true });
+      expect(refused!.rewards).toBeUndefined();
       expect(tick.filter((path) => path === rewardsPath(REFUSED))).toEqual([]);
     });
 

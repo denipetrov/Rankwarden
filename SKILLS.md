@@ -860,8 +860,10 @@ it. The retry is cheap regardless, because `archiveSeason` fetches only what is 
 outstanding.
 
 The scheduler takes one season per pass and comes straight back while work remains, pausing
-`ARCHIVE_SEASON_PAUSE_MS` between seasons. A season that 404s is marked `unarchivable` and
-skipped permanently, so one dead season cannot block the backlog behind it. Any other
+`ARCHIVE_SEASON_PAUSE_MS` between seasons. A season Blizzard refuses (403 or 404: seasons
+22–26 answer 403, 20–21 answer 404) is marked `unarchivable` and skipped permanently, so one
+dead season cannot block the backlog behind it or be asked for again every tick. The ladder
+archive and the rewards share that rule through `isRefusedSeason`. Any other
 failure, and any season that comes back **incomplete** (a failed bracket), is skipped for
 the rest of that tick only. The incomplete case matters because `nextPending` would hand the
 same season straight back: before it was skipped, one bracket that kept failing was retried
@@ -871,7 +873,7 @@ every pause until the archive's share of the quota ran out.
 tick once the backlog is done, and from `POST /admin/archive-rewards`. It is **driven by
 `archive_seasons` alone**. It asks only about seasons whose standings are archived in full:
 `failedBrackets` empty, not `unarchivable`, in a configured region, with no rewards yet. A
-season Blizzard will not serve (22–26 answer 403) never gets a marker, so it never costs a
+season Blizzard will not serve (22–26 answer 403) is `unarchivable`, so it never costs a
 rewards request. A season still missing brackets waits until they land. A season finished
 in a tick gets its rewards in the same tick.
 
