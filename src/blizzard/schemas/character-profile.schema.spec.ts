@@ -15,6 +15,24 @@ const payload = characterSpecializationsSchema.parse({
   specializations: [
     {
       specialization: { id: 268, name: 'Brewmaster' },
+      // Out of order, and with an empty slot, as a respec can leave them.
+      pvp_talent_slots: [
+        {
+          slot_number: 3,
+          selected: {
+            talent: { id: 666, name: 'Microbrew' },
+            spell_tooltip: { spell: { id: 202107, name: 'Microbrew' }, description: '…' },
+          },
+        },
+        { slot_number: 4 },
+        {
+          slot_number: 2,
+          selected: {
+            talent: { id: 765, name: 'Eerie Fermentation' },
+            spell_tooltip: { spell: { id: 205147, name: 'Eerie Fermentation' } },
+          },
+        },
+      ],
       loadouts: [
         {
           is_active: true,
@@ -46,13 +64,49 @@ describe('activeLoadoutsBySpec', () => {
         spec: { id: 268, name: 'Brewmaster' },
         talentLoadoutCode: 'BREWMASTER-ACTIVE',
         heroTalentTree: { id: 64, name: 'Master of Harmony' },
+        pvpTalents: [
+          { slot: 2, id: 765, name: 'Eerie Fermentation', spellId: 205147 },
+          { slot: 3, id: 666, name: 'Microbrew', spellId: 202107 },
+        ],
       },
       {
         spec: { id: 269, name: 'Windwalker' },
         talentLoadoutCode: 'WINDWALKER-ACTIVE',
         heroTalentTree: { id: 65, name: 'Shado-Pan' },
+        pvpTalents: [],
       },
     ]);
+  });
+
+  it("keeps each spec's PvP talents with that spec, in slot order, without empty slots", () => {
+    const byName = new Map(
+      activeLoadoutsBySpec(payload).map((entry) => [
+        entry.spec.name,
+        entry.pvpTalents.map((talent) => talent.name),
+      ]),
+    );
+
+    expect(byName.get('Brewmaster')).toEqual(['Eerie Fermentation', 'Microbrew']);
+    // A spec with no PvP talents chosen still has its loadout.
+    expect(byName.get('Windwalker')).toEqual([]);
+  });
+
+  it('keeps a talent whose spell Blizzard leaves out, with no spell id', () => {
+    const [entry] = activeLoadoutsBySpec(
+      characterSpecializationsSchema.parse({
+        specializations: [
+          {
+            specialization: { id: 62, name: 'Arcane' },
+            pvp_talent_slots: [
+              { slot_number: 2, selected: { talent: { id: 5397, name: 'Arcanosphere' } } },
+            ],
+            loadouts: [{ is_active: true }],
+          },
+        ],
+      }),
+    );
+
+    expect(entry!.pvpTalents).toEqual([{ slot: 2, id: 5397, name: 'Arcanosphere', spellId: null }]);
   });
 
   it("keeps each spec's hero tree with that spec, not with the active one", () => {
@@ -113,6 +167,7 @@ describe('activeLoadoutsBySpec', () => {
         spec: { id: 269, name: 'Windwalker' },
         talentLoadoutCode: null,
         heroTalentTree: { id: 65, name: 'Shado-Pan' },
+        pvpTalents: [],
       },
     ]);
   });

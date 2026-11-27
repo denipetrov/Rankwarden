@@ -1044,7 +1044,8 @@ duplicates and reports success.
     race: { id, name }, class: { id, name }, spec: { id, name },
     heroTalentTree: { id, name } | null,
     talentLoadouts: [{ spec: {id,name}, talentLoadoutCode: string|null,
-                       heroTalentTree: {id,name}|null }],
+                       heroTalentTree: {id,name}|null,
+                       pvpTalents: [{ slot, id, name, spellId: number|null }] }],
     realmName, title, level, gender, guild,
     averageItemLevel, equippedItemLevel, lastLoginAt,
   },
@@ -2450,6 +2451,20 @@ Always read the tree from `profile.talentLoadouts`, matching the ladder's spec. 
 
 The same applies to talent codes: every spec has its own `is_active` loadout, so a flat scan
 of the payload mixes builds.
+
+And to PvP talents. Blizzard sends them per spec (`specializations[].pvp_talent_slots`, a
+sibling of the loadouts), and they are stored on that spec's `talentLoadouts` entry as
+`pvpTalents`: slot, PvP talent id and name, and the spell id. They are kept in slot order, with
+empty slots left out and the tooltip text dropped, since that text is static game data.
+
+- **The PvP talent id differs by spec for the same talent.** Smoke Bomb is `1209` for
+  Subtlety, `3480` for Assassination and `3483` for Outlaw, but always spell `212182`. Group a
+  talent across specs by `spellId`, not by `id`.
+- **They come with the specs half** of enrichment: the same request, no extra quota. A
+  document whose specs were last fetched before the field existed has no `pvpTalents` until
+  its next specs refresh, so readers treat the field as absent-or-empty.
+- **Specs with no active loadout have no entry**, so their PvP talents are not stored
+  either. That is the same rule as for the code and the hero tree.
 
 ### 9.3 `$gt: 0` is required on every rating query
 

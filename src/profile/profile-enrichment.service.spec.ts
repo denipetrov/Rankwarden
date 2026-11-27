@@ -114,6 +114,15 @@ describe('ProfileEnrichmentService', () => {
       specializations: [
         {
           specialization: { id: 70, name: 'Retribution' },
+          pvp_talent_slots: [
+            {
+              slot_number: 2,
+              selected: {
+                talent: { id: 5535, name: 'Hallowed Ground' },
+                spell_tooltip: { spell: { id: 216868, name: 'Hallowed Ground' } },
+              },
+            },
+          ],
           loadouts: [
             {
               is_active: true,
@@ -231,11 +240,13 @@ describe('ProfileEnrichmentService', () => {
             spec: { id: 70, name: 'Retribution' },
             talentLoadoutCode: 'RET-CODE',
             heroTalentTree: { id: 50, name: 'Templar' },
+            pvpTalents: [{ slot: 2, id: 5535, name: 'Hallowed Ground', spellId: 216868 }],
           },
           {
             spec: { id: 65, name: 'Holy' },
             talentLoadoutCode: 'HOLY-CODE',
             heroTalentTree: { id: 49, name: 'Lightsmith' },
+            pvpTalents: [],
           },
         ],
       }),

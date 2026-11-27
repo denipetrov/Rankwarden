@@ -38,6 +38,23 @@ export const characterSpecializationsSchema = z.object({
     .array(
       z.object({
         specialization: namedRef,
+        // The spec's chosen PvP talents, one per slot. A sibling of the
+        // loadouts, not part of one: they belong to the spec whichever loadout
+        // is active. Lenient throughout, so an odd slot drops only itself
+        // rather than failing the whole response.
+        pvp_talent_slots: z
+          .array(
+            z.object({
+              slot_number: z.number().int(),
+              selected: z
+                .object({
+                  talent: namedRef,
+                  spell_tooltip: z.object({ spell: namedRef.optional() }).optional(),
+                })
+                .optional(),
+            }),
+          )
+          .optional(),
         loadouts: z
           .array(
             z.object({
@@ -71,6 +88,7 @@ export function activeLoadoutsBySpec(payload: CharacterSpecializationsPayload): 
   spec: { id: number; name: string };
   talentLoadoutCode: string | null;
   heroTalentTree: { id: number; name: string } | null;
+  pvpTalents: { slot: number; id: number; name: string; spellId: number | null }[];
 }[] {
   return (payload.specializations ?? []).flatMap((entry) => {
     const active = entry.loadouts?.find((loadout) => loadout.is_active);
@@ -81,7 +99,34 @@ export function activeLoadoutsBySpec(payload: CharacterSpecializationsPayload): 
         spec: entry.specialization,
         talentLoadoutCode: active.talent_loadout_code ?? null,
         heroTalentTree: active.selected_hero_talent_tree ?? null,
+        pvpTalents: pvpTalentsOf(entry.pvp_talent_slots),
       },
     ];
   });
+}
+
+/**
+ * A spec's chosen PvP talents, in slot order. A slot with nothing chosen is
+ * left out. Only what identifies the talent is kept: its tooltip text is static
+ * game data, the same for every character, and can be looked up by id.
+ */
+function pvpTalentsOf(
+  slots: NonNullable<
+    CharacterSpecializationsPayload['specializations']
+  >[number]['pvp_talent_slots'],
+): { slot: number; id: number; name: string; spellId: number | null }[] {
+  return (slots ?? [])
+    .flatMap((slot) =>
+      slot.selected
+        ? [
+            {
+              slot: slot.slot_number,
+              id: slot.selected.talent.id,
+              name: slot.selected.talent.name,
+              spellId: slot.selected.spell_tooltip?.spell?.id ?? null,
+            },
+          ]
+        : [],
+    )
+    .sort((a, b) => a.slot - b.slot);
 }
